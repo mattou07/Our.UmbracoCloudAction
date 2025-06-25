@@ -1,6 +1,6 @@
 {
-  "name": "typescript-action",
-  "description": "GitHub Actions TypeScript template",
+  "name": "umbraco-cloud-deployment-action",
+  "description": "GitHub Action for deploying to Umbraco Cloud with comprehensive deployment management",
   "version": "0.0.0",
   "author": "",
   "type": "module",
@@ -14,7 +14,10 @@
     "url": "https://github.com/actions/typescript-action/issues"
   },
   "keywords": [
-    "actions"
+    "actions",
+    "umbraco",
+    "cloud",
+    "deployment"
   ],
   "exports": {
     ".": "./dist/index.js"

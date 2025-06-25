@@ -1,11 +1,13 @@
 import require$$0 from 'os';
 import require$$0$1 from 'crypto';
-import require$$1 from 'fs';
-import require$$1$5 from 'path';
+import * as require$$1 from 'fs';
+import require$$1__default from 'fs';
+import * as require$$1$1 from 'path';
+import require$$1__default$1 from 'path';
 import require$$2 from 'http';
 import require$$3 from 'https';
 import require$$0$4 from 'net';
-import require$$1$1 from 'tls';
+import require$$1$2 from 'tls';
 import require$$4 from 'events';
 import require$$0$3 from 'assert';
 import require$$0$2 from 'util';
@@ -14,14 +16,14 @@ import require$$7 from 'buffer';
 import require$$8 from 'querystring';
 import require$$14 from 'stream/web';
 import require$$0$7 from 'node:stream';
-import require$$1$2 from 'node:util';
+import require$$1$3 from 'node:util';
 import require$$0$6 from 'node:events';
 import require$$0$8 from 'worker_threads';
 import require$$2$1 from 'perf_hooks';
 import require$$5 from 'util/types';
 import require$$4$1 from 'async_hooks';
-import require$$1$3 from 'console';
-import require$$1$4 from 'url';
+import require$$1$4 from 'console';
+import require$$1$5 from 'url';
 import require$$3$1 from 'zlib';
 import require$$6 from 'string_decoder';
 import require$$0$9 from 'diagnostics_channel';
@@ -222,7 +224,7 @@ function requireFileCommand () {
 	// We use any as a valid input type
 	/* eslint-disable @typescript-eslint/no-explicit-any */
 	const crypto = __importStar(require$$0$1);
-	const fs = __importStar(require$$1);
+	const fs = __importStar(require$$1__default);
 	const os = __importStar(require$$0);
 	const utils_1 = requireUtils$1();
 	function issueFileCommand(command, message) {
@@ -372,7 +374,7 @@ var hasRequiredTunnel$1;
 function requireTunnel$1 () {
 	if (hasRequiredTunnel$1) return tunnel$1;
 	hasRequiredTunnel$1 = 1;
-	var tls = require$$1$1;
+	var tls = require$$1$2;
 	var http = require$$2;
 	var https = require$$3;
 	var events = require$$4;
@@ -1754,7 +1756,7 @@ function requireSbmh () {
 	 * by Hongli Lai at: https://github.com/FooBarWidget/boyer-moore-horspool
 	 */
 	const EventEmitter = require$$0$6.EventEmitter;
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$3.inherits;
 
 	function SBMH (needle) {
 	  if (typeof needle === 'string') {
@@ -1963,7 +1965,7 @@ function requirePartStream () {
 	if (hasRequiredPartStream) return PartStream_1;
 	hasRequiredPartStream = 1;
 
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$3.inherits;
 	const ReadableStream = require$$0$7.Readable;
 
 	function PartStream (opts) {
@@ -2009,7 +2011,7 @@ function requireHeaderParser () {
 	hasRequiredHeaderParser = 1;
 
 	const EventEmitter = require$$0$6.EventEmitter;
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$3.inherits;
 	const getLimit = requireGetLimit();
 
 	const StreamSearch = requireSbmh();
@@ -2117,7 +2119,7 @@ function requireDicer () {
 	hasRequiredDicer = 1;
 
 	const WritableStream = require$$0$7.Writable;
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$3.inherits;
 
 	const StreamSearch = requireSbmh();
 
@@ -2694,7 +2696,7 @@ function requireMultipart () {
 	//     -- this will require modifications to utils.parseParams
 
 	const { Readable } = require$$0$7;
-	const { inherits } = require$$1$2;
+	const { inherits } = require$$1$3;
 
 	const Dicer = requireDicer();
 
@@ -3260,7 +3262,7 @@ function requireMain () {
 	hasRequiredMain = 1;
 
 	const WritableStream = require$$0$7.Writable;
-	const { inherits } = require$$1$2;
+	const { inherits } = require$$1$3;
 	const Dicer = requireDicer();
 
 	const MultipartParser = requireMultipart();
@@ -8084,7 +8086,7 @@ function requireConnect () {
 	    let socket;
 	    if (protocol === 'https:') {
 	      if (!tls) {
-	        tls = require$$1$1;
+	        tls = require$$1$2;
 	      }
 	      servername = servername || options.servername || util.getServerName(host) || null;
 
@@ -14108,7 +14110,7 @@ function requirePendingInterceptorsFormatter () {
 	hasRequiredPendingInterceptorsFormatter = 1;
 
 	const { Transform } = require$$0$5;
-	const { Console } = require$$1$3;
+	const { Console } = require$$1$4;
 
 	/**
 	 * Gets the output of `console.table(…)` as a string.
@@ -14335,7 +14337,7 @@ function requireProxyAgent () {
 	hasRequiredProxyAgent = 1;
 
 	const { kProxy, kClose, kDestroy, kInterceptors } = requireSymbols$4();
-	const { URL } = require$$1$4;
+	const { URL } = require$$1$5;
 	const Agent = requireAgent();
 	const Pool = requirePool();
 	const DispatcherBase = requireDispatcherBase();
@@ -25200,7 +25202,7 @@ function requireSummary () {
 		Object.defineProperty(exports, "__esModule", { value: true });
 		exports.summary = exports.markdownSummary = exports.SUMMARY_DOCS_URL = exports.SUMMARY_ENV_VAR = void 0;
 		const os_1 = require$$0;
-		const fs_1 = require$$1;
+		const fs_1 = require$$1__default;
 		const { access, appendFile, writeFile } = fs_1.promises;
 		exports.SUMMARY_ENV_VAR = 'GITHUB_STEP_SUMMARY';
 		exports.SUMMARY_DOCS_URL = 'https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions#adding-a-job-summary';
@@ -25506,7 +25508,7 @@ function requirePathUtils () {
 	};
 	Object.defineProperty(pathUtils, "__esModule", { value: true });
 	pathUtils.toPlatformPath = pathUtils.toWin32Path = pathUtils.toPosixPath = void 0;
-	const path = __importStar(require$$1$5);
+	const path = __importStar(require$$1__default$1);
 	/**
 	 * toPosixPath converts the given path to the posix form. On Windows, \\ will be
 	 * replaced with /.
@@ -25592,8 +25594,8 @@ function requireIoUtil () {
 		var _a;
 		Object.defineProperty(exports, "__esModule", { value: true });
 		exports.getCmdPath = exports.tryGetExecutablePath = exports.isRooted = exports.isDirectory = exports.exists = exports.READONLY = exports.UV_FS_O_EXLOCK = exports.IS_WINDOWS = exports.unlink = exports.symlink = exports.stat = exports.rmdir = exports.rm = exports.rename = exports.readlink = exports.readdir = exports.open = exports.mkdir = exports.lstat = exports.copyFile = exports.chmod = void 0;
-		const fs = __importStar(require$$1);
-		const path = __importStar(require$$1$5);
+		const fs = __importStar(require$$1__default);
+		const path = __importStar(require$$1__default$1);
 		_a = fs.promises
 		// export const {open} = 'fs'
 		, exports.chmod = _a.chmod, exports.copyFile = _a.copyFile, exports.lstat = _a.lstat, exports.mkdir = _a.mkdir, exports.open = _a.open, exports.readdir = _a.readdir, exports.readlink = _a.readlink, exports.rename = _a.rename, exports.rm = _a.rm, exports.rmdir = _a.rmdir, exports.stat = _a.stat, exports.symlink = _a.symlink, exports.unlink = _a.unlink;
@@ -25783,7 +25785,7 @@ function requireIo () {
 	Object.defineProperty(io, "__esModule", { value: true });
 	io.findInPath = io.which = io.mkdirP = io.rmRF = io.mv = io.cp = void 0;
 	const assert_1 = require$$0$3;
-	const path = __importStar(require$$1$5);
+	const path = __importStar(require$$1__default$1);
 	const ioUtil = __importStar(requireIoUtil());
 	/**
 	 * Copies a file or folder.
@@ -26091,7 +26093,7 @@ function requireToolrunner () {
 	const os = __importStar(require$$0);
 	const events = __importStar(require$$4);
 	const child = __importStar(require$$2$2);
-	const path = __importStar(require$$1$5);
+	const path = __importStar(require$$1__default$1);
 	const io = __importStar(requireIo());
 	const ioUtil = __importStar(requireIoUtil());
 	const timers_1 = require$$6$1;
@@ -26935,7 +26937,7 @@ function requireCore () {
 		const file_command_1 = requireFileCommand();
 		const utils_1 = requireUtils$1();
 		const os = __importStar(require$$0);
-		const path = __importStar(require$$1$5);
+		const path = __importStar(require$$1__default$1);
 		const oidc_utils_1 = requireOidcUtils();
 		/**
 		 * The code to exit an action
@@ -27246,20 +27248,176 @@ function requireCore () {
 
 var coreExports = requireCore();
 
-/**
- * Waits for a number of milliseconds.
- *
- * @param milliseconds The number of milliseconds to wait.
- * @returns Resolves with 'done!' after the wait is over.
- */
-async function wait(milliseconds) {
-    return new Promise((resolve) => {
-        if (isNaN(milliseconds))
-            throw new Error('milliseconds is not a number');
-        setTimeout(() => resolve('done!'), milliseconds);
-    });
+class UmbracoCloudAPI {
+    baseUrl;
+    projectId;
+    apiKey;
+    constructor(projectId, apiKey, baseUrl = 'https://api.cloud.umbraco.com') {
+        this.baseUrl = baseUrl;
+        this.projectId = projectId;
+        this.apiKey = apiKey;
+    }
+    getHeaders() {
+        return {
+            'Umbraco-Cloud-Api-Key': this.apiKey,
+            'Content-Type': 'application/json'
+        };
+    }
+    async startDeployment(request) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments`;
+        coreExports.debug(`Starting deployment at ${url}`);
+        coreExports.debug(`Request body: ${JSON.stringify(request)}`);
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: this.getHeaders(),
+                body: JSON.stringify(request)
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to start deployment: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            const data = (await response.json());
+            coreExports.debug(`Deployment started successfully: ${JSON.stringify(data)}`);
+            return data.deploymentId;
+        }
+        catch (error) {
+            coreExports.error(`Error starting deployment: ${error}`);
+            throw error;
+        }
+    }
+    async checkDeploymentStatus(deploymentId, timeoutSeconds = 1200) {
+        const baseStatusUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`;
+        const startTime = Date.now();
+        const timeoutMs = timeoutSeconds * 1000;
+        const statusesBeforeCompleted = ['Pending', 'InProgress', 'Queued'];
+        let run = 1;
+        let url = baseStatusUrl;
+        coreExports.debug(`Checking deployment status for: ${deploymentId}`);
+        do {
+            coreExports.debug(`=====> Requesting Status - Run number ${run}`);
+            try {
+                const response = await fetch(url, {
+                    method: 'GET',
+                    headers: this.getHeaders()
+                });
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Failed to check deployment status: ${response.status} ${response.statusText} - ${errorText}`);
+                }
+                const deploymentResponse = (await response.json());
+                coreExports.debug(`DeploymentStatus: '${deploymentResponse.deploymentState}'`);
+                for (const message of deploymentResponse.deploymentStatusMessages) {
+                    coreExports.debug(`${message.timestampUtc}: ${message.message}`);
+                }
+                // Handle timeout
+                if (Date.now() - startTime > timeoutMs) {
+                    throw new Error('Timeout was reached');
+                }
+                // Don't sleep if deployment was finished
+                if (statusesBeforeCompleted.includes(deploymentResponse.deploymentState)) {
+                    const sleepValue = 25;
+                    coreExports.debug(`=====> Still Deploying - sleeping for ${sleepValue} seconds`);
+                    await new Promise((resolve) => setTimeout(resolve, sleepValue * 1000));
+                    const lastModifiedUtc = new Date(deploymentResponse.modifiedUtc).toISOString();
+                    url = `${baseStatusUrl}?lastModifiedUtc=${lastModifiedUtc}`;
+                }
+                run++;
+                if (!statusesBeforeCompleted.includes(deploymentResponse.deploymentState)) {
+                    return deploymentResponse;
+                }
+            }
+            catch (error) {
+                coreExports.error(`Error checking deployment status: ${error}`);
+                throw error;
+            }
+        } while (true);
+    }
+    async addDeploymentArtifact(filePath, description, version) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/artifacts`;
+        // Validate file exists
+        if (!filePath) {
+            throw new Error('FilePath is empty');
+        }
+        if (!require$$1.existsSync(filePath)) {
+            throw new Error(`FilePath does not contain a file: ${filePath}`);
+        }
+        coreExports.debug(`Uploading artifact: ${filePath}`);
+        try {
+            const formData = new FormData();
+            const fileBuffer = require$$1.readFileSync(filePath);
+            const fileName = require$$1$1.basename(filePath);
+            formData.append('file', new Blob([fileBuffer]), fileName);
+            if (description) {
+                formData.append('description', description);
+            }
+            if (version) {
+                formData.append('version', version);
+            }
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: {
+                    'Umbraco-Cloud-Api-Key': this.apiKey
+                },
+                body: formData
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to upload artifact: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            const data = (await response.json());
+            coreExports.debug(`Artifact uploaded successfully: ${JSON.stringify(data)}`);
+            return data.artifactId;
+        }
+        catch (error) {
+            coreExports.error(`Error uploading artifact: ${error}`);
+            throw error;
+        }
+    }
+    async getChangesById(changeId) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}`;
+        coreExports.debug(`Getting changes for ID: ${changeId}`);
+        try {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to get changes: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            const data = (await response.json());
+            coreExports.debug(`Changes retrieved successfully: ${JSON.stringify(data)}`);
+            return data;
+        }
+        catch (error) {
+            coreExports.error(`Error getting changes: ${error}`);
+            throw error;
+        }
+    }
+    async applyPatch(changeId, targetEnvironmentAlias) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}/apply`;
+        coreExports.debug(`Applying patch for change ID: ${changeId} to environment: ${targetEnvironmentAlias}`);
+        try {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: this.getHeaders(),
+                body: JSON.stringify({
+                    targetEnvironmentAlias
+                })
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to apply patch: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            coreExports.debug('Patch applied successfully');
+        }
+        catch (error) {
+            coreExports.error(`Error applying patch: ${error}`);
+            throw error;
+        }
+    }
 }
-
 /**
  * The main function for the action.
  *
@@ -27267,20 +27425,88 @@ async function wait(milliseconds) {
  */
 async function run() {
     try {
-        const ms = coreExports.getInput('milliseconds');
-        // Debug logs are only output if the `ACTIONS_STEP_DEBUG` secret is true
-        coreExports.debug(`Waiting ${ms} milliseconds ...`);
-        // Log the current timestamp, wait, then log the new timestamp
-        coreExports.debug(new Date().toTimeString());
-        await wait(parseInt(ms, 10));
-        coreExports.debug(new Date().toTimeString());
-        // Set outputs for other workflow steps to use
-        coreExports.setOutput('time', new Date().toTimeString());
+        // Get inputs
+        const projectId = coreExports.getInput('projectId', { required: true });
+        const apiKey = coreExports.getInput('apiKey', { required: true });
+        const action = coreExports.getInput('action', { required: true });
+        const baseUrl = coreExports.getInput('baseUrl') || 'https://api.cloud.umbraco.com';
+        // Initialize API client
+        const api = new UmbracoCloudAPI(projectId, apiKey, baseUrl);
+        coreExports.debug(`Executing action: ${action}`);
+        switch (action) {
+            case 'start-deployment': {
+                const artifactId = coreExports.getInput('artifactId', { required: true });
+                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
+                    required: true
+                });
+                const commitMessage = coreExports.getInput('commitMessage') || 'Deployment from GitHub Actions';
+                const noBuildAndRestore = coreExports.getBooleanInput('noBuildAndRestore');
+                const skipVersionCheck = coreExports.getBooleanInput('skipVersionCheck');
+                const deploymentId = await api.startDeployment({
+                    targetEnvironmentAlias,
+                    artifactId,
+                    commitMessage,
+                    noBuildAndRestore,
+                    skipVersionCheck
+                });
+                coreExports.setOutput('deploymentId', deploymentId);
+                coreExports.info(`Deployment started successfully with ID: ${deploymentId}`);
+                break;
+            }
+            case 'check-status': {
+                const deploymentId = coreExports.getInput('deploymentId', { required: true });
+                const timeoutSeconds = parseInt(coreExports.getInput('timeoutSeconds') || '1200', 10);
+                const deploymentStatus = await api.checkDeploymentStatus(deploymentId, timeoutSeconds);
+                coreExports.setOutput('deploymentState', deploymentStatus.deploymentState);
+                coreExports.setOutput('deploymentStatus', JSON.stringify(deploymentStatus));
+                if (deploymentStatus.deploymentState === 'Completed') {
+                    coreExports.info('Deployment completed successfully');
+                }
+                else if (deploymentStatus.deploymentState === 'Failed') {
+                    coreExports.setFailed('Deployment failed');
+                }
+                else {
+                    coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
+                }
+                break;
+            }
+            case 'add-artifact': {
+                const filePath = coreExports.getInput('filePath', { required: true });
+                const description = coreExports.getInput('description');
+                const version = coreExports.getInput('version');
+                const artifactId = await api.addDeploymentArtifact(filePath, description, version);
+                coreExports.setOutput('artifactId', artifactId);
+                coreExports.info(`Artifact uploaded successfully with ID: ${artifactId}`);
+                break;
+            }
+            case 'get-changes': {
+                const changeId = coreExports.getInput('changeId', { required: true });
+                const changes = await api.getChangesById(changeId);
+                coreExports.setOutput('changes', JSON.stringify(changes));
+                coreExports.info(`Changes retrieved successfully for ID: ${changeId}`);
+                break;
+            }
+            case 'apply-patch': {
+                const changeId = coreExports.getInput('changeId', { required: true });
+                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
+                    required: true
+                });
+                await api.applyPatch(changeId, targetEnvironmentAlias);
+                coreExports.info(`Patch applied successfully for change ID: ${changeId}`);
+                break;
+            }
+            default:
+                coreExports.setFailed(`Unknown action: ${action}. Supported actions: start-deployment, check-status, add-artifact, get-changes, apply-patch`);
+        }
     }
     catch (error) {
         // Fail the workflow run if an error occurs
-        if (error instanceof Error)
+        if (error instanceof Error) {
             coreExports.setFailed(error.message);
+        }
+        else {
+            coreExports.setFailed('An unknown error occurred');
+        }
     }
 }
 
