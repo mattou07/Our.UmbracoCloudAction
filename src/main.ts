@@ -75,6 +75,53 @@ class UmbracoCloudAPI {
 
       return data.deploymentId
     } catch (error) {
+      // Check if this is a case sensitivity issue with environment alias
+      if (
+        error instanceof Error &&
+        error.message.includes(
+          'reason: No environments matches the provided alias'
+        ) &&
+        request.targetEnvironmentAlias !==
+          request.targetEnvironmentAlias.toLowerCase()
+      ) {
+        core.info(
+          `Environment alias case sensitivity detected. Retrying with lowercase: ${request.targetEnvironmentAlias} -> ${request.targetEnvironmentAlias.toLowerCase()}`
+        )
+
+        // Retry with lowercase environment alias
+        const retryRequest = {
+          ...request,
+          targetEnvironmentAlias: request.targetEnvironmentAlias.toLowerCase()
+        }
+
+        try {
+          const retryResponse = await fetch(url, {
+            method: 'POST',
+            headers: this.getHeaders(),
+            body: JSON.stringify(retryRequest)
+          })
+
+          if (!retryResponse.ok) {
+            const errorText = await retryResponse.text()
+            throw new Error(
+              `Failed to start deployment (retry with lowercase): ${retryResponse.status} ${retryResponse.statusText} - ${errorText}`
+            )
+          }
+
+          const data = (await retryResponse.json()) as DeploymentResponse
+          core.debug(
+            `Deployment started successfully (retry with lowercase): ${JSON.stringify(data)}`
+          )
+
+          return data.deploymentId
+        } catch (retryError) {
+          core.error(
+            `Error starting deployment (retry with lowercase): ${retryError}`
+          )
+          throw retryError
+        }
+      }
+
       core.error(`Error starting deployment: ${error}`)
       throw error
     }
