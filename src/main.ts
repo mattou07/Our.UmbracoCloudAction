@@ -1,7 +1,8 @@
 import * as core from '@actions/core'
+import * as github from '@actions/github'
+import * as exec from '@actions/exec'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as github from '@actions/github'
 
 interface DeploymentRequest {
   targetEnvironmentAlias: string
@@ -416,8 +417,9 @@ class UmbracoCloudAPI {
 
       core.debug('Patch applied successfully')
     } catch (error) {
-      core.error(`Error applying patch: ${error}`)
-      throw error
+      const err = error as Error
+      core.setFailed(`Failed to apply patch: ${err.message}`)
+      throw err
     }
   }
 
@@ -561,7 +563,6 @@ async function createPullRequestWithPatch(
   try {
     // Create a new branch name using the format: umbcloud/{deploymentId}
     const newBranchName = `umbcloud/${latestCompletedDeploymentId}`
-
     core.info(`Creating new branch: ${newBranchName}`)
 
     // Get the latest commit SHA from the base branch
@@ -578,56 +579,56 @@ async function createPullRequestWithPatch(
       ref: `refs/heads/${newBranchName}`,
       sha: ref.object.sha
     })
-
     core.info(`Branch ${newBranchName} created successfully`)
 
-    // For now, create a simple commit with the patch content as a file
-    // In a full implementation, you'd parse and apply the git patch
-    const patchFileName = `deployment-patch-${latestCompletedDeploymentId}.patch`
+    // Checkout the new branch
+    await exec.exec('git', ['checkout', newBranchName])
 
-    // Create a blob with the patch content
-    const { data: blob } = await octokit.rest.git.createBlob({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      content: gitPatch,
-      encoding: 'utf-8'
-    })
+    // Write the patch to a file
+    const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`
+    const patchFilePath = path.join(process.cwd(), patchFileName)
+    fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
+    core.info(`Patch file written to ${patchFilePath}`)
 
-    // Create a new tree with the patch file
-    const { data: newTree } = await octokit.rest.git.createTree({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      base_tree: ref.object.sha,
-      tree: [
-        {
-          path: patchFileName,
-          mode: '100644',
-          type: 'blob',
-          sha: blob.sha
+    // Apply the patch
+    let myOutput = ''
+    let myError = ''
+    const options = {
+      listeners: {
+        stdout: (data: Buffer) => {
+          myOutput += data.toString()
+        },
+        stderr: (data: Buffer) => {
+          myError += data.toString()
         }
-      ]
-    })
+      }
+    }
+    try {
+      await exec.exec('git', ['apply', patchFilePath], options)
+      core.info('Patch applied successfully!')
+      if (myOutput) core.info(myOutput)
+      if (myError) core.warning(myError)
+    } catch (error) {
+      const err = error as Error
+      core.setFailed(`Failed to apply patch: ${err.message}`)
+      if (myError) core.error(myError)
+      throw err
+    }
 
-    // Create a commit with the new tree
-    const commitMessage = `Apply changes from failed deployment\n\n${body}`
-
-    const { data: commit } = await octokit.rest.git.createCommit({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      message: commitMessage,
-      tree: newTree.sha,
-      parents: [ref.object.sha]
-    })
-
-    // Update the branch to point to the new commit
-    await octokit.rest.git.updateRef({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      ref: `heads/${newBranchName}`,
-      sha: commit.sha
-    })
-
-    core.info(`Commit created successfully with patch file: ${patchFileName}`)
+    // Commit and push the changes
+    await exec.exec('git', ['add', patchFileName])
+    await exec.exec('git', ['config', 'user.name', 'github-actions'])
+    await exec.exec('git', [
+      'config',
+      'user.email',
+      'github-actions@github.com'
+    ])
+    await exec.exec('git', [
+      'commit',
+      '-m',
+      `Apply changes from failed deployment\n\n${body}`
+    ])
+    await exec.exec('git', ['push', 'origin', newBranchName])
 
     // Create the pull request
     const { data: pr } = await octokit.rest.pulls.create({
