@@ -129,6 +129,7 @@ class UmbracoCloudAPI {
 
   async checkDeploymentStatus(
     deploymentId: string,
+    targetEnvironmentAlias: string,
     timeoutSeconds: number = 1200
   ): Promise<DeploymentResponse> {
     const baseStatusUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`
@@ -194,6 +195,49 @@ class UmbracoCloudAPI {
           return deploymentResponse
         }
       } catch (error) {
+        // Check if this is a case sensitivity issue with environment alias
+        if (
+          error instanceof Error &&
+          error.message.includes(
+            'reason: No environments matches the provided alias'
+          ) &&
+          targetEnvironmentAlias !== targetEnvironmentAlias.toLowerCase()
+        ) {
+          core.info(
+            `Environment alias case sensitivity detected in status check. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`
+          )
+
+          // Retry with lowercase environment alias
+          const retryUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`
+
+          try {
+            const retryResponse = await fetch(retryUrl, {
+              method: 'GET',
+              headers: this.getHeaders()
+            })
+
+            if (!retryResponse.ok) {
+              const errorText = await retryResponse.text()
+              throw new Error(
+                `Failed to check deployment status (retry with lowercase): ${retryResponse.status} ${retryResponse.statusText} - ${errorText}`
+              )
+            }
+
+            const deploymentResponse =
+              (await retryResponse.json()) as DeploymentResponse
+            core.debug(
+              `Deployment status retrieved successfully (retry with lowercase): ${JSON.stringify(deploymentResponse)}`
+            )
+
+            return deploymentResponse
+          } catch (retryError) {
+            core.error(
+              `Error checking deployment status (retry with lowercase): ${retryError}`
+            )
+            throw retryError
+          }
+        }
+
         core.error(`Error checking deployment status: ${error}`)
         throw error
       }
@@ -373,6 +417,9 @@ export async function run(): Promise<void> {
 
       case 'check-status': {
         const deploymentId = core.getInput('deploymentId', { required: true })
+        const targetEnvironmentAlias = core.getInput('targetEnvironmentAlias', {
+          required: true
+        })
         const timeoutSeconds = parseInt(
           core.getInput('timeoutSeconds') || '1200',
           10
@@ -380,6 +427,7 @@ export async function run(): Promise<void> {
 
         const deploymentStatus = await api.checkDeploymentStatus(
           deploymentId,
+          targetEnvironmentAlias,
           timeoutSeconds
         )
 
@@ -391,10 +439,6 @@ export async function run(): Promise<void> {
         } else if (deploymentStatus.deploymentState === 'Failed') {
           core.setFailed('Deployment failed')
           // Attempt to get changes (diff) for this deployment
-          const targetEnvironmentAlias = core.getInput(
-            'targetEnvironmentAlias',
-            { required: true }
-          )
           try {
             const changes = await api.getChangesById(
               deploymentId,

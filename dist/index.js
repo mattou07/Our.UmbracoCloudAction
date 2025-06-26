@@ -27316,7 +27316,7 @@ class UmbracoCloudAPI {
             throw error;
         }
     }
-    async checkDeploymentStatus(deploymentId, timeoutSeconds = 1200) {
+    async checkDeploymentStatus(deploymentId, targetEnvironmentAlias, timeoutSeconds = 1200) {
         const baseStatusUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`;
         const startTime = Date.now();
         const timeoutMs = timeoutSeconds * 1000;
@@ -27358,6 +27358,31 @@ class UmbracoCloudAPI {
                 }
             }
             catch (error) {
+                // Check if this is a case sensitivity issue with environment alias
+                if (error instanceof Error &&
+                    error.message.includes('reason: No environments matches the provided alias') &&
+                    targetEnvironmentAlias !== targetEnvironmentAlias.toLowerCase()) {
+                    coreExports.info(`Environment alias case sensitivity detected in status check. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`);
+                    // Retry with lowercase environment alias
+                    const retryUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`;
+                    try {
+                        const retryResponse = await fetch(retryUrl, {
+                            method: 'GET',
+                            headers: this.getHeaders()
+                        });
+                        if (!retryResponse.ok) {
+                            const errorText = await retryResponse.text();
+                            throw new Error(`Failed to check deployment status (retry with lowercase): ${retryResponse.status} ${retryResponse.statusText} - ${errorText}`);
+                        }
+                        const deploymentResponse = (await retryResponse.json());
+                        coreExports.debug(`Deployment status retrieved successfully (retry with lowercase): ${JSON.stringify(deploymentResponse)}`);
+                        return deploymentResponse;
+                    }
+                    catch (retryError) {
+                        coreExports.error(`Error checking deployment status (retry with lowercase): ${retryError}`);
+                        throw retryError;
+                    }
+                }
                 coreExports.error(`Error checking deployment status: ${error}`);
                 throw error;
             }
@@ -27487,8 +27512,11 @@ async function run() {
             }
             case 'check-status': {
                 const deploymentId = coreExports.getInput('deploymentId', { required: true });
+                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
+                    required: true
+                });
                 const timeoutSeconds = parseInt(coreExports.getInput('timeoutSeconds') || '1200', 10);
-                const deploymentStatus = await api.checkDeploymentStatus(deploymentId, timeoutSeconds);
+                const deploymentStatus = await api.checkDeploymentStatus(deploymentId, targetEnvironmentAlias, timeoutSeconds);
                 coreExports.setOutput('deploymentState', deploymentStatus.deploymentState);
                 coreExports.setOutput('deploymentStatus', JSON.stringify(deploymentStatus));
                 if (deploymentStatus.deploymentState === 'Completed') {
@@ -27497,7 +27525,6 @@ async function run() {
                 else if (deploymentStatus.deploymentState === 'Failed') {
                     coreExports.setFailed('Deployment failed');
                     // Attempt to get changes (diff) for this deployment
-                    const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', { required: true });
                     try {
                         const changes = await api.getChangesById(deploymentId, targetEnvironmentAlias);
                         coreExports.info('Deployment failed. Here is the diff/patch:');
