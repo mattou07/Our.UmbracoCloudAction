@@ -25,7 +25,7 @@ interface ArtifactResponse {
 }
 
 interface ChangesResponse {
-  changes: any[]
+  changes: string // diff/patch text
 }
 
 class UmbracoCloudAPI {
@@ -258,10 +258,10 @@ class UmbracoCloudAPI {
     }
   }
 
-  async getChangesById(changeId: string): Promise<ChangesResponse> {
-    const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}`
+  async getChangesById(deploymentId: string, targetEnvironmentAlias: string): Promise<ChangesResponse> {
+    const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
 
-    core.debug(`Getting changes for ID: ${changeId}`)
+    core.debug(`Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`)
 
     try {
       const response = await fetch(url, {
@@ -276,10 +276,12 @@ class UmbracoCloudAPI {
         )
       }
 
-      const data = (await response.json()) as ChangesResponse
-      core.debug(`Changes retrieved successfully: ${JSON.stringify(data)}`)
+      // The response is a diff/patch file, not JSON
+      const diffText = await response.text()
+      core.debug(`Changes (diff) retrieved successfully, length: ${diffText.length}`)
 
-      return data
+      // Return as a string, or wrap in an object for compatibility
+      return { changes: diffText }
     } catch (error) {
       core.error(`Error getting changes: ${error}`)
       throw error
@@ -406,12 +408,15 @@ export async function run(): Promise<void> {
       }
 
       case 'get-changes': {
-        const changeId = core.getInput('changeId', { required: true })
+        const deploymentId = core.getInput('deploymentId', { required: true })
+        const targetEnvironmentAlias = core.getInput('targetEnvironmentAlias', {
+          required: true
+        })
 
-        const changes = await api.getChangesById(changeId)
+        const changes = await api.getChangesById(deploymentId, targetEnvironmentAlias)
 
         core.setOutput('changes', JSON.stringify(changes))
-        core.info(`Changes retrieved successfully for ID: ${changeId}`)
+        core.info(`Changes retrieved successfully for deployment ID: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`)
         break
       }
 

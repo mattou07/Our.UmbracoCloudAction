@@ -26,8 +26,7 @@ inputs:
       'The artifact ID for deployment (required for start-deployment)'
     required: false
   targetEnvironmentAlias:
-    description:
-      'The target environment alias to deploy to (required for start-deployment)'
+    description: 'The target environment alias to deploy to (required for start-deployment, get-changes, apply-patch)'
     required: false
   commitMessage:
     description: 'Commit message for the deployment'
@@ -42,7 +41,7 @@ inputs:
     required: false
     default: 'false'
   deploymentId:
-    description: 'The deployment ID (required for check-status)'
+    description: 'The deployment ID (required for check-status, get-changes)'
     required: false
   timeoutSeconds:
     description: 'Timeout in seconds for status checks'
@@ -57,9 +56,6 @@ inputs:
     required: false
   version:
     description: 'Version for the artifact'
-    required: false
-  changeId:
-    description: 'The change ID (required for get-changes, apply-patch)'
     required: false
   baseUrl:
     description: 'Base URL for Umbraco Cloud API'
@@ -77,7 +73,7 @@ outputs:
   deploymentStatus:
     description: 'The deployment status response'
   changes:
-    description: 'The changes returned from get-changes'
+    description: 'The changes (diff/patch) returned from get-changes'
 
 runs:
   using: node20
