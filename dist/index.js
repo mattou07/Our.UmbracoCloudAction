@@ -27513,6 +27513,34 @@ async function run() {
                 }
                 break;
             }
+            case 'add-artifact': {
+                const filePath = coreExports.getInput('filePath', { required: true });
+                const description = coreExports.getInput('description');
+                const version = coreExports.getInput('version');
+                const artifactId = await api.addDeploymentArtifact(filePath, description, version);
+                coreExports.setOutput('artifactId', artifactId);
+                coreExports.info(`Artifact uploaded successfully with ID: ${artifactId}`);
+                break;
+            }
+            case 'get-changes': {
+                const deploymentId = coreExports.getInput('deploymentId', { required: true });
+                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
+                    required: true
+                });
+                const changes = await api.getChangesById(deploymentId, targetEnvironmentAlias);
+                coreExports.setOutput('changes', JSON.stringify(changes));
+                coreExports.info(`Changes retrieved successfully for deployment ID: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`);
+                break;
+            }
+            case 'apply-patch': {
+                const changeId = coreExports.getInput('changeId', { required: true });
+                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
+                    required: true
+                });
+                await api.applyPatch(changeId, targetEnvironmentAlias);
+                coreExports.info(`Patch applied successfully for change ID: ${changeId}`);
+                break;
+            }
         }
     }
     catch (error) {

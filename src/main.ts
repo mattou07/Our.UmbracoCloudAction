@@ -415,6 +415,52 @@ export async function run(): Promise<void> {
         }
         break
       }
+
+      case 'add-artifact': {
+        const filePath = core.getInput('filePath', { required: true })
+        const description = core.getInput('description')
+        const version = core.getInput('version')
+
+        const artifactId = await api.addDeploymentArtifact(
+          filePath,
+          description,
+          version
+        )
+
+        core.setOutput('artifactId', artifactId)
+        core.info(`Artifact uploaded successfully with ID: ${artifactId}`)
+        break
+      }
+
+      case 'get-changes': {
+        const deploymentId = core.getInput('deploymentId', { required: true })
+        const targetEnvironmentAlias = core.getInput('targetEnvironmentAlias', {
+          required: true
+        })
+
+        const changes = await api.getChangesById(
+          deploymentId,
+          targetEnvironmentAlias
+        )
+
+        core.setOutput('changes', JSON.stringify(changes))
+        core.info(
+          `Changes retrieved successfully for deployment ID: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`
+        )
+        break
+      }
+
+      case 'apply-patch': {
+        const changeId = core.getInput('changeId', { required: true })
+        const targetEnvironmentAlias = core.getInput('targetEnvironmentAlias', {
+          required: true
+        })
+
+        await api.applyPatch(changeId, targetEnvironmentAlias)
+
+        core.info(`Patch applied successfully for change ID: ${changeId}`)
+        break
+      }
     }
   } catch (error) {
     core.error(`Error running the action: ${error}`)
