@@ -31388,6 +31388,23 @@ class UmbracoCloudAPI {
         if (!fs.existsSync(filePath)) {
             throw new Error(`FilePath does not contain a file: ${filePath}`);
         }
+        // Validate that the zip contains a git repository
+        coreExports.info('Validating zip file contains git repository...');
+        try {
+            // Extract zip to current directory to check for .git folder
+            await execExports.exec('unzip', ['-q', filePath]);
+            // Check if this is a valid git repository using git command
+            await execExports.exec('git', ['rev-parse', '--git-dir']);
+            coreExports.info('Git repository validation successful');
+        }
+        catch (error) {
+            if (error instanceof Error && error.message.includes('git repository')) {
+                coreExports.setFailed(error.message);
+                throw error;
+            }
+            coreExports.setFailed(`Failed to validate git repository in zip: ${error}`);
+            throw error;
+        }
         coreExports.debug(`Uploading artifact: ${filePath}`);
         try {
             const formData = new FormData();
@@ -31546,22 +31563,25 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         // Create a new branch name using the format: umbcloud/{deploymentId}
         const newBranchName = `umbcloud/${latestCompletedDeploymentId}`;
         coreExports.info(`Creating new branch: ${newBranchName}`);
-        // Get the latest commit SHA from the base branch
-        const { data: ref } = await octokit.rest.git.getRef({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            ref: `heads/${baseBranch}`
-        });
-        // Create the new branch
-        await octokit.rest.git.createRef({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            ref: `refs/heads/${newBranchName}`,
-            sha: ref.object.sha
-        });
+        // Ensure we're in the correct directory (GitHub workspace)
+        const workspace = process.env.GITHUB_WORKSPACE;
+        if (workspace) {
+            coreExports.info(`Changing to workspace directory: ${workspace}`);
+            process.chdir(workspace);
+        }
+        // Check if we're in a git repository
+        try {
+            await execExports.exec('git', ['rev-parse', '--git-dir']);
+            coreExports.info('Git repository found');
+        }
+        catch (error) {
+            coreExports.setFailed('Not in a git repository. The zip file should have been extracted and contain a git repository.');
+            throw new Error('No git repository found');
+        }
+        // Checkout the base branch and create the new branch
+        await execExports.exec('git', ['checkout', baseBranch]);
+        await execExports.exec('git', ['checkout', '-b', newBranchName]);
         coreExports.info(`Branch ${newBranchName} created successfully`);
-        // Checkout the new branch
-        await execExports.exec('git', ['checkout', newBranchName]);
         // Write the patch to a file
         const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
         const patchFilePath = require$$1.join(process.cwd(), patchFileName);

@@ -283,6 +283,25 @@ class UmbracoCloudAPI {
       throw new Error(`FilePath does not contain a file: ${filePath}`)
     }
 
+    // Validate that the zip contains a git repository
+    core.info('Validating zip file contains git repository...')
+    try {
+      // Extract zip to current directory to check for .git folder
+      await exec.exec('unzip', ['-q', filePath])
+
+      // Check if this is a valid git repository using git command
+      await exec.exec('git', ['rev-parse', '--git-dir'])
+
+      core.info('Git repository validation successful')
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('git repository')) {
+        core.setFailed(error.message)
+        throw error
+      }
+      core.setFailed(`Failed to validate git repository in zip: ${error}`)
+      throw error
+    }
+
     core.debug(`Uploading artifact: ${filePath}`)
 
     try {
@@ -565,24 +584,28 @@ async function createPullRequestWithPatch(
     const newBranchName = `umbcloud/${latestCompletedDeploymentId}`
     core.info(`Creating new branch: ${newBranchName}`)
 
-    // Get the latest commit SHA from the base branch
-    const { data: ref } = await octokit.rest.git.getRef({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      ref: `heads/${baseBranch}`
-    })
+    // Ensure we're in the correct directory (GitHub workspace)
+    const workspace = process.env.GITHUB_WORKSPACE
+    if (workspace) {
+      core.info(`Changing to workspace directory: ${workspace}`)
+      process.chdir(workspace)
+    }
 
-    // Create the new branch
-    await octokit.rest.git.createRef({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      ref: `refs/heads/${newBranchName}`,
-      sha: ref.object.sha
-    })
+    // Check if we're in a git repository
+    try {
+      await exec.exec('git', ['rev-parse', '--git-dir'])
+      core.info('Git repository found')
+    } catch (error) {
+      core.setFailed(
+        'Not in a git repository. The zip file should have been extracted and contain a git repository.'
+      )
+      throw new Error('No git repository found')
+    }
+
+    // Checkout the base branch and create the new branch
+    await exec.exec('git', ['checkout', baseBranch])
+    await exec.exec('git', ['checkout', '-b', newBranchName])
     core.info(`Branch ${newBranchName} created successfully`)
-
-    // Checkout the new branch
-    await exec.exec('git', ['checkout', newBranchName])
 
     // Write the patch to a file
     const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`
