@@ -545,7 +545,8 @@ async function createPullRequestWithPatch(
   gitPatch: string,
   baseBranch: string,
   title: string,
-  body: string
+  body: string,
+  latestCompletedDeploymentId: string
 ): Promise<void> {
   const token = process.env.GH_TOKEN
   if (!token) {
@@ -558,9 +559,8 @@ async function createPullRequestWithPatch(
   const context = github.context
 
   try {
-    // Create a new branch name
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const newBranchName = `fix/deployment-failed-${timestamp}`
+    // Create a new branch name using the format: umbcloud/{deploymentId}
+    const newBranchName = `umbcloud/${latestCompletedDeploymentId}`
 
     core.info(`Creating new branch: ${newBranchName}`)
 
@@ -581,23 +581,53 @@ async function createPullRequestWithPatch(
 
     core.info(`Branch ${newBranchName} created successfully`)
 
-    // Apply the git patch
-    // Note: This is a simplified approach. In a real implementation,
-    // you'd need to parse the git patch and apply it file by file
-    core.info('Git patch would be applied here')
-    core.debug(`Git patch content: ${gitPatch}`)
+    // For now, create a simple commit with the patch content as a file
+    // In a full implementation, you'd parse and apply the git patch
+    const patchFileName = `deployment-patch-${latestCompletedDeploymentId}.patch`
 
-    // Create a commit with the changes
-    // For now, we'll create a placeholder commit
+    // Create a blob with the patch content
+    const { data: blob } = await octokit.rest.git.createBlob({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      content: gitPatch,
+      encoding: 'utf-8'
+    })
+
+    // Create a new tree with the patch file
+    const { data: newTree } = await octokit.rest.git.createTree({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      base_tree: ref.object.sha,
+      tree: [
+        {
+          path: patchFileName,
+          mode: '100644',
+          type: 'blob',
+          sha: blob.sha
+        }
+      ]
+    })
+
+    // Create a commit with the new tree
     const commitMessage = `Apply changes from failed deployment\n\n${body}`
 
-    await octokit.rest.git.createCommit({
+    const { data: commit } = await octokit.rest.git.createCommit({
       owner: context.repo.owner,
       repo: context.repo.repo,
       message: commitMessage,
-      tree: ref.object.sha, // This would be the tree SHA after applying the patch
+      tree: newTree.sha,
       parents: [ref.object.sha]
     })
+
+    // Update the branch to point to the new commit
+    await octokit.rest.git.updateRef({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      ref: `heads/${newBranchName}`,
+      sha: commit.sha
+    })
+
+    core.info(`Commit created successfully with patch file: ${patchFileName}`)
 
     // Create the pull request
     const { data: pr } = await octokit.rest.pulls.create({
@@ -744,7 +774,8 @@ The changes in this PR are based on the git patch from the latest successful dep
                 changes.changes,
                 baseBranch,
                 prTitle,
-                prBody
+                prBody,
+                latestCompletedDeploymentId
               )
             } else {
               core.warning('No completed deployments found to create PR from')
