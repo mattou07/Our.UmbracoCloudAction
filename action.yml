@@ -18,7 +18,7 @@ inputs:
   action:
     description:
       'The action to perform (start-deployment, check-status, add-artifact,
-      get-changes, apply-patch)'
+      get-changes, get-latest-changes, apply-patch)'
     required: true
     default: 'start-deployment'
   artifactId:
@@ -28,7 +28,7 @@ inputs:
   targetEnvironmentAlias:
     description:
       'The target environment alias to deploy to (required for start-deployment,
-      get-changes, apply-patch)'
+      get-changes, get-latest-changes, apply-patch)'
     required: false
   commitMessage:
     description: 'Commit message for the deployment'
@@ -63,6 +63,10 @@ inputs:
     description: 'Base URL for Umbraco Cloud API'
     required: false
     default: 'https://api.cloud.umbraco.com'
+  base-branch:
+    description: 'Base branch for pull request creation (defaults to main)'
+    required: false
+    default: 'main'
 
 # Define your outputs here.
 outputs:
@@ -76,6 +80,13 @@ outputs:
     description: 'The deployment status response'
   changes:
     description: 'The changes (diff/patch) returned from get-changes'
+  latest-completed-deployment-id:
+    description: 'The latest completed deployment ID (when deployment fails)'
+  pr-url:
+    description: 'The URL of the created pull request (when deployment fails)'
+  pr-number:
+    description:
+      'The number of the created pull request (when deployment fails)'
 
 runs:
   using: node20

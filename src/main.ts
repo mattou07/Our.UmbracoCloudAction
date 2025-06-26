@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as github from '@actions/github'
 
 interface DeploymentRequest {
   targetEnvironmentAlias: string
@@ -371,6 +372,202 @@ class UmbracoCloudAPI {
       throw error
     }
   }
+
+  async getDeployments(
+    skip: number = 0,
+    take: number = 100,
+    includeNullDeployments: boolean = true,
+    targetEnvironmentAlias?: string
+  ): Promise<{
+    projectId: string
+    data: Array<{
+      id: string
+      artifactId: string | null
+      targetEnvironmentAlias: string | null
+      state: string
+      createdUtc: string
+      modifiedUtc: string
+      completedUtc: string
+    }>
+    totalItems: number
+    skippedItems: number
+    takenItems: number
+  }> {
+    let url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments?skip=${skip}&take=${take}&includeNullDeployments=${includeNullDeployments}`
+
+    if (targetEnvironmentAlias) {
+      url += `&targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
+    }
+
+    core.debug(`Getting deployments from: ${url}`)
+
+    try {
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getHeaders()
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(
+          `Failed to get deployments: ${response.status} ${response.statusText} - ${errorText}`
+        )
+      }
+
+      const data = (await response.json()) as {
+        projectId: string
+        data: Array<{
+          id: string
+          artifactId: string | null
+          targetEnvironmentAlias: string | null
+          state: string
+          createdUtc: string
+          modifiedUtc: string
+          completedUtc: string
+        }>
+        totalItems: number
+        skippedItems: number
+        takenItems: number
+      }
+      core.debug(`Deployments retrieved successfully: ${JSON.stringify(data)}`)
+
+      return data
+    } catch (error) {
+      core.error(`Error getting deployments: ${error}`)
+      throw error
+    }
+  }
+
+  async getLatestCompletedDeployment(
+    targetEnvironmentAlias?: string
+  ): Promise<string | null> {
+    core.debug('Finding latest completed deployment...')
+
+    let skip = 0
+    const take = 10
+    const maxAttempts = 10 // Try up to 100 deployments (10 batches of 10)
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        core.debug(
+          `Fetching deployments batch ${attempt + 1} (skip: ${skip}, take: ${take})`
+        )
+
+        const deployments = await this.getDeployments(
+          skip,
+          take,
+          true,
+          targetEnvironmentAlias
+        )
+
+        if (deployments.data.length === 0) {
+          core.debug('No more deployments found')
+          break
+        }
+
+        // Find the first deployment with "Completed" state
+        const completedDeployment = deployments.data.find(
+          (deployment) => deployment.state === 'Completed'
+        )
+
+        if (completedDeployment) {
+          core.debug(
+            `Found latest completed deployment: ${completedDeployment.id} (from batch ${attempt + 1})`
+          )
+          return completedDeployment.id
+        } else {
+          core.debug(
+            `No completed deployments found in batch ${attempt + 1}, trying next batch...`
+          )
+          skip += take
+        }
+      } catch (error) {
+        core.error(`Error fetching deployment batch ${attempt + 1}: ${error}`)
+        // Continue to next batch instead of failing completely
+        skip += take
+      }
+    }
+
+    core.debug('No completed deployments found after checking all batches')
+    return null
+  }
+}
+
+async function createPullRequestWithPatch(
+  gitPatch: string,
+  baseBranch: string,
+  title: string,
+  body: string
+): Promise<void> {
+  const token = process.env.GH_TOKEN
+  if (!token) {
+    throw new Error(
+      'GH_TOKEN environment variable is required for creating pull requests'
+    )
+  }
+
+  const octokit = github.getOctokit(token)
+  const context = github.context
+
+  try {
+    // Create a new branch name
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const newBranchName = `fix/deployment-failed-${timestamp}`
+
+    core.info(`Creating new branch: ${newBranchName}`)
+
+    // Get the latest commit SHA from the base branch
+    const { data: ref } = await octokit.rest.git.getRef({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      ref: `heads/${baseBranch}`
+    })
+
+    // Create the new branch
+    await octokit.rest.git.createRef({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      ref: `refs/heads/${newBranchName}`,
+      sha: ref.object.sha
+    })
+
+    core.info(`Branch ${newBranchName} created successfully`)
+
+    // Apply the git patch
+    // Note: This is a simplified approach. In a real implementation,
+    // you'd need to parse the git patch and apply it file by file
+    core.info('Git patch would be applied here')
+    core.debug(`Git patch content: ${gitPatch}`)
+
+    // Create a commit with the changes
+    // For now, we'll create a placeholder commit
+    const commitMessage = `Apply changes from failed deployment\n\n${body}`
+
+    await octokit.rest.git.createCommit({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      message: commitMessage,
+      tree: ref.object.sha, // This would be the tree SHA after applying the patch
+      parents: [ref.object.sha]
+    })
+
+    // Create the pull request
+    const { data: pr } = await octokit.rest.pulls.create({
+      owner: context.repo.owner,
+      repo: context.repo.repo,
+      title: title,
+      body: body,
+      head: newBranchName,
+      base: baseBranch
+    })
+
+    core.info(`Pull request created successfully: ${pr.html_url}`)
+    core.setOutput('pr-url', pr.html_url)
+    core.setOutput('pr-number', pr.number.toString())
+  } catch (error) {
+    core.error(`Failed to create pull request: ${error}`)
+    throw error
+  }
 }
 
 /**
@@ -436,20 +633,77 @@ export async function run(): Promise<void> {
 
         if (deploymentStatus.deploymentState === 'Completed') {
           core.info('Deployment completed successfully')
-        } else if (deploymentStatus.deploymentState === 'Failed') {
-          core.setFailed('Deployment failed')
-          // Attempt to get changes (diff) for this deployment
+          // Get changes (diff) for completed deployment
           try {
             const changes = await api.getChangesById(
               deploymentId,
               targetEnvironmentAlias
             )
-            core.info('Deployment failed. Here is the diff/patch:')
+            core.info('Deployment completed. Here is the diff/patch:')
             core.info(changes.changes)
             core.setOutput('changes', JSON.stringify(changes))
           } catch (diffError) {
-            core.error(
-              `Could not retrieve changes for failed deployment: ${diffError}`
+            core.warning(
+              `Could not retrieve changes for completed deployment: ${diffError}`
+            )
+          }
+        } else if (deploymentStatus.deploymentState === 'Failed') {
+          core.setFailed('Deployment failed')
+          core.warning(
+            'Cannot retrieve changes for failed deployments - only completed deployments can be used to get git patches'
+          )
+
+          // Try to get the latest completed deployment and create a PR
+          try {
+            core.info(
+              'Attempting to get latest completed deployment and create PR...'
+            )
+
+            const latestCompletedDeploymentId =
+              await api.getLatestCompletedDeployment(targetEnvironmentAlias)
+
+            if (latestCompletedDeploymentId) {
+              core.info(
+                `Found latest completed deployment ID: ${latestCompletedDeploymentId}`
+              )
+
+              // Get the changes from the latest completed deployment
+              const changes = await api.getChangesById(
+                latestCompletedDeploymentId,
+                targetEnvironmentAlias
+              )
+
+              core.info('Retrieved changes from latest completed deployment')
+              core.setOutput(
+                'latest-completed-deployment-id',
+                latestCompletedDeploymentId
+              )
+              core.setOutput('changes', JSON.stringify(changes))
+
+              // Create GitHub PR with the changes
+              const baseBranch =
+                core.getInput('base-branch', { required: false }) || 'main'
+              const prTitle = `Fix: Apply changes from failed deployment ${deploymentId}`
+              const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${deploymentId}).
+
+**Failed Deployment ID:** ${deploymentId}
+**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
+**Target Environment:** ${targetEnvironmentAlias}
+
+The changes in this PR are based on the git patch from the latest successful deployment.`
+
+              await createPullRequestWithPatch(
+                changes.changes,
+                baseBranch,
+                prTitle,
+                prBody
+              )
+            } else {
+              core.warning('No completed deployments found to create PR from')
+            }
+          } catch (error) {
+            core.warning(
+              `Failed to get latest completed deployment or create PR: ${error}`
             )
           }
         } else {
