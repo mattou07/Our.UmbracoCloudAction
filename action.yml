@@ -26,7 +26,9 @@ inputs:
       'The artifact ID for deployment (required for start-deployment)'
     required: false
   targetEnvironmentAlias:
-    description: 'The target environment alias to deploy to (required for start-deployment, get-changes, apply-patch)'
+    description:
+      'The target environment alias to deploy to (required for start-deployment,
+      get-changes, apply-patch)'
     required: false
   commitMessage:
     description: 'Commit message for the deployment'

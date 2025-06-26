@@ -27404,9 +27404,9 @@ class UmbracoCloudAPI {
             throw error;
         }
     }
-    async getChangesById(changeId) {
-        const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}`;
-        coreExports.debug(`Getting changes for ID: ${changeId}`);
+    async getChangesById(deploymentId, targetEnvironmentAlias) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
+        coreExports.debug(`Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`);
         try {
             const response = await fetch(url, {
                 method: 'GET',
@@ -27416,9 +27416,11 @@ class UmbracoCloudAPI {
                 const errorText = await response.text();
                 throw new Error(`Failed to get changes: ${response.status} ${response.statusText} - ${errorText}`);
             }
-            const data = (await response.json());
-            coreExports.debug(`Changes retrieved successfully: ${JSON.stringify(data)}`);
-            return data;
+            // The response is a diff/patch file, not JSON
+            const diffText = await response.text();
+            coreExports.debug(`Changes (diff) retrieved successfully, length: ${diffText.length}`);
+            // Return as a string, or wrap in an object for compatibility
+            return { changes: diffText };
         }
         catch (error) {
             coreExports.error(`Error getting changes: ${error}`);
@@ -27494,49 +27496,28 @@ async function run() {
                 }
                 else if (deploymentStatus.deploymentState === 'Failed') {
                     coreExports.setFailed('Deployment failed');
+                    // Attempt to get changes (diff) for this deployment
+                    const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', { required: true });
+                    try {
+                        const changes = await api.getChangesById(deploymentId, targetEnvironmentAlias);
+                        coreExports.info('Deployment failed. Here is the diff/patch:');
+                        coreExports.info(changes.changes);
+                        coreExports.setOutput('changes', JSON.stringify(changes));
+                    }
+                    catch (diffError) {
+                        coreExports.error(`Could not retrieve changes for failed deployment: ${diffError}`);
+                    }
                 }
                 else {
                     coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
                 }
                 break;
             }
-            case 'add-artifact': {
-                const filePath = coreExports.getInput('filePath', { required: true });
-                const description = coreExports.getInput('description');
-                const version = coreExports.getInput('version');
-                const artifactId = await api.addDeploymentArtifact(filePath, description, version);
-                coreExports.setOutput('artifactId', artifactId);
-                coreExports.info(`Artifact uploaded successfully with ID: ${artifactId}`);
-                break;
-            }
-            case 'get-changes': {
-                const changeId = coreExports.getInput('changeId', { required: true });
-                const changes = await api.getChangesById(changeId);
-                coreExports.setOutput('changes', JSON.stringify(changes));
-                coreExports.info(`Changes retrieved successfully for ID: ${changeId}`);
-                break;
-            }
-            case 'apply-patch': {
-                const changeId = coreExports.getInput('changeId', { required: true });
-                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
-                    required: true
-                });
-                await api.applyPatch(changeId, targetEnvironmentAlias);
-                coreExports.info(`Patch applied successfully for change ID: ${changeId}`);
-                break;
-            }
-            default:
-                coreExports.setFailed(`Unknown action: ${action}. Supported actions: start-deployment, check-status, add-artifact, get-changes, apply-patch`);
         }
     }
     catch (error) {
-        // Fail the workflow run if an error occurs
-        if (error instanceof Error) {
-            coreExports.setFailed(error.message);
-        }
-        else {
-            coreExports.setFailed('An unknown error occurred');
-        }
+        coreExports.error(`Error running the action: ${error}`);
+        throw error;
     }
 }
 

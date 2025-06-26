@@ -258,10 +258,15 @@ class UmbracoCloudAPI {
     }
   }
 
-  async getChangesById(deploymentId: string, targetEnvironmentAlias: string): Promise<ChangesResponse> {
+  async getChangesById(
+    deploymentId: string,
+    targetEnvironmentAlias: string
+  ): Promise<ChangesResponse> {
     const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
 
-    core.debug(`Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`)
+    core.debug(
+      `Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`
+    )
 
     try {
       const response = await fetch(url, {
@@ -278,7 +283,9 @@ class UmbracoCloudAPI {
 
       // The response is a diff/patch file, not JSON
       const diffText = await response.text()
-      core.debug(`Changes (diff) retrieved successfully, length: ${diffText.length}`)
+      core.debug(
+        `Changes (diff) retrieved successfully, length: ${diffText.length}`
+      )
 
       // Return as a string, or wrap in an object for compatibility
       return { changes: diffText }
@@ -383,6 +390,24 @@ export async function run(): Promise<void> {
           core.info('Deployment completed successfully')
         } else if (deploymentStatus.deploymentState === 'Failed') {
           core.setFailed('Deployment failed')
+          // Attempt to get changes (diff) for this deployment
+          const targetEnvironmentAlias = core.getInput(
+            'targetEnvironmentAlias',
+            { required: true }
+          )
+          try {
+            const changes = await api.getChangesById(
+              deploymentId,
+              targetEnvironmentAlias
+            )
+            core.info('Deployment failed. Here is the diff/patch:')
+            core.info(changes.changes)
+            core.setOutput('changes', JSON.stringify(changes))
+          } catch (diffError) {
+            core.error(
+              `Could not retrieve changes for failed deployment: ${diffError}`
+            )
+          }
         } else {
           core.setFailed(
             `Unexpected deployment status: ${deploymentStatus.deploymentState}`
@@ -390,59 +415,9 @@ export async function run(): Promise<void> {
         }
         break
       }
-
-      case 'add-artifact': {
-        const filePath = core.getInput('filePath', { required: true })
-        const description = core.getInput('description')
-        const version = core.getInput('version')
-
-        const artifactId = await api.addDeploymentArtifact(
-          filePath,
-          description,
-          version
-        )
-
-        core.setOutput('artifactId', artifactId)
-        core.info(`Artifact uploaded successfully with ID: ${artifactId}`)
-        break
-      }
-
-      case 'get-changes': {
-        const deploymentId = core.getInput('deploymentId', { required: true })
-        const targetEnvironmentAlias = core.getInput('targetEnvironmentAlias', {
-          required: true
-        })
-
-        const changes = await api.getChangesById(deploymentId, targetEnvironmentAlias)
-
-        core.setOutput('changes', JSON.stringify(changes))
-        core.info(`Changes retrieved successfully for deployment ID: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`)
-        break
-      }
-
-      case 'apply-patch': {
-        const changeId = core.getInput('changeId', { required: true })
-        const targetEnvironmentAlias = core.getInput('targetEnvironmentAlias', {
-          required: true
-        })
-
-        await api.applyPatch(changeId, targetEnvironmentAlias)
-
-        core.info(`Patch applied successfully for change ID: ${changeId}`)
-        break
-      }
-
-      default:
-        core.setFailed(
-          `Unknown action: ${action}. Supported actions: start-deployment, check-status, add-artifact, get-changes, apply-patch`
-        )
     }
   } catch (error) {
-    // Fail the workflow run if an error occurs
-    if (error instanceof Error) {
-      core.setFailed(error.message)
-    } else {
-      core.setFailed('An unknown error occurred')
-    }
+    core.error(`Error running the action: ${error}`)
+    throw error
   }
 }
