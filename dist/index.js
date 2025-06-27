@@ -31647,6 +31647,9 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             '-m',
             `Apply changes from failed deployment\n\n${body}`
         ]);
+        // Configure remote with token for authentication
+        const remoteUrl = `https://x-access-token:${token}@github.com/${context.repo.owner}/${context.repo.repo}.git`;
+        await execExports.exec('git', ['remote', 'set-url', 'origin', remoteUrl]);
         await execExports.exec('git', ['push', 'origin', newBranchName]);
         // Create the pull request
         const { data: pr } = await octokit.rest.pulls.create({

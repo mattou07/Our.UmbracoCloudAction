@@ -673,6 +673,11 @@ async function createPullRequestWithPatch(
       '-m',
       `Apply changes from failed deployment\n\n${body}`
     ])
+
+    // Configure remote with token for authentication
+    const remoteUrl = `https://x-access-token:${token}@github.com/${context.repo.owner}/${context.repo.repo}.git`
+    await exec.exec('git', ['remote', 'set-url', 'origin', remoteUrl])
+
     await exec.exec('git', ['push', 'origin', newBranchName])
 
     // Create the pull request
