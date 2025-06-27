@@ -1,5 +1,4 @@
 import * as core from '@actions/core'
-import * as github from '@actions/github'
 import * as exec from '@actions/exec'
 import * as fs from 'fs'
 import * as path from 'path'
@@ -569,17 +568,6 @@ async function createPullRequestWithPatch(
   body: string,
   latestCompletedDeploymentId: string
 ): Promise<void> {
-  const context = github.context
-  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
-
-  if (!token) {
-    throw new Error(
-      'GitHub token not found. If using a custom token, please ensure GH_TOKEN environment variable is set.'
-    )
-  }
-
-  const octokit = github.getOctokit(token)
-
   try {
     // Create a new branch name using the format: umbcloud/{deploymentId}
     const newBranchName = `umbcloud/${latestCompletedDeploymentId}`
@@ -661,7 +649,7 @@ async function createPullRequestWithPatch(
       throw err
     }
 
-    // Commit and push the changes
+    // Commit the changes
     await exec.exec('git', ['add', patchFileName])
     await exec.exec('git', ['config', 'user.name', 'github-actions'])
     await exec.exec('git', [
@@ -675,40 +663,40 @@ async function createPullRequestWithPatch(
       `Apply changes from failed deployment\n\n${body}`
     ])
 
-    // Configure remote with token for authentication
-    const remoteUrl = `https://x-access-token:${token}@github.com/${context.repo.owner}/${context.repo.repo}.git`
-    core.debug(
-      `Setting remote URL: https://x-access-token:***@github.com/${context.repo.owner}/${context.repo.repo}.git`
-    )
-    await exec.exec('git', ['remote', 'set-url', 'origin', remoteUrl])
+    // Push the branch
+    await exec.exec('git', ['push', 'origin', newBranchName])
 
-    // Try to push with better error handling
+    // Create pull request using GitHub CLI
+    const prTitle = title
+    const prBody = body
+
+    // Create a temporary file for the PR body
+    const bodyFilePath = path.join(process.cwd(), 'pr-body.txt')
+    fs.writeFileSync(bodyFilePath, prBody, 'utf8')
+
     try {
-      await exec.exec('git', ['push', 'origin', newBranchName])
-    } catch (pushError) {
-      core.error(`Git push failed: ${pushError}`)
-      core.error(
-        'This might be due to insufficient token permissions or invalid token'
-      )
-      core.error(
-        'Please ensure the workflow has the necessary permissions. See: https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs'
-      )
-      throw pushError
+      await exec.exec('gh', [
+        'pr',
+        'create',
+        '--title',
+        prTitle,
+        '--body-file',
+        bodyFilePath,
+        '--head',
+        newBranchName,
+        '--base',
+        currentBranch
+      ])
+
+      core.info('Pull request created successfully using GitHub CLI')
+
+      // Clean up the temporary file
+      fs.unlinkSync(bodyFilePath)
+    } catch (prError) {
+      core.error(`Failed to create pull request: ${prError}`)
+      core.error('Please ensure GitHub CLI is available and authenticated')
+      throw prError
     }
-
-    // Create the pull request
-    const { data: pr } = await octokit.rest.pulls.create({
-      owner: context.repo.owner,
-      repo: context.repo.repo,
-      title: title,
-      body: body,
-      head: newBranchName,
-      base: currentBranch
-    })
-
-    core.info(`Pull request created successfully: ${pr.html_url}`)
-    core.setOutput('pr-url', pr.html_url)
-    core.setOutput('pr-number', pr.number.toString())
   } catch (error) {
     core.error(`Failed to create pull request: ${error}`)
     throw error
