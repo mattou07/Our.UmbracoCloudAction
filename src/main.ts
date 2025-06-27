@@ -2,6 +2,7 @@ import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import * as fs from 'fs'
 import * as path from 'path'
+import * as github from '@actions/github'
 
 interface DeploymentRequest {
   targetEnvironmentAlias: string
@@ -662,6 +663,17 @@ async function createPullRequestWithPatch(
       '-m',
       `Apply changes from failed deployment\n\n${body}`
     ])
+
+    // Configure remote with token for authentication
+    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+    if (!token) {
+      throw new Error(
+        'GitHub token not found. If using a custom token, please ensure GH_TOKEN environment variable is set.'
+      )
+    }
+
+    const remoteUrl = `https://x-access-token:${token}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+    await exec.exec('git', ['remote', 'set-url', 'origin', remoteUrl])
 
     // Push the branch
     await exec.exec('git', ['push', 'origin', newBranchName])
