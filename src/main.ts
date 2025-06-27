@@ -603,7 +603,29 @@ async function createPullRequestWithPatch(
     }
 
     // Checkout the base branch and create the new branch
-    await exec.exec('git', ['checkout', baseBranch])
+    // Get the current branch (the branch that was deployed)
+    let currentBranch: string
+    try {
+      // Try to get the current branch
+      let branchOutput = ''
+      await exec.exec('git', ['branch', '--show-current'], {
+        listeners: {
+          stdout: (data: Buffer) => {
+            branchOutput += data.toString()
+          }
+        }
+      })
+      currentBranch = branchOutput.trim()
+    } catch (error) {
+      core.setFailed(
+        'Could not determine current branch. This action requires a valid git repository with a current branch.'
+      )
+      throw new Error('No current branch found')
+    }
+
+    core.info(`Using current branch as base: ${currentBranch}`)
+
+    // Create the new branch from the current branch
     await exec.exec('git', ['checkout', '-b', newBranchName])
     core.info(`Branch ${newBranchName} created successfully`)
 
@@ -660,7 +682,7 @@ async function createPullRequestWithPatch(
       title: title,
       body: body,
       head: newBranchName,
-      base: baseBranch
+      base: currentBranch
     })
 
     core.info(`Pull request created successfully: ${pr.html_url}`)

@@ -31579,7 +31579,26 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             throw new Error('No git repository found');
         }
         // Checkout the base branch and create the new branch
-        await execExports.exec('git', ['checkout', baseBranch]);
+        // Get the current branch (the branch that was deployed)
+        let currentBranch;
+        try {
+            // Try to get the current branch
+            let branchOutput = '';
+            await execExports.exec('git', ['branch', '--show-current'], {
+                listeners: {
+                    stdout: (data) => {
+                        branchOutput += data.toString();
+                    }
+                }
+            });
+            currentBranch = branchOutput.trim();
+        }
+        catch (error) {
+            coreExports.setFailed('Could not determine current branch. This action requires a valid git repository with a current branch.');
+            throw new Error('No current branch found');
+        }
+        coreExports.info(`Using current branch as base: ${currentBranch}`);
+        // Create the new branch from the current branch
         await execExports.exec('git', ['checkout', '-b', newBranchName]);
         coreExports.info(`Branch ${newBranchName} created successfully`);
         // Write the patch to a file
@@ -31636,7 +31655,7 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             title: title,
             body: body,
             head: newBranchName,
-            base: baseBranch
+            base: currentBranch
         });
         coreExports.info(`Pull request created successfully: ${pr.html_url}`);
         coreExports.setOutput('pr-url', pr.html_url);
