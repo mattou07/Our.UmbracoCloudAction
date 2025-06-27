@@ -569,15 +569,16 @@ async function createPullRequestWithPatch(
   body: string,
   latestCompletedDeploymentId: string
 ): Promise<void> {
-  const token = process.env.GH_TOKEN
+  const context = github.context
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+
   if (!token) {
     throw new Error(
-      'GH_TOKEN environment variable is required for creating pull requests'
+      'GitHub token not found. If using a custom token, please ensure GH_TOKEN environment variable is set.'
     )
   }
 
   const octokit = github.getOctokit(token)
-  const context = github.context
 
   try {
     // Create a new branch name using the format: umbcloud/{deploymentId}
@@ -676,9 +677,24 @@ async function createPullRequestWithPatch(
 
     // Configure remote with token for authentication
     const remoteUrl = `https://x-access-token:${token}@github.com/${context.repo.owner}/${context.repo.repo}.git`
+    core.debug(
+      `Setting remote URL: https://x-access-token:***@github.com/${context.repo.owner}/${context.repo.repo}.git`
+    )
     await exec.exec('git', ['remote', 'set-url', 'origin', remoteUrl])
 
-    await exec.exec('git', ['push', 'origin', newBranchName])
+    // Try to push with better error handling
+    try {
+      await exec.exec('git', ['push', 'origin', newBranchName])
+    } catch (pushError) {
+      core.error(`Git push failed: ${pushError}`)
+      core.error(
+        'This might be due to insufficient token permissions or invalid token'
+      )
+      core.error(
+        'Please ensure the workflow has the necessary permissions. See: https://docs.github.com/en/actions/using-jobs/assigning-permissions-to-jobs'
+      )
+      throw pushError
+    }
 
     // Create the pull request
     const { data: pr } = await octokit.rest.pulls.create({
