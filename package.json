@@ -42,7 +42,9 @@
   "dependencies": {
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.0",
-    "@octokit/rest": "^20.0.0"
+    "@octokit/rest": "^20.0.0",
+    "xml2js": "^0.4.23",
+    "glob": "^10.3.10"
   },
   "devDependencies": {
     "@eslint/compat": "^1.2.9",

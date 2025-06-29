@@ -2,12 +2,12 @@ import require$$0 from 'os';
 import require$$0$1 from 'crypto';
 import * as fs from 'fs';
 import fs__default from 'fs';
-import * as require$$1 from 'path';
-import require$$1__default from 'path';
+import * as path from 'path';
+import path__default from 'path';
 import require$$2$1 from 'http';
 import require$$3$1 from 'https';
 import require$$0$4 from 'net';
-import require$$1$1 from 'tls';
+import require$$1 from 'tls';
 import require$$4$1 from 'events';
 import require$$0$3 from 'assert';
 import require$$0$2 from 'util';
@@ -16,14 +16,14 @@ import require$$7 from 'buffer';
 import require$$8 from 'querystring';
 import require$$14 from 'stream/web';
 import require$$0$7 from 'node:stream';
-import require$$1$2 from 'node:util';
+import require$$1$1 from 'node:util';
 import require$$0$6 from 'node:events';
 import require$$0$8 from 'worker_threads';
 import require$$2$2 from 'perf_hooks';
 import require$$5 from 'util/types';
 import require$$4$2 from 'async_hooks';
-import require$$1$3 from 'console';
-import require$$1$4 from 'url';
+import require$$1$2 from 'console';
+import require$$1$3 from 'url';
 import require$$3$2 from 'zlib';
 import require$$6 from 'string_decoder';
 import require$$0$9 from 'diagnostics_channel';
@@ -403,7 +403,7 @@ var hasRequiredTunnel$1;
 function requireTunnel$1 () {
 	if (hasRequiredTunnel$1) return tunnel$1;
 	hasRequiredTunnel$1 = 1;
-	var tls = require$$1$1;
+	var tls = require$$1;
 	var http = require$$2$1;
 	var https = require$$3$1;
 	var events = require$$4$1;
@@ -1785,7 +1785,7 @@ function requireSbmh () {
 	 * by Hongli Lai at: https://github.com/FooBarWidget/boyer-moore-horspool
 	 */
 	const EventEmitter = require$$0$6.EventEmitter;
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$1.inherits;
 
 	function SBMH (needle) {
 	  if (typeof needle === 'string') {
@@ -1994,7 +1994,7 @@ function requirePartStream () {
 	if (hasRequiredPartStream) return PartStream_1;
 	hasRequiredPartStream = 1;
 
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$1.inherits;
 	const ReadableStream = require$$0$7.Readable;
 
 	function PartStream (opts) {
@@ -2040,7 +2040,7 @@ function requireHeaderParser () {
 	hasRequiredHeaderParser = 1;
 
 	const EventEmitter = require$$0$6.EventEmitter;
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$1.inherits;
 	const getLimit = requireGetLimit();
 
 	const StreamSearch = requireSbmh();
@@ -2148,7 +2148,7 @@ function requireDicer () {
 	hasRequiredDicer = 1;
 
 	const WritableStream = require$$0$7.Writable;
-	const inherits = require$$1$2.inherits;
+	const inherits = require$$1$1.inherits;
 
 	const StreamSearch = requireSbmh();
 
@@ -2725,7 +2725,7 @@ function requireMultipart () {
 	//     -- this will require modifications to utils.parseParams
 
 	const { Readable } = require$$0$7;
-	const { inherits } = require$$1$2;
+	const { inherits } = require$$1$1;
 
 	const Dicer = requireDicer();
 
@@ -3291,7 +3291,7 @@ function requireMain () {
 	hasRequiredMain = 1;
 
 	const WritableStream = require$$0$7.Writable;
-	const { inherits } = require$$1$2;
+	const { inherits } = require$$1$1;
 	const Dicer = requireDicer();
 
 	const MultipartParser = requireMultipart();
@@ -8115,7 +8115,7 @@ function requireConnect () {
 	    let socket;
 	    if (protocol === 'https:') {
 	      if (!tls) {
-	        tls = require$$1$1;
+	        tls = require$$1;
 	      }
 	      servername = servername || options.servername || util.getServerName(host) || null;
 
@@ -14139,7 +14139,7 @@ function requirePendingInterceptorsFormatter () {
 	hasRequiredPendingInterceptorsFormatter = 1;
 
 	const { Transform } = require$$0$5;
-	const { Console } = require$$1$3;
+	const { Console } = require$$1$2;
 
 	/**
 	 * Gets the output of `console.table(…)` as a string.
@@ -14366,7 +14366,7 @@ function requireProxyAgent () {
 	hasRequiredProxyAgent = 1;
 
 	const { kProxy, kClose, kDestroy, kInterceptors } = requireSymbols$4();
-	const { URL } = require$$1$4;
+	const { URL } = require$$1$3;
 	const Agent = requireAgent();
 	const Pool = requirePool();
 	const DispatcherBase = requireDispatcherBase();
@@ -25537,7 +25537,7 @@ function requirePathUtils () {
 	};
 	Object.defineProperty(pathUtils, "__esModule", { value: true });
 	pathUtils.toPlatformPath = pathUtils.toWin32Path = pathUtils.toPosixPath = void 0;
-	const path = __importStar(require$$1__default);
+	const path = __importStar(path__default);
 	/**
 	 * toPosixPath converts the given path to the posix form. On Windows, \\ will be
 	 * replaced with /.
@@ -25624,7 +25624,7 @@ function requireIoUtil () {
 		Object.defineProperty(exports, "__esModule", { value: true });
 		exports.getCmdPath = exports.tryGetExecutablePath = exports.isRooted = exports.isDirectory = exports.exists = exports.READONLY = exports.UV_FS_O_EXLOCK = exports.IS_WINDOWS = exports.unlink = exports.symlink = exports.stat = exports.rmdir = exports.rm = exports.rename = exports.readlink = exports.readdir = exports.open = exports.mkdir = exports.lstat = exports.copyFile = exports.chmod = void 0;
 		const fs = __importStar(fs__default);
-		const path = __importStar(require$$1__default);
+		const path = __importStar(path__default);
 		_a = fs.promises
 		// export const {open} = 'fs'
 		, exports.chmod = _a.chmod, exports.copyFile = _a.copyFile, exports.lstat = _a.lstat, exports.mkdir = _a.mkdir, exports.open = _a.open, exports.readdir = _a.readdir, exports.readlink = _a.readlink, exports.rename = _a.rename, exports.rm = _a.rm, exports.rmdir = _a.rmdir, exports.stat = _a.stat, exports.symlink = _a.symlink, exports.unlink = _a.unlink;
@@ -25814,7 +25814,7 @@ function requireIo () {
 	Object.defineProperty(io, "__esModule", { value: true });
 	io.findInPath = io.which = io.mkdirP = io.rmRF = io.mv = io.cp = void 0;
 	const assert_1 = require$$0$3;
-	const path = __importStar(require$$1__default);
+	const path = __importStar(path__default);
 	const ioUtil = __importStar(requireIoUtil());
 	/**
 	 * Copies a file or folder.
@@ -26122,7 +26122,7 @@ function requireToolrunner () {
 	const os = __importStar(require$$0);
 	const events = __importStar(require$$4$1);
 	const child = __importStar(require$$2$3);
-	const path = __importStar(require$$1__default);
+	const path = __importStar(path__default);
 	const io = __importStar(requireIo());
 	const ioUtil = __importStar(requireIoUtil());
 	const timers_1 = require$$6$1;
@@ -26966,7 +26966,7 @@ function requireCore () {
 		const file_command_1 = requireFileCommand();
 		const utils_1 = requireUtils$3();
 		const os = __importStar(require$$0);
-		const path = __importStar(require$$1__default);
+		const path = __importStar(path__default);
 		const oidc_utils_1 = requireOidcUtils();
 		/**
 		 * The code to exit an action
@@ -34771,7 +34771,7 @@ class UmbracoCloudAPI {
             try {
                 const formData = new FormData();
                 const fileBuffer = fs.readFileSync(filePath);
-                const fileName = require$$1.basename(filePath);
+                const fileName = path.basename(filePath);
                 formData.append('file', new Blob([fileBuffer]), fileName);
                 if (description) {
                     formData.append('description', description);
@@ -34960,6 +34960,97 @@ class UmbracoCloudAPI {
         }
         return [];
     }
+    /**
+     * Adds or updates a NuGet package source in the NuGet.config file in the repo.
+     * If NuGet.config does not exist, it will be created.
+     */
+    async addOrUpdateNuGetConfigSource(config) {
+        const xml2js = require('xml2js');
+        const glob = require('glob');
+        const util = require('util');
+        const globAsync = util.promisify(glob);
+        const cwd = process.cwd();
+        let nugetConfigPath;
+        // Find NuGet.config (root or subfolders)
+        const files = await globAsync('**/NuGet.config', { cwd, nodir: true });
+        if (files.length > 0) {
+            nugetConfigPath = path.join(cwd, files[0]);
+        }
+        else {
+            // Default to root if not found
+            nugetConfigPath = path.join(cwd, 'NuGet.config');
+        }
+        let nugetConfigXml = null;
+        let isNew = false;
+        if (fs.existsSync(nugetConfigPath)) {
+            const xml = fs.readFileSync(nugetConfigPath, 'utf8');
+            nugetConfigXml = await xml2js.parseStringPromise(xml);
+        }
+        else {
+            // Create a new NuGet.config structure according to the official docs
+            // https://learn.microsoft.com/en-us/nuget/reference/nuget-config-file
+            nugetConfigXml = {
+                configuration: {
+                    packageSources: [{ add: [] }],
+                    packageSourceCredentials: [{}]
+                }
+            };
+            isNew = true;
+        }
+        // Ensure packageSources exists
+        if (!nugetConfigXml.configuration.packageSources) {
+            nugetConfigXml.configuration.packageSources = [{ add: [] }];
+        }
+        if (!Array.isArray(nugetConfigXml.configuration.packageSources)) {
+            nugetConfigXml.configuration.packageSources = [
+                nugetConfigXml.configuration.packageSources
+            ];
+        }
+        const sources = nugetConfigXml.configuration.packageSources[0].add;
+        // Add or update the source
+        const existingSource = sources.find((s) => s.$.key === config.name);
+        if (existingSource) {
+            existingSource.$.value = config.source;
+        }
+        else {
+            sources.push({ $: { key: config.name, value: config.source } });
+        }
+        // Handle credentials
+        if (config.username && config.password) {
+            if (!nugetConfigXml.configuration.packageSourceCredentials) {
+                nugetConfigXml.configuration.packageSourceCredentials = [{}];
+            }
+            if (!Array.isArray(nugetConfigXml.configuration.packageSourceCredentials)) {
+                nugetConfigXml.configuration.packageSourceCredentials = [
+                    nugetConfigXml.configuration.packageSourceCredentials
+                ];
+            }
+            const creds = nugetConfigXml.configuration.packageSourceCredentials[0];
+            creds[config.name] = [
+                {
+                    add: [
+                        { $: { key: 'Username', value: config.username } },
+                        { $: { key: 'ClearTextPassword', value: config.password } }
+                    ]
+                }
+            ];
+        }
+        // Write back the NuGet.config with XML declaration
+        const builder = new xml2js.Builder({
+            headless: false,
+            xmldec: { version: '1.0', encoding: 'utf-8' },
+            renderOpts: { pretty: true }
+        });
+        const newXml = builder.buildObject(nugetConfigXml);
+        fs.writeFileSync(nugetConfigPath, newXml, 'utf8');
+        return {
+            success: true,
+            message: isNew
+                ? `Created new NuGet.config and added source '${config.name}'.`
+                : `Updated NuGet.config and added/updated source '${config.name}'.`,
+            nugetConfigPath
+        };
+    }
 }
 async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, latestCompletedDeploymentId) {
     try {
@@ -35018,7 +35109,7 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         }
         // Create a temporary patch file and apply it using git
         const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
-        const patchFilePath = require$$1.join(process.cwd(), patchFileName);
+        const patchFilePath = path.join(process.cwd(), patchFileName);
         try {
             // Reset and clean the working directory before applying the patch
             coreExports.info('Resetting working directory to clean state before applying patch...');
@@ -35117,12 +35208,22 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         });
         if (!modifiedFiles) {
             coreExports.warning('No files were modified by the patch');
+            coreExports.warning('This might indicate that the changes are already applied or there are no differences.');
+            coreExports.warning('Skipping commit and PR creation to avoid empty commits.');
             return;
         }
         const fileList = modifiedFiles.split('\n').filter((file) => file.trim());
         coreExports.info(`Modified files: ${fileList.join(', ')}`);
+        // Double-check that we actually have files to commit
+        if (fileList.length === 0) {
+            coreExports.warning('No files were modified by the patch');
+            coreExports.warning('This might indicate that the changes are already applied or there are no differences.');
+            coreExports.warning('Skipping commit and PR creation to avoid empty commits.');
+            return;
+        }
         // Create blobs for the modified files
         const treeEntries = [];
+        let hasActualChanges = false;
         for (const filePath of fileList) {
             const fileContent = fs.readFileSync(filePath, 'utf8');
             const { data: blob } = await octokit.git.createBlob({
@@ -35131,12 +35232,36 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
                 content: fileContent,
                 encoding: 'utf-8'
             });
+            // Check if this file actually has changes by comparing with base tree
+            try {
+                const { data: baseTree } = await octokit.git.getTree({
+                    owner,
+                    repo,
+                    tree_sha: baseSha,
+                    recursive: 'true'
+                });
+                const baseFile = baseTree.tree.find((item) => item.path === filePath);
+                if (!baseFile || baseFile.sha !== blob.sha) {
+                    hasActualChanges = true;
+                }
+            }
+            catch (error) {
+                // If we can't compare, assume there are changes
+                hasActualChanges = true;
+            }
             treeEntries.push({
                 path: filePath,
                 mode: '100644',
                 type: 'blob',
                 sha: blob.sha
             });
+        }
+        // Check if we have any actual changes
+        if (!hasActualChanges) {
+            coreExports.warning('No actual changes detected in the modified files');
+            coreExports.warning('This might indicate that the changes are already applied or there are no differences.');
+            coreExports.warning('Skipping commit and PR creation to avoid empty commits.');
+            return;
         }
         // Create a new tree with the modified files
         const { data: tree } = await octokit.git.createTree({
@@ -35353,6 +35478,23 @@ The changes in this PR are based on the git patch from the latest successful dep
                 });
                 await api.applyPatch(changeId, targetEnvironmentAlias);
                 coreExports.info(`Patch applied successfully for change ID: ${changeId}`);
+                break;
+            }
+            case 'add-nuget-source': {
+                const sourceName = coreExports.getInput('nuget-source-name', {
+                    required: true
+                });
+                const sourceUrl = coreExports.getInput('nuget-source-url', { required: true });
+                const username = coreExports.getInput('nuget-source-username');
+                const password = coreExports.getInput('nuget-source-password');
+                const result = await api.addOrUpdateNuGetConfigSource({
+                    name: sourceName,
+                    source: sourceUrl,
+                    username,
+                    password
+                });
+                coreExports.setOutput('nuget-source-status', JSON.stringify(result));
+                coreExports.info(`NuGet package source added successfully: ${result.message}`);
                 break;
             }
         }

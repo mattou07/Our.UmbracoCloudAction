@@ -31,6 +31,19 @@ interface ChangesResponse {
   changes: string // diff/patch text
 }
 
+interface NuGetSourceConfig {
+  name: string
+  source: string
+  username?: string
+  password?: string
+}
+
+interface NuGetConfigModificationResult {
+  success: boolean
+  message: string
+  nugetConfigPath?: string
+}
+
 class UmbracoCloudAPI {
   private baseUrl: string
   private projectId: string
@@ -636,6 +649,106 @@ class UmbracoCloudAPI {
 
     return []
   }
+
+  /**
+   * Adds or updates a NuGet package source in the NuGet.config file in the repo.
+   * If NuGet.config does not exist, it will be created.
+   */
+  async addOrUpdateNuGetConfigSource(
+    config: NuGetSourceConfig
+  ): Promise<NuGetConfigModificationResult> {
+    const xml2js = require('xml2js')
+    const glob = require('glob')
+    const util = require('util')
+    const globAsync = util.promisify(glob)
+    const cwd = process.cwd()
+    let nugetConfigPath: string | undefined
+
+    // Find NuGet.config (root or subfolders)
+    const files = await globAsync('**/NuGet.config', { cwd, nodir: true })
+    if (files.length > 0) {
+      nugetConfigPath = path.join(cwd, files[0])
+    } else {
+      // Default to root if not found
+      nugetConfigPath = path.join(cwd, 'NuGet.config')
+    }
+
+    let nugetConfigXml: any = null
+    let isNew = false
+    if (fs.existsSync(nugetConfigPath)) {
+      const xml = fs.readFileSync(nugetConfigPath, 'utf8')
+      nugetConfigXml = await xml2js.parseStringPromise(xml)
+    } else {
+      // Create a new NuGet.config structure according to the official docs
+      // https://learn.microsoft.com/en-us/nuget/reference/nuget-config-file
+      nugetConfigXml = {
+        configuration: {
+          packageSources: [{ add: [] }],
+          packageSourceCredentials: [{}]
+        }
+      }
+      isNew = true
+    }
+
+    // Ensure packageSources exists
+    if (!nugetConfigXml.configuration.packageSources) {
+      nugetConfigXml.configuration.packageSources = [{ add: [] }]
+    }
+    if (!Array.isArray(nugetConfigXml.configuration.packageSources)) {
+      nugetConfigXml.configuration.packageSources = [
+        nugetConfigXml.configuration.packageSources
+      ]
+    }
+    const sources = nugetConfigXml.configuration.packageSources[0].add
+
+    // Add or update the source
+    const existingSource = sources.find((s: any) => s.$.key === config.name)
+    if (existingSource) {
+      existingSource.$.value = config.source
+    } else {
+      sources.push({ $: { key: config.name, value: config.source } })
+    }
+
+    // Handle credentials
+    if (config.username && config.password) {
+      if (!nugetConfigXml.configuration.packageSourceCredentials) {
+        nugetConfigXml.configuration.packageSourceCredentials = [{}]
+      }
+      if (
+        !Array.isArray(nugetConfigXml.configuration.packageSourceCredentials)
+      ) {
+        nugetConfigXml.configuration.packageSourceCredentials = [
+          nugetConfigXml.configuration.packageSourceCredentials
+        ]
+      }
+      const creds = nugetConfigXml.configuration.packageSourceCredentials[0]
+      creds[config.name] = [
+        {
+          add: [
+            { $: { key: 'Username', value: config.username } },
+            { $: { key: 'ClearTextPassword', value: config.password } }
+          ]
+        }
+      ]
+    }
+
+    // Write back the NuGet.config with XML declaration
+    const builder = new xml2js.Builder({
+      headless: false,
+      xmldec: { version: '1.0', encoding: 'utf-8' },
+      renderOpts: { pretty: true }
+    })
+    const newXml = builder.buildObject(nugetConfigXml)
+    fs.writeFileSync(nugetConfigPath, newXml, 'utf8')
+
+    return {
+      success: true,
+      message: isNew
+        ? `Created new NuGet.config and added source '${config.name}'.`
+        : `Updated NuGet.config and added/updated source '${config.name}'.`,
+      nugetConfigPath
+    }
+  }
 }
 
 async function createPullRequestWithPatch(
@@ -841,14 +954,30 @@ async function createPullRequestWithPatch(
 
     if (!modifiedFiles) {
       core.warning('No files were modified by the patch')
+      core.warning(
+        'This might indicate that the changes are already applied or there are no differences.'
+      )
+      core.warning('Skipping commit and PR creation to avoid empty commits.')
       return
     }
 
     const fileList = modifiedFiles.split('\n').filter((file) => file.trim())
     core.info(`Modified files: ${fileList.join(', ')}`)
 
+    // Double-check that we actually have files to commit
+    if (fileList.length === 0) {
+      core.warning('No files were modified by the patch')
+      core.warning(
+        'This might indicate that the changes are already applied or there are no differences.'
+      )
+      core.warning('Skipping commit and PR creation to avoid empty commits.')
+      return
+    }
+
     // Create blobs for the modified files
     const treeEntries = []
+    let hasActualChanges = false
+
     for (const filePath of fileList) {
       const fileContent = fs.readFileSync(filePath, 'utf8')
       const { data: blob } = await octokit.git.createBlob({
@@ -858,12 +987,40 @@ async function createPullRequestWithPatch(
         encoding: 'utf-8'
       })
 
+      // Check if this file actually has changes by comparing with base tree
+      try {
+        const { data: baseTree } = await octokit.git.getTree({
+          owner,
+          repo,
+          tree_sha: baseSha,
+          recursive: 'true'
+        })
+
+        const baseFile = baseTree.tree.find((item) => item.path === filePath)
+        if (!baseFile || baseFile.sha !== blob.sha) {
+          hasActualChanges = true
+        }
+      } catch (error) {
+        // If we can't compare, assume there are changes
+        hasActualChanges = true
+      }
+
       treeEntries.push({
         path: filePath,
         mode: '100644' as const,
         type: 'blob' as const,
         sha: blob.sha
       })
+    }
+
+    // Check if we have any actual changes
+    if (!hasActualChanges) {
+      core.warning('No actual changes detected in the modified files')
+      core.warning(
+        'This might indicate that the changes are already applied or there are no differences.'
+      )
+      core.warning('Skipping commit and PR creation to avoid empty commits.')
+      return
     }
 
     // Create a new tree with the modified files
@@ -1158,6 +1315,26 @@ The changes in this PR are based on the git patch from the latest successful dep
         await api.applyPatch(changeId, targetEnvironmentAlias)
 
         core.info(`Patch applied successfully for change ID: ${changeId}`)
+        break
+      }
+
+      case 'add-nuget-source': {
+        const sourceName = core.getInput('nuget-source-name', {
+          required: true
+        })
+        const sourceUrl = core.getInput('nuget-source-url', { required: true })
+        const username = core.getInput('nuget-source-username')
+        const password = core.getInput('nuget-source-password')
+
+        const result = await api.addOrUpdateNuGetConfigSource({
+          name: sourceName,
+          source: sourceUrl,
+          username,
+          password
+        })
+
+        core.setOutput('nuget-source-status', JSON.stringify(result))
+        core.info(`NuGet package source added successfully: ${result.message}`)
         break
       }
     }
