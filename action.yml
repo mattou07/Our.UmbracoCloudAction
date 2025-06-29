@@ -18,7 +18,7 @@ inputs:
   action:
     description:
       'The action to perform (start-deployment, check-status, add-artifact,
-      get-changes, get-latest-changes, apply-patch, add-nuget-source)'
+      get-changes, get-latest-changes, apply-patch)'
     required: true
     default: 'start-deployment'
   artifactId:
@@ -81,18 +81,20 @@ inputs:
     required: false
     default: '60000'
   nuget-source-name:
-    description:
-      'Name for the NuGet package source (required for add-nuget-source)'
+    description: 'Name for the NuGet package source (optional for add-artifact)'
     required: false
   nuget-source-url:
-    description:
-      'URL for the NuGet package source (required for add-nuget-source)'
+    description: 'URL for the NuGet package source (optional for add-artifact)'
     required: false
   nuget-source-username:
-    description: 'Username for NuGet package source authentication (optional)'
+    description:
+      'Username for NuGet package source authentication (optional for
+      add-artifact)'
     required: false
   nuget-source-password:
-    description: 'Password for NuGet package source authentication (optional)'
+    description:
+      'Password for NuGet package source authentication (optional for
+      add-artifact)'
     required: false
 
 # Define your outputs here.
@@ -115,7 +117,7 @@ outputs:
     description:
       'The number of the created pull request (when deployment fails)'
   nuget-source-status:
-    description: 'Status of NuGet package source addition operation'
+    description: 'Status of NuGet package source injection into artifact'
 
 runs:
   using: node20

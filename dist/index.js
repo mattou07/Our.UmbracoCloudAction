@@ -35456,7 +35456,59 @@ The changes in this PR are based on the git patch from the latest successful dep
                 const filePath = coreExports.getInput('filePath', { required: true });
                 const description = coreExports.getInput('description');
                 const version = coreExports.getInput('version');
-                const artifactId = await api.addDeploymentArtifact(filePath, description, version);
+                // Check if NuGet source configuration is provided
+                const nugetSourceName = coreExports.getInput('nuget-source-name');
+                const nugetSourceUrl = coreExports.getInput('nuget-source-url');
+                const nugetSourceUsername = coreExports.getInput('nuget-source-username');
+                const nugetSourcePassword = coreExports.getInput('nuget-source-password');
+                let modifiedFilePath = filePath;
+                // If NuGet source configuration is provided, inject NuGet.config into the zip
+                if (nugetSourceName && nugetSourceUrl) {
+                    coreExports.info('NuGet source configuration provided. Injecting NuGet.config into zip...');
+                    try {
+                        // Create temporary directory for zip manipulation
+                        const tempDir = path.join(process.cwd(), 'temp-nuget-injection');
+                        const tempZipPath = path.join(tempDir, 'temp-artifact.zip');
+                        // Ensure temp directory exists
+                        if (!fs.existsSync(tempDir)) {
+                            fs.mkdirSync(tempDir, { recursive: true });
+                        }
+                        // Copy original zip to temp location
+                        fs.copyFileSync(filePath, tempZipPath);
+                        // Extract zip to temp directory
+                        await execExports.exec('unzip', ['-q', tempZipPath, '-d', tempDir]);
+                        // Add or update NuGet.config in the extracted content
+                        const nugetConfig = {
+                            name: nugetSourceName,
+                            source: nugetSourceUrl,
+                            username: nugetSourceUsername,
+                            password: nugetSourcePassword
+                        };
+                        const result = await api.addOrUpdateNuGetConfigSource(nugetConfig);
+                        coreExports.info(`NuGet.config ${result.message}`);
+                        // Recreate zip with the modified content
+                        // Remove the temp zip file before recreating
+                        fs.unlinkSync(tempZipPath);
+                        // Get list of all files/directories in the temp directory (these are the extracted contents)
+                        const extractedContents = fs.readdirSync(tempDir);
+                        // Create new zip with only the extracted contents, using absolute paths
+                        const zipArgs = ['-r', path.join(tempDir, 'temp-artifact.zip')];
+                        for (const item of extractedContents) {
+                            zipArgs.push(path.join(tempDir, item));
+                        }
+                        await execExports.exec('zip', zipArgs);
+                        // Copy the new zip back to original location
+                        fs.copyFileSync(path.join(tempDir, 'temp-artifact.zip'), filePath);
+                        // Clean up temp directory
+                        fs.rmSync(tempDir, { recursive: true, force: true });
+                        coreExports.info('Successfully injected NuGet.config into artifact zip');
+                    }
+                    catch (error) {
+                        coreExports.warning(`Failed to inject NuGet.config into zip: ${error}`);
+                        coreExports.warning('Proceeding with original artifact upload...');
+                    }
+                }
+                const artifactId = await api.addDeploymentArtifact(modifiedFilePath, description, version);
                 coreExports.setOutput('artifactId', artifactId);
                 coreExports.info(`Artifact uploaded successfully with ID: ${artifactId}`);
                 break;
@@ -35478,23 +35530,6 @@ The changes in this PR are based on the git patch from the latest successful dep
                 });
                 await api.applyPatch(changeId, targetEnvironmentAlias);
                 coreExports.info(`Patch applied successfully for change ID: ${changeId}`);
-                break;
-            }
-            case 'add-nuget-source': {
-                const sourceName = coreExports.getInput('nuget-source-name', {
-                    required: true
-                });
-                const sourceUrl = coreExports.getInput('nuget-source-url', { required: true });
-                const username = coreExports.getInput('nuget-source-username');
-                const password = coreExports.getInput('nuget-source-password');
-                const result = await api.addOrUpdateNuGetConfigSource({
-                    name: sourceName,
-                    source: sourceUrl,
-                    username,
-                    password
-                });
-                coreExports.setOutput('nuget-source-status', JSON.stringify(result));
-                coreExports.info(`NuGet package source added successfully: ${result.message}`);
                 break;
             }
         }
