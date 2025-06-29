@@ -35006,9 +35006,9 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             // Write the patch content to a temporary file
             fs.writeFileSync(patchFilePath, gitPatch);
             coreExports.info(`Created patch file: ${patchFilePath}`);
-            // Apply the patch using git apply
-            await execExports.exec('git', ['apply', '--index', patchFilePath]);
-            coreExports.info('Patch applied successfully using git apply');
+            // Apply the patch using git apply with 3-way merge to handle conflicts
+            await execExports.exec('git', ['apply', '--index', '--3way', patchFilePath]);
+            coreExports.info('Patch applied successfully using git apply with 3-way merge');
             // Remove the patch file before staging changes
             if (fs.existsSync(patchFilePath)) {
                 fs.unlinkSync(patchFilePath);
