@@ -35007,14 +35007,41 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             fs.writeFileSync(patchFilePath, gitPatch);
             coreExports.info(`Created patch file: ${patchFilePath}`);
             // Apply the patch using git apply with theirs option to always accept patch content
-            await execExports.exec('git', [
+            const gitApplyExitCode = await execExports.exec('git', [
                 'apply',
                 '--index',
                 '--3way',
                 '--theirs',
                 patchFilePath
             ]);
-            coreExports.info('Patch applied successfully using git apply with theirs option');
+            if (gitApplyExitCode === 0) {
+                coreExports.info('Patch applied successfully using git apply with theirs option');
+            }
+            else {
+                coreExports.warning(`Initial patch application failed with exit code: ${gitApplyExitCode}`);
+                // Check for any rejected hunks (.rej files) and try to apply them
+                const rejFiles = fs
+                    .readdirSync(process.cwd())
+                    .filter((file) => file.endsWith('.rej'));
+                if (rejFiles.length > 0) {
+                    coreExports.warning(`Some parts of the patch could not be applied. Rejected files: ${rejFiles.join(', ')}`);
+                    // Try to apply rejected hunks manually
+                    for (const rejFile of rejFiles) {
+                        try {
+                            coreExports.info(`Attempting to apply rejected hunks from ${rejFile}...`);
+                            await execExports.exec('git', ['apply', '--reject', rejFile]);
+                            coreExports.info(`Successfully reapplied rejected hunks from ${rejFile}`);
+                        }
+                        catch (rejError) {
+                            coreExports.warning(`Could not apply rejected hunks from ${rejFile}: ${rejError}`);
+                        }
+                    }
+                }
+                // If we still have issues, throw an error
+                if (gitApplyExitCode !== 0) {
+                    throw new Error(`Git apply failed with exit code: ${gitApplyExitCode}`);
+                }
+            }
         }
         catch (applyError) {
             coreExports.warning(`Initial patch application failed: ${applyError}`);

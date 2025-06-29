@@ -693,14 +693,53 @@ async function createPullRequestWithPatch(
       core.info(`Created patch file: ${patchFilePath}`)
 
       // Apply the patch using git apply with theirs option to always accept patch content
-      await exec.exec('git', [
+      const gitApplyExitCode = await exec.exec('git', [
         'apply',
         '--index',
         '--3way',
         '--theirs',
         patchFilePath
       ])
-      core.info('Patch applied successfully using git apply with theirs option')
+
+      if (gitApplyExitCode === 0) {
+        core.info(
+          'Patch applied successfully using git apply with theirs option'
+        )
+      } else {
+        core.warning(
+          `Initial patch application failed with exit code: ${gitApplyExitCode}`
+        )
+
+        // Check for any rejected hunks (.rej files) and try to apply them
+        const rejFiles = fs
+          .readdirSync(process.cwd())
+          .filter((file) => file.endsWith('.rej'))
+        if (rejFiles.length > 0) {
+          core.warning(
+            `Some parts of the patch could not be applied. Rejected files: ${rejFiles.join(', ')}`
+          )
+
+          // Try to apply rejected hunks manually
+          for (const rejFile of rejFiles) {
+            try {
+              core.info(`Attempting to apply rejected hunks from ${rejFile}...`)
+              await exec.exec('git', ['apply', '--reject', rejFile])
+              core.info(`Successfully reapplied rejected hunks from ${rejFile}`)
+            } catch (rejError) {
+              core.warning(
+                `Could not apply rejected hunks from ${rejFile}: ${rejError}`
+              )
+            }
+          }
+        }
+
+        // If we still have issues, throw an error
+        if (gitApplyExitCode !== 0) {
+          throw new Error(
+            `Git apply failed with exit code: ${gitApplyExitCode}`
+          )
+        }
+      }
     } catch (applyError) {
       core.warning(`Initial patch application failed: ${applyError}`)
 
