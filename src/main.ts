@@ -31,99 +31,6 @@ interface ChangesResponse {
   changes: string // diff/patch text
 }
 
-interface PatchChange {
-  type: 'add' | 'modify' | 'delete'
-  path: string
-  oldContent?: string
-  newContent?: string
-  oldMode?: string
-  newMode?: string
-}
-
-function parseGitPatch(patchContent: string): PatchChange[] {
-  const changes: PatchChange[] = []
-  const lines = patchContent.split('\n')
-  let currentChange: Partial<PatchChange> | null = null
-  let currentContent: string[] = []
-  let inHunk = false
-
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-
-    // Parse file headers
-    if (line.startsWith('diff --git')) {
-      // Save previous change if exists
-      if (currentChange && currentChange.type && currentChange.path) {
-        if (currentChange.type === 'add' || currentChange.type === 'modify') {
-          currentChange.newContent = currentContent.join('\n')
-        }
-        changes.push(currentChange as PatchChange)
-      }
-
-      // Start new change
-      currentChange = {}
-      currentContent = []
-      inHunk = false
-
-      // Extract file paths
-      const match = line.match(/diff --git a\/(.+) b\/(.+)/)
-      if (match) {
-        const oldPath = match[1]
-        const newPath = match[2]
-
-        if (oldPath === '/dev/null') {
-          currentChange.type = 'add'
-          currentChange.path = newPath
-        } else if (newPath === '/dev/null') {
-          currentChange.type = 'delete'
-          currentChange.path = oldPath
-        } else {
-          currentChange.type = 'modify'
-          currentChange.path = newPath
-        }
-      }
-    }
-
-    // Parse mode changes
-    else if (line.startsWith('old mode') || line.startsWith('new mode')) {
-      const modeMatch = line.match(/(old|new) mode (\d+)/)
-      if (modeMatch && currentChange) {
-        if (modeMatch[1] === 'old') {
-          currentChange.oldMode = modeMatch[2]
-        } else {
-          currentChange.newMode = modeMatch[2]
-        }
-      }
-    }
-
-    // Parse hunk headers
-    else if (line.startsWith('@@')) {
-      inHunk = true
-      continue
-    }
-
-    // Collect content lines
-    else if (inHunk && currentChange) {
-      if (line.startsWith('+') && !line.startsWith('+++')) {
-        currentContent.push(line.substring(1))
-      } else if (line.startsWith(' ') || line.startsWith('-')) {
-        // Skip context lines and deletions for new content
-        continue
-      }
-    }
-  }
-
-  // Save the last change
-  if (currentChange && currentChange.type && currentChange.path) {
-    if (currentChange.type === 'add' || currentChange.type === 'modify') {
-      currentChange.newContent = currentContent.join('\n')
-    }
-    changes.push(currentChange as PatchChange)
-  }
-
-  return changes
-}
-
 class UmbracoCloudAPI {
   private baseUrl: string
   private projectId: string
@@ -776,77 +683,65 @@ async function createPullRequestWithPatch(
       }
     }
 
-    // Parse and apply the git patch to create the actual file changes
-    const patchChanges = parseGitPatch(gitPatch)
-    core.info(`Parsed patch with ${patchChanges.length} file changes`)
+    // Create a temporary patch file and apply it using git
+    const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`
+    const patchFilePath = path.join(process.cwd(), patchFileName)
 
-    // Get current tree SHA
-    const { data: currentTreeData } = await octokit.git.getTree({
+    try {
+      // Write the patch content to a temporary file
+      fs.writeFileSync(patchFilePath, gitPatch)
+      core.info(`Created patch file: ${patchFilePath}`)
+
+      // Apply the patch using git apply
+      await exec.exec('git', ['apply', '--index', patchFilePath])
+      core.info('Patch applied successfully using git apply')
+
+      // Remove the patch file before staging changes
+      if (fs.existsSync(patchFilePath)) {
+        fs.unlinkSync(patchFilePath)
+        core.info(`Removed patch file before staging: ${patchFilePath}`)
+      }
+
+      // Get the current status to see what files were changed
+      await exec.exec('git', ['status', '--porcelain'], {
+        listeners: {
+          stdout: (data: Buffer) => {
+            const output = data.toString()
+            core.info(`Git status: ${output}`)
+          }
+        }
+      })
+
+      // Stage all changes
+      await exec.exec('git', ['add', '.'])
+      core.info('All changes staged')
+    } finally {
+      // Clean up the temporary patch file
+      if (fs.existsSync(patchFilePath)) {
+        fs.unlinkSync(patchFilePath)
+        core.info(`Cleaned up patch file: ${patchFilePath}`)
+      }
+    }
+
+    // Get the current working tree after applying the patch
+    const { data: workingTreeData } = await octokit.git.getTree({
       owner,
       repo,
       tree_sha: baseSha,
       recursive: 'true'
     })
 
-    // Create blobs for all changed files
-    const treeItems = []
-    const processedFiles = new Set<string>()
-
-    for (const change of patchChanges) {
-      if (processedFiles.has(change.path)) continue
-      processedFiles.add(change.path)
-
-      let content: string | null = null
-      let mode: '100644' | '100755' = '100644'
-
-      if (change.type === 'add' || change.type === 'modify') {
-        // For new or modified files, use the new content
-        content = change.newContent || ''
-        if (change.newMode) {
-          mode = (change.newMode === '100755' ? '100755' : '100644') as
-            | '100644'
-            | '100755'
-        }
-      } else if (change.type === 'delete') {
-        // For deleted files, we'll handle this by not including them in the tree
-        continue
-      }
-
-      if (content !== null) {
-        const { data: blob } = await octokit.git.createBlob({
-          owner,
-          repo,
-          content,
-          encoding: 'utf-8'
-        })
-
-        treeItems.push({
-          path: change.path,
-          mode: mode || '100644',
-          type: 'blob' as const,
-          sha: blob.sha
-        })
-      }
-    }
-
-    // Add unchanged files from the current tree
-    for (const item of currentTreeData.tree) {
-      if (item.type === 'blob' && item.path && !processedFiles.has(item.path)) {
-        treeItems.push({
-          path: item.path,
-          mode: (item.mode || '100644') as '100644' | '100755',
-          type: 'blob' as const,
-          sha: item.sha
-        })
-      }
-    }
-
-    // Create a new tree with all the changes
+    // Create a new tree with the changes
     const { data: tree } = await octokit.git.createTree({
       owner,
       repo,
       base_tree: baseSha,
-      tree: treeItems
+      tree: workingTreeData.tree.map((item) => ({
+        path: item.path,
+        mode: item.mode as '100644' | '100755' | '040000' | '160000' | '120000',
+        type: item.type as 'commit' | 'tree' | 'blob',
+        sha: item.sha
+      }))
     })
 
     // Create a new commit

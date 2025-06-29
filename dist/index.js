@@ -1,13 +1,13 @@
 import require$$0 from 'os';
 import require$$0$1 from 'crypto';
-import * as require$$1 from 'fs';
-import require$$1__default from 'fs';
-import * as require$$1$1 from 'path';
-import require$$1__default$1 from 'path';
+import * as fs from 'fs';
+import fs__default from 'fs';
+import * as require$$1 from 'path';
+import require$$1__default from 'path';
 import require$$2$1 from 'http';
 import require$$3$1 from 'https';
 import require$$0$4 from 'net';
-import require$$1$2 from 'tls';
+import require$$1$1 from 'tls';
 import require$$4$1 from 'events';
 import require$$0$3 from 'assert';
 import require$$0$2 from 'util';
@@ -16,14 +16,14 @@ import require$$7 from 'buffer';
 import require$$8 from 'querystring';
 import require$$14 from 'stream/web';
 import require$$0$7 from 'node:stream';
-import require$$1$3 from 'node:util';
+import require$$1$2 from 'node:util';
 import require$$0$6 from 'node:events';
 import require$$0$8 from 'worker_threads';
 import require$$2$2 from 'perf_hooks';
 import require$$5 from 'util/types';
 import require$$4$2 from 'async_hooks';
-import require$$1$4 from 'console';
-import require$$1$5 from 'url';
+import require$$1$3 from 'console';
+import require$$1$4 from 'url';
 import require$$3$2 from 'zlib';
 import require$$6 from 'string_decoder';
 import require$$0$9 from 'diagnostics_channel';
@@ -253,7 +253,7 @@ function requireFileCommand () {
 	// We use any as a valid input type
 	/* eslint-disable @typescript-eslint/no-explicit-any */
 	const crypto = __importStar(require$$0$1);
-	const fs = __importStar(require$$1__default);
+	const fs = __importStar(fs__default);
 	const os = __importStar(require$$0);
 	const utils_1 = requireUtils$3();
 	function issueFileCommand(command, message) {
@@ -403,7 +403,7 @@ var hasRequiredTunnel$1;
 function requireTunnel$1 () {
 	if (hasRequiredTunnel$1) return tunnel$1;
 	hasRequiredTunnel$1 = 1;
-	var tls = require$$1$2;
+	var tls = require$$1$1;
 	var http = require$$2$1;
 	var https = require$$3$1;
 	var events = require$$4$1;
@@ -1785,7 +1785,7 @@ function requireSbmh () {
 	 * by Hongli Lai at: https://github.com/FooBarWidget/boyer-moore-horspool
 	 */
 	const EventEmitter = require$$0$6.EventEmitter;
-	const inherits = require$$1$3.inherits;
+	const inherits = require$$1$2.inherits;
 
 	function SBMH (needle) {
 	  if (typeof needle === 'string') {
@@ -1994,7 +1994,7 @@ function requirePartStream () {
 	if (hasRequiredPartStream) return PartStream_1;
 	hasRequiredPartStream = 1;
 
-	const inherits = require$$1$3.inherits;
+	const inherits = require$$1$2.inherits;
 	const ReadableStream = require$$0$7.Readable;
 
 	function PartStream (opts) {
@@ -2040,7 +2040,7 @@ function requireHeaderParser () {
 	hasRequiredHeaderParser = 1;
 
 	const EventEmitter = require$$0$6.EventEmitter;
-	const inherits = require$$1$3.inherits;
+	const inherits = require$$1$2.inherits;
 	const getLimit = requireGetLimit();
 
 	const StreamSearch = requireSbmh();
@@ -2148,7 +2148,7 @@ function requireDicer () {
 	hasRequiredDicer = 1;
 
 	const WritableStream = require$$0$7.Writable;
-	const inherits = require$$1$3.inherits;
+	const inherits = require$$1$2.inherits;
 
 	const StreamSearch = requireSbmh();
 
@@ -2725,7 +2725,7 @@ function requireMultipart () {
 	//     -- this will require modifications to utils.parseParams
 
 	const { Readable } = require$$0$7;
-	const { inherits } = require$$1$3;
+	const { inherits } = require$$1$2;
 
 	const Dicer = requireDicer();
 
@@ -3291,7 +3291,7 @@ function requireMain () {
 	hasRequiredMain = 1;
 
 	const WritableStream = require$$0$7.Writable;
-	const { inherits } = require$$1$3;
+	const { inherits } = require$$1$2;
 	const Dicer = requireDicer();
 
 	const MultipartParser = requireMultipart();
@@ -8115,7 +8115,7 @@ function requireConnect () {
 	    let socket;
 	    if (protocol === 'https:') {
 	      if (!tls) {
-	        tls = require$$1$2;
+	        tls = require$$1$1;
 	      }
 	      servername = servername || options.servername || util.getServerName(host) || null;
 
@@ -14139,7 +14139,7 @@ function requirePendingInterceptorsFormatter () {
 	hasRequiredPendingInterceptorsFormatter = 1;
 
 	const { Transform } = require$$0$5;
-	const { Console } = require$$1$4;
+	const { Console } = require$$1$3;
 
 	/**
 	 * Gets the output of `console.table(…)` as a string.
@@ -14366,7 +14366,7 @@ function requireProxyAgent () {
 	hasRequiredProxyAgent = 1;
 
 	const { kProxy, kClose, kDestroy, kInterceptors } = requireSymbols$4();
-	const { URL } = require$$1$5;
+	const { URL } = require$$1$4;
 	const Agent = requireAgent();
 	const Pool = requirePool();
 	const DispatcherBase = requireDispatcherBase();
@@ -25231,7 +25231,7 @@ function requireSummary () {
 		Object.defineProperty(exports, "__esModule", { value: true });
 		exports.summary = exports.markdownSummary = exports.SUMMARY_DOCS_URL = exports.SUMMARY_ENV_VAR = void 0;
 		const os_1 = require$$0;
-		const fs_1 = require$$1__default;
+		const fs_1 = fs__default;
 		const { access, appendFile, writeFile } = fs_1.promises;
 		exports.SUMMARY_ENV_VAR = 'GITHUB_STEP_SUMMARY';
 		exports.SUMMARY_DOCS_URL = 'https://docs.github.com/actions/using-workflows/workflow-commands-for-github-actions#adding-a-job-summary';
@@ -25537,7 +25537,7 @@ function requirePathUtils () {
 	};
 	Object.defineProperty(pathUtils, "__esModule", { value: true });
 	pathUtils.toPlatformPath = pathUtils.toWin32Path = pathUtils.toPosixPath = void 0;
-	const path = __importStar(require$$1__default$1);
+	const path = __importStar(require$$1__default);
 	/**
 	 * toPosixPath converts the given path to the posix form. On Windows, \\ will be
 	 * replaced with /.
@@ -25623,8 +25623,8 @@ function requireIoUtil () {
 		var _a;
 		Object.defineProperty(exports, "__esModule", { value: true });
 		exports.getCmdPath = exports.tryGetExecutablePath = exports.isRooted = exports.isDirectory = exports.exists = exports.READONLY = exports.UV_FS_O_EXLOCK = exports.IS_WINDOWS = exports.unlink = exports.symlink = exports.stat = exports.rmdir = exports.rm = exports.rename = exports.readlink = exports.readdir = exports.open = exports.mkdir = exports.lstat = exports.copyFile = exports.chmod = void 0;
-		const fs = __importStar(require$$1__default);
-		const path = __importStar(require$$1__default$1);
+		const fs = __importStar(fs__default);
+		const path = __importStar(require$$1__default);
 		_a = fs.promises
 		// export const {open} = 'fs'
 		, exports.chmod = _a.chmod, exports.copyFile = _a.copyFile, exports.lstat = _a.lstat, exports.mkdir = _a.mkdir, exports.open = _a.open, exports.readdir = _a.readdir, exports.readlink = _a.readlink, exports.rename = _a.rename, exports.rm = _a.rm, exports.rmdir = _a.rmdir, exports.stat = _a.stat, exports.symlink = _a.symlink, exports.unlink = _a.unlink;
@@ -25814,7 +25814,7 @@ function requireIo () {
 	Object.defineProperty(io, "__esModule", { value: true });
 	io.findInPath = io.which = io.mkdirP = io.rmRF = io.mv = io.cp = void 0;
 	const assert_1 = require$$0$3;
-	const path = __importStar(require$$1__default$1);
+	const path = __importStar(require$$1__default);
 	const ioUtil = __importStar(requireIoUtil());
 	/**
 	 * Copies a file or folder.
@@ -26122,7 +26122,7 @@ function requireToolrunner () {
 	const os = __importStar(require$$0);
 	const events = __importStar(require$$4$1);
 	const child = __importStar(require$$2$3);
-	const path = __importStar(require$$1__default$1);
+	const path = __importStar(require$$1__default);
 	const io = __importStar(requireIo());
 	const ioUtil = __importStar(requireIoUtil());
 	const timers_1 = require$$6$1;
@@ -26966,7 +26966,7 @@ function requireCore () {
 		const file_command_1 = requireFileCommand();
 		const utils_1 = requireUtils$3();
 		const os = __importStar(require$$0);
-		const path = __importStar(require$$1__default$1);
+		const path = __importStar(require$$1__default);
 		const oidc_utils_1 = requireOidcUtils();
 		/**
 		 * The code to exit an action
@@ -27290,7 +27290,7 @@ function requireContext () {
 	hasRequiredContext = 1;
 	Object.defineProperty(context, "__esModule", { value: true });
 	context.Context = void 0;
-	const fs_1 = require$$1__default;
+	const fs_1 = fs__default;
 	const os_1 = require$$0;
 	class Context {
 	    /**
@@ -34590,83 +34590,6 @@ var Octokit = Octokit$1.plugin(
   userAgent: `octokit-rest.js/${VERSION}`
 });
 
-function parseGitPatch(patchContent) {
-    const changes = [];
-    const lines = patchContent.split('\n');
-    let currentChange = null;
-    let currentContent = [];
-    let inHunk = false;
-    for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        // Parse file headers
-        if (line.startsWith('diff --git')) {
-            // Save previous change if exists
-            if (currentChange && currentChange.type && currentChange.path) {
-                if (currentChange.type === 'add' || currentChange.type === 'modify') {
-                    currentChange.newContent = currentContent.join('\n');
-                }
-                changes.push(currentChange);
-            }
-            // Start new change
-            currentChange = {};
-            currentContent = [];
-            inHunk = false;
-            // Extract file paths
-            const match = line.match(/diff --git a\/(.+) b\/(.+)/);
-            if (match) {
-                const oldPath = match[1];
-                const newPath = match[2];
-                if (oldPath === '/dev/null') {
-                    currentChange.type = 'add';
-                    currentChange.path = newPath;
-                }
-                else if (newPath === '/dev/null') {
-                    currentChange.type = 'delete';
-                    currentChange.path = oldPath;
-                }
-                else {
-                    currentChange.type = 'modify';
-                    currentChange.path = newPath;
-                }
-            }
-        }
-        // Parse mode changes
-        else if (line.startsWith('old mode') || line.startsWith('new mode')) {
-            const modeMatch = line.match(/(old|new) mode (\d+)/);
-            if (modeMatch && currentChange) {
-                if (modeMatch[1] === 'old') {
-                    currentChange.oldMode = modeMatch[2];
-                }
-                else {
-                    currentChange.newMode = modeMatch[2];
-                }
-            }
-        }
-        // Parse hunk headers
-        else if (line.startsWith('@@')) {
-            inHunk = true;
-            continue;
-        }
-        // Collect content lines
-        else if (inHunk && currentChange) {
-            if (line.startsWith('+') && !line.startsWith('+++')) {
-                currentContent.push(line.substring(1));
-            }
-            else if (line.startsWith(' ') || line.startsWith('-')) {
-                // Skip context lines and deletions for new content
-                continue;
-            }
-        }
-    }
-    // Save the last change
-    if (currentChange && currentChange.type && currentChange.path) {
-        if (currentChange.type === 'add' || currentChange.type === 'modify') {
-            currentChange.newContent = currentContent.join('\n');
-        }
-        changes.push(currentChange);
-    }
-    return changes;
-}
 class UmbracoCloudAPI {
     baseUrl;
     projectId;
@@ -34819,7 +34742,7 @@ class UmbracoCloudAPI {
         if (!filePath) {
             throw new Error('FilePath is empty');
         }
-        if (!require$$1.existsSync(filePath)) {
+        if (!fs.existsSync(filePath)) {
             throw new Error(`FilePath does not contain a file: ${filePath}`);
         }
         // Validate that the zip contains a git repository
@@ -34847,8 +34770,8 @@ class UmbracoCloudAPI {
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 const formData = new FormData();
-                const fileBuffer = require$$1.readFileSync(filePath);
-                const fileName = require$$1$1.basename(filePath);
+                const fileBuffer = fs.readFileSync(filePath);
+                const fileName = require$$1.basename(filePath);
                 formData.append('file', new Blob([fileBuffer]), fileName);
                 if (description) {
                     formData.append('description', description);
@@ -35076,68 +34999,59 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
                 throw error;
             }
         }
-        // Parse and apply the git patch to create the actual file changes
-        const patchChanges = parseGitPatch(gitPatch);
-        coreExports.info(`Parsed patch with ${patchChanges.length} file changes`);
-        // Get current tree SHA
-        const { data: currentTreeData } = await octokit.git.getTree({
+        // Create a temporary patch file and apply it using git
+        const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
+        const patchFilePath = require$$1.join(process.cwd(), patchFileName);
+        try {
+            // Write the patch content to a temporary file
+            fs.writeFileSync(patchFilePath, gitPatch);
+            coreExports.info(`Created patch file: ${patchFilePath}`);
+            // Apply the patch using git apply
+            await execExports.exec('git', ['apply', '--index', patchFilePath]);
+            coreExports.info('Patch applied successfully using git apply');
+            // Remove the patch file before staging changes
+            if (fs.existsSync(patchFilePath)) {
+                fs.unlinkSync(patchFilePath);
+                coreExports.info(`Removed patch file before staging: ${patchFilePath}`);
+            }
+            // Get the current status to see what files were changed
+            await execExports.exec('git', ['status', '--porcelain'], {
+                listeners: {
+                    stdout: (data) => {
+                        const output = data.toString();
+                        coreExports.info(`Git status: ${output}`);
+                    }
+                }
+            });
+            // Stage all changes
+            await execExports.exec('git', ['add', '.']);
+            coreExports.info('All changes staged');
+        }
+        finally {
+            // Clean up the temporary patch file
+            if (fs.existsSync(patchFilePath)) {
+                fs.unlinkSync(patchFilePath);
+                coreExports.info(`Cleaned up patch file: ${patchFilePath}`);
+            }
+        }
+        // Get the current working tree after applying the patch
+        const { data: workingTreeData } = await octokit.git.getTree({
             owner,
             repo,
             tree_sha: baseSha,
             recursive: 'true'
         });
-        // Create blobs for all changed files
-        const treeItems = [];
-        const processedFiles = new Set();
-        for (const change of patchChanges) {
-            if (processedFiles.has(change.path))
-                continue;
-            processedFiles.add(change.path);
-            let content = null;
-            let mode = '100644';
-            if (change.type === 'add' || change.type === 'modify') {
-                // For new or modified files, use the new content
-                content = change.newContent || '';
-                if (change.newMode) {
-                    mode = (change.newMode === '100755' ? '100755' : '100644');
-                }
-            }
-            else if (change.type === 'delete') {
-                // For deleted files, we'll handle this by not including them in the tree
-                continue;
-            }
-            if (content !== null) {
-                const { data: blob } = await octokit.git.createBlob({
-                    owner,
-                    repo,
-                    content,
-                    encoding: 'utf-8'
-                });
-                treeItems.push({
-                    path: change.path,
-                    mode: mode || '100644',
-                    type: 'blob',
-                    sha: blob.sha
-                });
-            }
-        }
-        // Add unchanged files from the current tree
-        for (const item of currentTreeData.tree) {
-            if (item.type === 'blob' && item.path && !processedFiles.has(item.path)) {
-                treeItems.push({
-                    path: item.path,
-                    mode: (item.mode || '100644'),
-                    type: 'blob',
-                    sha: item.sha
-                });
-            }
-        }
-        // Create a new tree with all the changes
+        // Create a new tree with the changes
         const { data: tree } = await octokit.git.createTree({
             owner,
             repo,
             base_tree: baseSha,
-            tree: treeItems
+            tree: workingTreeData.tree.map((item) => ({
+                path: item.path,
+                mode: item.mode,
+                type: item.type,
+                sha: item.sha
+            }))
         });
         // Create a new commit
         const { data: commit } = await octokit.git.createCommit({
