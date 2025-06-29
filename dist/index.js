@@ -49413,30 +49413,6 @@ class UmbracoCloudAPI {
         if (!fs.existsSync(filePath)) {
             throw new Error(`FilePath does not contain a file: ${filePath}`);
         }
-        // Validate that the zip contains a git repository
-        coreExports.info('Validating zip file contains git repository...');
-        try {
-            // Create a temporary directory for validation
-            const validationDir = path$1.join(process.cwd(), 'temp-validation');
-            if (!fs.existsSync(validationDir)) {
-                fs.mkdirSync(validationDir, { recursive: true });
-            }
-            // Extract zip to validation directory
-            await execExports.exec('unzip', ['-q', filePath, '-d', validationDir]);
-            // Check if this is a valid git repository using git command
-            await execExports.exec('git', ['rev-parse', '--git-dir'], { cwd: validationDir });
-            // Clean up validation directory
-            fs.rmSync(validationDir, { recursive: true, force: true });
-            coreExports.info('Git repository validation successful');
-        }
-        catch (error) {
-            if (error instanceof Error && error.message.includes('git repository')) {
-                coreExports.setFailed(error.message);
-                throw error;
-            }
-            coreExports.setFailed(`Failed to validate git repository in zip: ${error}`);
-            throw error;
-        }
         coreExports.debug(`Uploading artifact: ${filePath}`);
         // Retry logic for artifact upload
         const maxRetries = parseInt(coreExports.getInput('upload-retries') || '3', 10);
@@ -49721,6 +49697,29 @@ class UmbracoCloudAPI {
                 : `Updated NuGet.config and added/updated source '${config.name}'.`,
             nugetConfigPath
         };
+    }
+}
+// Helper function to validate git repository in a directory
+async function validateGitRepository(directoryPath, context) {
+    coreExports.info(`Validating git repository ${context}...`);
+    try {
+        // Store current working directory
+        const originalCwd = process.cwd();
+        try {
+            // Change to the specified directory
+            process.chdir(directoryPath);
+            // Check if this is a valid git repository using git command
+            await execExports.exec('git', ['rev-parse', '--git-dir']);
+            coreExports.info(`Git repository validation successful ${context}`);
+        }
+        finally {
+            // Always restore original working directory
+            process.chdir(originalCwd);
+        }
+    }
+    catch (error) {
+        coreExports.setFailed(`Failed to validate git repository ${context}: ${error}`);
+        throw error;
     }
 }
 async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, latestCompletedDeploymentId) {
@@ -50157,6 +50156,9 @@ The changes in this PR are based on the git patch from the latest successful dep
                         };
                         const result = await api.addOrUpdateNuGetConfigSource(nugetConfig);
                         coreExports.info(`NuGet.config ${result.message}`);
+                        // Validate that the extracted content still contains a git repository
+                        coreExports.info('Validating git repository after NuGet.config injection...');
+                        await validateGitRepository(tempDir, 'NuGet.config injection');
                         // Recreate zip with the modified content
                         // Remove the temp zip file before recreating
                         fs.unlinkSync(tempZipPath);
@@ -50178,6 +50180,30 @@ The changes in this PR are based on the git patch from the latest successful dep
                         coreExports.warning(`Failed to inject NuGet.config into zip: ${error}`);
                         coreExports.warning('Proceeding with original artifact upload...');
                     }
+                }
+                // Validate that the artifact contains a git repository (for all uploads)
+                coreExports.info('Validating artifact contains git repository...');
+                try {
+                    // Create temporary directory for validation
+                    const validationDir = path$1.join(process.cwd(), 'temp-validation');
+                    if (!fs.existsSync(validationDir)) {
+                        fs.mkdirSync(validationDir, { recursive: true });
+                    }
+                    // Extract zip to validation directory
+                    await execExports.exec('unzip', [
+                        '-q',
+                        modifiedFilePath,
+                        '-d',
+                        validationDir
+                    ]);
+                    // Validate git repository
+                    await validateGitRepository(validationDir, 'in artifact');
+                    // Clean up validation directory
+                    fs.rmSync(validationDir, { recursive: true, force: true });
+                }
+                catch (error) {
+                    coreExports.setFailed(`Failed to validate git repository in artifact: ${error}`);
+                    throw error;
                 }
                 const artifactId = await api.addDeploymentArtifact(modifiedFilePath, description, version);
                 coreExports.setOutput('artifactId', artifactId);
