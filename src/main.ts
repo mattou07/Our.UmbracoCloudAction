@@ -688,6 +688,14 @@ async function createPullRequestWithPatch(
     const patchFilePath = path.join(process.cwd(), patchFileName)
 
     try {
+      // Reset and clean the working directory before applying the patch
+      core.info(
+        'Resetting working directory to clean state before applying patch...'
+      )
+      await exec.exec('git', ['reset', '--hard', 'HEAD'])
+      await exec.exec('git', ['clean', '-fd'])
+      core.info('Working directory reset complete')
+
       // Write the patch content to a temporary file
       fs.writeFileSync(patchFilePath, gitPatch)
       core.info(`Created patch file: ${patchFilePath}`)

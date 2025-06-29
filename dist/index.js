@@ -35003,6 +35003,11 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
         const patchFilePath = require$$1.join(process.cwd(), patchFileName);
         try {
+            // Reset and clean the working directory before applying the patch
+            coreExports.info('Resetting working directory to clean state before applying patch...');
+            await execExports.exec('git', ['reset', '--hard', 'HEAD']);
+            await execExports.exec('git', ['clean', '-fd']);
+            coreExports.info('Working directory reset complete');
             // Write the patch content to a temporary file
             fs.writeFileSync(patchFilePath, gitPatch);
             coreExports.info(`Created patch file: ${patchFilePath}`);
