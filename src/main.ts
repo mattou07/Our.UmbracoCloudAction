@@ -31,6 +31,99 @@ interface ChangesResponse {
   changes: string // diff/patch text
 }
 
+interface PatchChange {
+  type: 'add' | 'modify' | 'delete'
+  path: string
+  oldContent?: string
+  newContent?: string
+  oldMode?: string
+  newMode?: string
+}
+
+function parseGitPatch(patchContent: string): PatchChange[] {
+  const changes: PatchChange[] = []
+  const lines = patchContent.split('\n')
+  let currentChange: Partial<PatchChange> | null = null
+  let currentContent: string[] = []
+  let inHunk = false
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]
+
+    // Parse file headers
+    if (line.startsWith('diff --git')) {
+      // Save previous change if exists
+      if (currentChange && currentChange.type && currentChange.path) {
+        if (currentChange.type === 'add' || currentChange.type === 'modify') {
+          currentChange.newContent = currentContent.join('\n')
+        }
+        changes.push(currentChange as PatchChange)
+      }
+
+      // Start new change
+      currentChange = {}
+      currentContent = []
+      inHunk = false
+
+      // Extract file paths
+      const match = line.match(/diff --git a\/(.+) b\/(.+)/)
+      if (match) {
+        const oldPath = match[1]
+        const newPath = match[2]
+
+        if (oldPath === '/dev/null') {
+          currentChange.type = 'add'
+          currentChange.path = newPath
+        } else if (newPath === '/dev/null') {
+          currentChange.type = 'delete'
+          currentChange.path = oldPath
+        } else {
+          currentChange.type = 'modify'
+          currentChange.path = newPath
+        }
+      }
+    }
+
+    // Parse mode changes
+    else if (line.startsWith('old mode') || line.startsWith('new mode')) {
+      const modeMatch = line.match(/(old|new) mode (\d+)/)
+      if (modeMatch && currentChange) {
+        if (modeMatch[1] === 'old') {
+          currentChange.oldMode = modeMatch[2]
+        } else {
+          currentChange.newMode = modeMatch[2]
+        }
+      }
+    }
+
+    // Parse hunk headers
+    else if (line.startsWith('@@')) {
+      inHunk = true
+      continue
+    }
+
+    // Collect content lines
+    else if (inHunk && currentChange) {
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        currentContent.push(line.substring(1))
+      } else if (line.startsWith(' ') || line.startsWith('-')) {
+        // Skip context lines and deletions for new content
+        continue
+      }
+    }
+  }
+
+  // Save the last change
+  if (currentChange && currentChange.type && currentChange.path) {
+    if (currentChange.type === 'add' || currentChange.type === 'modify') {
+      currentChange.newContent = currentContent.join('\n')
+    }
+    changes.push(currentChange as PatchChange)
+  }
+
+  return changes
+}
+
 class UmbracoCloudAPI {
   private baseUrl: string
   private projectId: string
@@ -305,44 +398,91 @@ class UmbracoCloudAPI {
 
     core.debug(`Uploading artifact: ${filePath}`)
 
-    try {
-      const formData = new FormData()
-      const fileBuffer = fs.readFileSync(filePath)
-      const fileName = path.basename(filePath)
+    // Retry logic for artifact upload
+    const maxRetries = parseInt(core.getInput('upload-retries') || '3', 10)
+    const baseDelay = parseInt(
+      core.getInput('upload-retry-delay') || '30000',
+      10
+    ) // 30 seconds default
+    const timeoutMs = parseInt(core.getInput('upload-timeout') || '60000', 10) // 1 minute default
 
-      formData.append('file', new Blob([fileBuffer]), fileName)
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const formData = new FormData()
+        const fileBuffer = fs.readFileSync(filePath)
+        const fileName = path.basename(filePath)
 
-      if (description) {
-        formData.append('description', description)
+        formData.append('file', new Blob([fileBuffer]), fileName)
+
+        if (description) {
+          formData.append('description', description)
+        }
+
+        if (version) {
+          formData.append('version', version)
+        }
+
+        // Create AbortController for timeout
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
+        try {
+          const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Umbraco-Cloud-Api-Key': this.apiKey
+            },
+            body: formData,
+            signal: controller.signal
+          })
+
+          clearTimeout(timeoutId)
+
+          if (!response.ok) {
+            const errorText = await response.text()
+            throw new Error(
+              `Failed to upload artifact: ${response.status} ${response.statusText} - ${errorText}`
+            )
+          }
+
+          const data = (await response.json()) as ArtifactResponse
+          core.debug(`Artifact uploaded successfully: ${JSON.stringify(data)}`)
+
+          return data.artifactId
+        } catch (fetchError) {
+          clearTimeout(timeoutId)
+          throw fetchError
+        }
+      } catch (error) {
+        const isLastAttempt = attempt === maxRetries
+        const isTimeoutError =
+          error instanceof Error &&
+          (error.name === 'AbortError' ||
+            error.message.includes('timeout') ||
+            error.message.includes('Headers Timeout'))
+
+        if (isLastAttempt) {
+          core.error(
+            `Error uploading artifact after ${maxRetries} attempts: ${error}`
+          )
+          throw error
+        }
+
+        if (isTimeoutError) {
+          const delay = baseDelay * attempt
+          core.warning(
+            `Upload attempt ${attempt} failed due to timeout. Retrying in ${delay}ms...`
+          )
+          await new Promise((resolve) => setTimeout(resolve, delay))
+        } else {
+          // For non-timeout errors, don't retry
+          core.error(`Error uploading artifact: ${error}`)
+          throw error
+        }
       }
-
-      if (version) {
-        formData.append('version', version)
-      }
-
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Umbraco-Cloud-Api-Key': this.apiKey
-        },
-        body: formData
-      })
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(
-          `Failed to upload artifact: ${response.status} ${response.statusText} - ${errorText}`
-        )
-      }
-
-      const data = (await response.json()) as ArtifactResponse
-      core.debug(`Artifact uploaded successfully: ${JSON.stringify(data)}`)
-
-      return data.artifactId
-    } catch (error) {
-      core.error(`Error uploading artifact: ${error}`)
-      throw error
     }
+
+    throw new Error('Upload failed after all retry attempts')
   }
 
   async getChangesById(
@@ -636,27 +776,77 @@ async function createPullRequestWithPatch(
       }
     }
 
-    // Create a blob for the patch file
-    const { data: patchBlob } = await octokit.git.createBlob({
+    // Parse and apply the git patch to create the actual file changes
+    const patchChanges = parseGitPatch(gitPatch)
+    core.info(`Parsed patch with ${patchChanges.length} file changes`)
+
+    // Get current tree SHA
+    const { data: currentTreeData } = await octokit.git.getTree({
       owner,
       repo,
-      content: gitPatch,
-      encoding: 'utf-8'
+      tree_sha: baseSha,
+      recursive: 'true'
     })
 
-    // Create a new tree with the patch file
+    // Create blobs for all changed files
+    const treeItems = []
+    const processedFiles = new Set<string>()
+
+    for (const change of patchChanges) {
+      if (processedFiles.has(change.path)) continue
+      processedFiles.add(change.path)
+
+      let content: string | null = null
+      let mode: '100644' | '100755' = '100644'
+
+      if (change.type === 'add' || change.type === 'modify') {
+        // For new or modified files, use the new content
+        content = change.newContent || ''
+        if (change.newMode) {
+          mode = (change.newMode === '100755' ? '100755' : '100644') as
+            | '100644'
+            | '100755'
+        }
+      } else if (change.type === 'delete') {
+        // For deleted files, we'll handle this by not including them in the tree
+        continue
+      }
+
+      if (content !== null) {
+        const { data: blob } = await octokit.git.createBlob({
+          owner,
+          repo,
+          content,
+          encoding: 'utf-8'
+        })
+
+        treeItems.push({
+          path: change.path,
+          mode: mode || '100644',
+          type: 'blob' as const,
+          sha: blob.sha
+        })
+      }
+    }
+
+    // Add unchanged files from the current tree
+    for (const item of currentTreeData.tree) {
+      if (item.type === 'blob' && item.path && !processedFiles.has(item.path)) {
+        treeItems.push({
+          path: item.path,
+          mode: (item.mode || '100644') as '100644' | '100755',
+          type: 'blob' as const,
+          sha: item.sha
+        })
+      }
+    }
+
+    // Create a new tree with all the changes
     const { data: tree } = await octokit.git.createTree({
       owner,
       repo,
       base_tree: baseSha,
-      tree: [
-        {
-          path: `git-patch-${latestCompletedDeploymentId}.diff`,
-          mode: '100644',
-          type: 'blob',
-          sha: patchBlob.sha
-        }
-      ]
+      tree: treeItems
     })
 
     // Create a new commit

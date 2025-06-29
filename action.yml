@@ -67,6 +67,19 @@ inputs:
     description: 'Base branch for pull request creation (defaults to main)'
     required: false
     default: 'main'
+  upload-retries:
+    description: 'Number of retry attempts for artifact upload (default: 3)'
+    required: false
+    default: '3'
+  upload-retry-delay:
+    description:
+      'Base delay in milliseconds between upload retries (default: 30000)'
+    required: false
+    default: '30000'
+  upload-timeout:
+    description: 'Timeout in milliseconds for artifact upload (default: 60000)'
+    required: false
+    default: '60000'
 
 # Define your outputs here.
 outputs:
