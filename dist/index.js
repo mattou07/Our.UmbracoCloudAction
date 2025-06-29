@@ -35090,41 +35090,30 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         // Stage all changes
         await execExports.exec('git', ['add', '.']);
         coreExports.info('All changes staged');
-        // Get the current working tree after applying the patch
-        const { data: workingTreeData } = await octokit.git.getTree({
-            owner,
-            repo,
-            tree_sha: baseSha,
-            recursive: 'true'
-        });
-        // Create a new tree with the changes
-        const { data: tree } = await octokit.git.createTree({
-            owner,
-            repo,
-            base_tree: baseSha,
-            tree: workingTreeData.tree.map((item) => ({
-                path: item.path,
-                mode: item.mode,
-                type: item.type,
-                sha: item.sha
-            }))
-        });
-        // Create a new commit
-        const { data: commit } = await octokit.git.createCommit({
-            owner,
-            repo,
-            message: `Apply changes from failed deployment\n\n${body}`,
-            tree: tree.sha,
-            parents: [baseSha]
+        // Commit the changes using git
+        await execExports.exec('git', [
+            'commit',
+            '-m',
+            `Apply changes from failed deployment\n\n${body}`
+        ]);
+        coreExports.info('Changes committed successfully');
+        // Get the commit SHA of the new commit
+        let commitSha = '';
+        await execExports.exec('git', ['rev-parse', 'HEAD'], {
+            listeners: {
+                stdout: (data) => {
+                    commitSha = data.toString().trim();
+                }
+            }
         });
         // Update the branch reference to point to the new commit
         await octokit.git.updateRef({
             owner,
             repo,
             ref: `heads/${newBranchName}`,
-            sha: commit.sha
+            sha: commitSha
         });
-        coreExports.info(`Commit created successfully: ${commit.sha}`);
+        coreExports.info(`Branch updated to commit: ${commitSha}`);
         // Create pull request using Octokit
         try {
             let prBodyWithConflictInfo = body;

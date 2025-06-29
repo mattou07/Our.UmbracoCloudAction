@@ -798,34 +798,22 @@ async function createPullRequestWithPatch(
     await exec.exec('git', ['add', '.'])
     core.info('All changes staged')
 
-    // Get the current working tree after applying the patch
-    const { data: workingTreeData } = await octokit.git.getTree({
-      owner,
-      repo,
-      tree_sha: baseSha,
-      recursive: 'true'
-    })
+    // Commit the changes using git
+    await exec.exec('git', [
+      'commit',
+      '-m',
+      `Apply changes from failed deployment\n\n${body}`
+    ])
+    core.info('Changes committed successfully')
 
-    // Create a new tree with the changes
-    const { data: tree } = await octokit.git.createTree({
-      owner,
-      repo,
-      base_tree: baseSha,
-      tree: workingTreeData.tree.map((item) => ({
-        path: item.path,
-        mode: item.mode as '100644' | '100755' | '040000' | '160000' | '120000',
-        type: item.type as 'commit' | 'tree' | 'blob',
-        sha: item.sha
-      }))
-    })
-
-    // Create a new commit
-    const { data: commit } = await octokit.git.createCommit({
-      owner,
-      repo,
-      message: `Apply changes from failed deployment\n\n${body}`,
-      tree: tree.sha,
-      parents: [baseSha]
+    // Get the commit SHA of the new commit
+    let commitSha = ''
+    await exec.exec('git', ['rev-parse', 'HEAD'], {
+      listeners: {
+        stdout: (data: Buffer) => {
+          commitSha = data.toString().trim()
+        }
+      }
     })
 
     // Update the branch reference to point to the new commit
@@ -833,10 +821,10 @@ async function createPullRequestWithPatch(
       owner,
       repo,
       ref: `heads/${newBranchName}`,
-      sha: commit.sha
+      sha: commitSha
     })
 
-    core.info(`Commit created successfully: ${commit.sha}`)
+    core.info(`Branch updated to commit: ${commitSha}`)
 
     // Create pull request using Octokit
     try {
