@@ -608,6 +608,34 @@ class UmbracoCloudAPI {
     core.debug('No completed deployments found after checking all batches')
     return null
   }
+
+  async getDeploymentErrorDetails(
+    deploymentId: string,
+    targetEnvironmentAlias: string
+  ): Promise<string[]> {
+    try {
+      const deploymentStatus = await this.checkDeploymentStatus(
+        deploymentId,
+        targetEnvironmentAlias,
+        30 // Short timeout since we just want error details
+      )
+
+      if (deploymentStatus.deploymentState === 'Failed') {
+        return deploymentStatus.deploymentStatusMessages
+          .filter(
+            (msg) =>
+              msg.message.toLowerCase().includes('error') ||
+              msg.message.toLowerCase().includes('fail') ||
+              msg.message.toLowerCase().includes('exception')
+          )
+          .map((msg) => msg.message)
+      }
+    } catch (error) {
+      core.debug(`Could not retrieve deployment error details: ${error}`)
+    }
+
+    return []
+  }
 }
 
 async function createPullRequestWithPatch(
@@ -743,6 +771,19 @@ async function createPullRequestWithPatch(
 
         // If we still have issues, throw an error
         if (gitApplyExitCode !== 0) {
+          // Check if this might be a build error in Umbraco Cloud
+          core.warning(
+            'Patch could not be applied. This might indicate a build error in Umbraco Cloud.'
+          )
+          core.warning(
+            'Please check the Umbraco Cloud portal for detailed error messages.'
+          )
+          core.warning('Common issues include:')
+          core.warning('- Private NuGet repository access')
+          core.warning('- Build configuration errors')
+          core.warning('- Missing dependencies')
+          core.warning('- Version conflicts')
+
           throw new Error(
             `Git apply failed with exit code: ${gitApplyExitCode}`
           )
@@ -984,6 +1025,34 @@ export async function run(): Promise<void> {
           core.warning(
             'Cannot retrieve changes for failed deployments - only completed deployments can be used to get git patches'
           )
+
+          // Get detailed error information from Umbraco Cloud
+          try {
+            const errorDetails = await api.getDeploymentErrorDetails(
+              deploymentId,
+              targetEnvironmentAlias
+            )
+
+            if (errorDetails.length > 0) {
+              core.warning('Deployment failed with the following errors:')
+              errorDetails.forEach((error) => {
+                core.warning(`- ${error}`)
+              })
+            }
+
+            core.warning(
+              'Please check the Umbraco Cloud portal for more detailed error information.'
+            )
+            core.warning('Common issues include:')
+            core.warning('- Private NuGet repository access')
+            core.warning('- Build configuration errors')
+            core.warning('- Missing dependencies')
+            core.warning('- Version conflicts')
+          } catch (errorDetailsError) {
+            core.warning(
+              `Could not retrieve detailed error information: ${errorDetailsError}`
+            )
+          }
 
           // Try to get the latest completed deployment and create a PR
           try {
