@@ -825,15 +825,32 @@ async function createPullRequestWithPatch(
       }
     })
 
-    // Update the branch reference to point to the new commit
-    await octokit.git.updateRef({
-      owner,
-      repo,
-      ref: `heads/${newBranchName}`,
-      sha: commitSha
-    })
-
-    core.info(`Branch updated to commit: ${commitSha}`)
+    // Update the branch reference to point to the new commit using Octokit
+    try {
+      await octokit.git.updateRef({
+        owner,
+        repo,
+        ref: `heads/${newBranchName}`,
+        sha: commitSha,
+        force: true // Force update in case the reference exists
+      })
+      core.info(`Branch ${newBranchName} updated to commit: ${commitSha}`)
+    } catch (updateError) {
+      core.warning(`Failed to update branch reference: ${updateError}`)
+      // If update fails, try to create the reference
+      try {
+        await octokit.git.createRef({
+          owner,
+          repo,
+          ref: `refs/heads/${newBranchName}`,
+          sha: commitSha
+        })
+        core.info(`Branch ${newBranchName} created with commit: ${commitSha}`)
+      } catch (createError) {
+        core.error(`Failed to create branch reference: ${createError}`)
+        throw createError
+      }
+    }
 
     // Create pull request using Octokit
     try {
