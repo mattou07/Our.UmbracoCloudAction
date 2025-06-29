@@ -1370,13 +1370,23 @@ The changes in this PR are based on the git patch from the latest successful dep
             // Get list of all files/directories in the temp directory (these are the extracted contents)
             const extractedContents = fs.readdirSync(tempDir)
 
-            // Create new zip with only the extracted contents, using absolute paths
-            const zipArgs = ['-r', path.join(tempDir, 'temp-artifact.zip')]
-            for (const item of extractedContents) {
-              zipArgs.push(path.join(tempDir, item))
-            }
+            // Create new zip with only the extracted contents, using relative paths
+            // Change to temp directory to create zip with relative paths
+            const originalCwd = process.cwd()
+            try {
+              process.chdir(tempDir)
 
-            await exec.exec('zip', zipArgs)
+              // Create zip with relative paths (just the file names, not full paths)
+              const zipArgs = ['-r', 'temp-artifact.zip']
+              for (const item of extractedContents) {
+                zipArgs.push(item)
+              }
+
+              await exec.exec('zip', zipArgs)
+            } finally {
+              // Always restore original working directory
+              process.chdir(originalCwd)
+            }
 
             // Copy the new zip back to original location
             fs.copyFileSync(path.join(tempDir, 'temp-artifact.zip'), filePath)

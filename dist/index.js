@@ -50189,12 +50189,22 @@ The changes in this PR are based on the git patch from the latest successful dep
                         fs.unlinkSync(tempZipPath);
                         // Get list of all files/directories in the temp directory (these are the extracted contents)
                         const extractedContents = fs.readdirSync(tempDir);
-                        // Create new zip with only the extracted contents, using absolute paths
-                        const zipArgs = ['-r', path$1.join(tempDir, 'temp-artifact.zip')];
-                        for (const item of extractedContents) {
-                            zipArgs.push(path$1.join(tempDir, item));
+                        // Create new zip with only the extracted contents, using relative paths
+                        // Change to temp directory to create zip with relative paths
+                        const originalCwd = process.cwd();
+                        try {
+                            process.chdir(tempDir);
+                            // Create zip with relative paths (just the file names, not full paths)
+                            const zipArgs = ['-r', 'temp-artifact.zip'];
+                            for (const item of extractedContents) {
+                                zipArgs.push(item);
+                            }
+                            await execExports.exec('zip', zipArgs);
                         }
-                        await execExports.exec('zip', zipArgs);
+                        finally {
+                            // Always restore original working directory
+                            process.chdir(originalCwd);
+                        }
                         // Copy the new zip back to original location
                         fs.copyFileSync(path$1.join(tempDir, 'temp-artifact.zip'), filePath);
                         // Clean up temp directory
