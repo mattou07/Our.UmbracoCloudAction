@@ -302,11 +302,20 @@ class UmbracoCloudAPI {
     // Validate that the zip contains a git repository
     core.info('Validating zip file contains git repository...')
     try {
-      // Extract zip to current directory to check for .git folder
-      await exec.exec('unzip', ['-q', filePath])
+      // Create a temporary directory for validation
+      const validationDir = path.join(process.cwd(), 'temp-validation')
+      if (!fs.existsSync(validationDir)) {
+        fs.mkdirSync(validationDir, { recursive: true })
+      }
+
+      // Extract zip to validation directory
+      await exec.exec('unzip', ['-q', filePath, '-d', validationDir])
 
       // Check if this is a valid git repository using git command
-      await exec.exec('git', ['rev-parse', '--git-dir'])
+      await exec.exec('git', ['rev-parse', '--git-dir'], { cwd: validationDir })
+
+      // Clean up validation directory
+      fs.rmSync(validationDir, { recursive: true, force: true })
 
       core.info('Git repository validation successful')
     } catch (error) {
