@@ -35090,6 +35090,14 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         // Stage all changes
         await execExports.exec('git', ['add', '.']);
         coreExports.info('All changes staged');
+        // Configure git user for the commit
+        await execExports.exec('git', ['config', 'user.name', 'github-actions[bot]']);
+        await execExports.exec('git', [
+            'config',
+            'user.email',
+            '41898282+github-actions[bot]@users.noreply.github.com'
+        ]);
+        coreExports.info('Git user configured for commit');
         // Commit the changes using git
         await execExports.exec('git', [
             'commit',

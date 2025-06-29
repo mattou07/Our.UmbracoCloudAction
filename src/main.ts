@@ -798,6 +798,15 @@ async function createPullRequestWithPatch(
     await exec.exec('git', ['add', '.'])
     core.info('All changes staged')
 
+    // Configure git user for the commit
+    await exec.exec('git', ['config', 'user.name', 'github-actions[bot]'])
+    await exec.exec('git', [
+      'config',
+      'user.email',
+      '41898282+github-actions[bot]@users.noreply.github.com'
+    ])
+    core.info('Git user configured for commit')
+
     // Commit the changes using git
     await exec.exec('git', [
       'commit',
