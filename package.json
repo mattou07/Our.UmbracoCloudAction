@@ -43,8 +43,8 @@
     "@actions/core": "^1.11.1",
     "@actions/github": "^6.0.0",
     "@octokit/rest": "^20.0.0",
-    "xml2js": "^0.4.23",
-    "glob": "^10.3.10"
+    "glob": "^10.3.10",
+    "xml2js": "^0.4.23"
   },
   "devDependencies": {
     "@eslint/compat": "^1.2.9",
@@ -55,6 +55,7 @@
     "@rollup/plugin-typescript": "^12.1.1",
     "@types/jest": "^29.5.14",
     "@types/node": "^20.19.0",
+    "@types/xml2js": "^0.4.14",
     "@typescript-eslint/eslint-plugin": "^8.33.1",
     "@typescript-eslint/parser": "^8.32.1",
     "eslint": "^9.28.0",

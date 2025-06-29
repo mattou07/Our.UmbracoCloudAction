@@ -4,6 +4,8 @@ import * as fs from 'fs'
 import * as path from 'path'
 import * as github from '@actions/github'
 import { Octokit } from '@octokit/rest'
+import * as xml2js from 'xml2js'
+import { glob } from 'glob'
 
 interface DeploymentRequest {
   targetEnvironmentAlias: string
@@ -657,15 +659,11 @@ class UmbracoCloudAPI {
   async addOrUpdateNuGetConfigSource(
     config: NuGetSourceConfig
   ): Promise<NuGetConfigModificationResult> {
-    const xml2js = require('xml2js')
-    const glob = require('glob')
-    const util = require('util')
-    const globAsync = util.promisify(glob)
     const cwd = process.cwd()
     let nugetConfigPath: string | undefined
 
     // Find NuGet.config (root or subfolders)
-    const files = await globAsync('**/NuGet.config', { cwd, nodir: true })
+    const files = await glob('**/NuGet.config', { cwd, nodir: true })
     if (files.length > 0) {
       nugetConfigPath = path.join(cwd, files[0])
     } else {
