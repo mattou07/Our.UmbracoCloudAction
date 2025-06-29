@@ -35006,26 +35006,38 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             // Write the patch content to a temporary file
             fs.writeFileSync(patchFilePath, gitPatch);
             coreExports.info(`Created patch file: ${patchFilePath}`);
-            // Apply the patch using git apply with 3-way merge to handle conflicts
-            await execExports.exec('git', ['apply', '--index', '--3way', patchFilePath]);
-            coreExports.info('Patch applied successfully using git apply with 3-way merge');
-            // Remove the patch file before staging changes
-            if (fs.existsSync(patchFilePath)) {
-                fs.unlinkSync(patchFilePath);
-                coreExports.info(`Removed patch file before staging: ${patchFilePath}`);
-            }
-            // Get the current status to see what files were changed
-            await execExports.exec('git', ['status', '--porcelain'], {
-                listeners: {
-                    stdout: (data) => {
-                        const output = data.toString();
-                        coreExports.info(`Git status: ${output}`);
+            // Apply the patch using git apply with theirs option to always accept patch content
+            await execExports.exec('git', [
+                'apply',
+                '--index',
+                '--3way',
+                '--theirs',
+                patchFilePath
+            ]);
+            coreExports.info('Patch applied successfully using git apply with theirs option');
+        }
+        catch (applyError) {
+            coreExports.warning(`Initial patch application failed: ${applyError}`);
+            // Check for any rejected hunks (.rej files) and try to apply them
+            const rejFiles = fs
+                .readdirSync(process.cwd())
+                .filter((file) => file.endsWith('.rej'));
+            if (rejFiles.length > 0) {
+                coreExports.warning(`Some parts of the patch could not be applied. Rejected files: ${rejFiles.join(', ')}`);
+                // Try to apply rejected hunks manually
+                for (const rejFile of rejFiles) {
+                    try {
+                        coreExports.info(`Attempting to apply rejected hunks from ${rejFile}...`);
+                        await execExports.exec('git', ['apply', '--reject', rejFile]);
+                        coreExports.info(`Successfully reapplied rejected hunks from ${rejFile}`);
+                    }
+                    catch (rejError) {
+                        coreExports.warning(`Could not apply rejected hunks from ${rejFile}: ${rejError}`);
                     }
                 }
-            });
-            // Stage all changes
-            await execExports.exec('git', ['add', '.']);
-            coreExports.info('All changes staged');
+            }
+            // Re-throw the original error if we still can't apply the patch
+            throw applyError;
         }
         finally {
             // Clean up the temporary patch file
@@ -35034,6 +35046,18 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
                 coreExports.info(`Cleaned up patch file: ${patchFilePath}`);
             }
         }
+        // Get the current status to see what files were changed
+        await execExports.exec('git', ['status', '--porcelain'], {
+            listeners: {
+                stdout: (data) => {
+                    const output = data.toString();
+                    coreExports.info(`Git status: ${output}`);
+                }
+            }
+        });
+        // Stage all changes
+        await execExports.exec('git', ['add', '.']);
+        coreExports.info('All changes staged');
         // Get the current working tree after applying the patch
         const { data: workingTreeData } = await octokit.git.getTree({
             owner,

@@ -692,29 +692,43 @@ async function createPullRequestWithPatch(
       fs.writeFileSync(patchFilePath, gitPatch)
       core.info(`Created patch file: ${patchFilePath}`)
 
-      // Apply the patch using git apply with 3-way merge to handle conflicts
-      await exec.exec('git', ['apply', '--index', '--3way', patchFilePath])
-      core.info('Patch applied successfully using git apply with 3-way merge')
+      // Apply the patch using git apply with theirs option to always accept patch content
+      await exec.exec('git', [
+        'apply',
+        '--index',
+        '--3way',
+        '--theirs',
+        patchFilePath
+      ])
+      core.info('Patch applied successfully using git apply with theirs option')
+    } catch (applyError) {
+      core.warning(`Initial patch application failed: ${applyError}`)
 
-      // Remove the patch file before staging changes
-      if (fs.existsSync(patchFilePath)) {
-        fs.unlinkSync(patchFilePath)
-        core.info(`Removed patch file before staging: ${patchFilePath}`)
-      }
+      // Check for any rejected hunks (.rej files) and try to apply them
+      const rejFiles = fs
+        .readdirSync(process.cwd())
+        .filter((file) => file.endsWith('.rej'))
+      if (rejFiles.length > 0) {
+        core.warning(
+          `Some parts of the patch could not be applied. Rejected files: ${rejFiles.join(', ')}`
+        )
 
-      // Get the current status to see what files were changed
-      await exec.exec('git', ['status', '--porcelain'], {
-        listeners: {
-          stdout: (data: Buffer) => {
-            const output = data.toString()
-            core.info(`Git status: ${output}`)
+        // Try to apply rejected hunks manually
+        for (const rejFile of rejFiles) {
+          try {
+            core.info(`Attempting to apply rejected hunks from ${rejFile}...`)
+            await exec.exec('git', ['apply', '--reject', rejFile])
+            core.info(`Successfully reapplied rejected hunks from ${rejFile}`)
+          } catch (rejError) {
+            core.warning(
+              `Could not apply rejected hunks from ${rejFile}: ${rejError}`
+            )
           }
         }
-      })
+      }
 
-      // Stage all changes
-      await exec.exec('git', ['add', '.'])
-      core.info('All changes staged')
+      // Re-throw the original error if we still can't apply the patch
+      throw applyError
     } finally {
       // Clean up the temporary patch file
       if (fs.existsSync(patchFilePath)) {
@@ -722,6 +736,20 @@ async function createPullRequestWithPatch(
         core.info(`Cleaned up patch file: ${patchFilePath}`)
       }
     }
+
+    // Get the current status to see what files were changed
+    await exec.exec('git', ['status', '--porcelain'], {
+      listeners: {
+        stdout: (data: Buffer) => {
+          const output = data.toString()
+          core.info(`Git status: ${output}`)
+        }
+      }
+    })
+
+    // Stage all changes
+    await exec.exec('git', ['add', '.'])
+    core.info('All changes staged')
 
     // Get the current working tree after applying the patch
     const { data: workingTreeData } = await octokit.git.getTree({
