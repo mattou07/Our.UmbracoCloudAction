@@ -49708,9 +49708,34 @@ async function validateGitRepository(directoryPath, context) {
         try {
             // Change to the specified directory
             process.chdir(directoryPath);
-            // Check if this is a valid git repository using git command
-            await execExports.exec('git', ['rev-parse', '--git-dir']);
-            coreExports.info(`Git repository validation successful ${context}`);
+            // First, check if this directory itself is a git repository
+            try {
+                await execExports.exec('git', ['rev-parse', '--git-dir']);
+                coreExports.info(`Git repository validation successful ${context} (found in root)`);
+                return;
+            }
+            catch (rootError) {
+                coreExports.debug(`No git repository found in root directory: ${rootError}`);
+            }
+            // If not found in root, search for .git directory in subdirectories
+            const items = fs.readdirSync(directoryPath);
+            for (const item of items) {
+                const itemPath = path$1.join(directoryPath, item);
+                const stats = fs.statSync(itemPath);
+                if (stats.isDirectory()) {
+                    // Check if this subdirectory contains a .git folder
+                    const gitPath = path$1.join(itemPath, '.git');
+                    if (fs.existsSync(gitPath)) {
+                        // Change to the subdirectory and validate
+                        process.chdir(itemPath);
+                        await execExports.exec('git', ['rev-parse', '--git-dir']);
+                        coreExports.info(`Git repository validation successful ${context} (found in subdirectory: ${item})`);
+                        return;
+                    }
+                }
+            }
+            // If we get here, no git repository was found
+            throw new Error('No git repository found in any directory or subdirectory');
         }
         finally {
             // Always restore original working directory
@@ -50181,29 +50206,31 @@ The changes in this PR are based on the git patch from the latest successful dep
                         coreExports.warning('Proceeding with original artifact upload...');
                     }
                 }
-                // Validate that the artifact contains a git repository (for all uploads)
-                coreExports.info('Validating artifact contains git repository...');
-                try {
-                    // Create temporary directory for validation
-                    const validationDir = path$1.join(process.cwd(), 'temp-validation');
-                    if (!fs.existsSync(validationDir)) {
-                        fs.mkdirSync(validationDir, { recursive: true });
+                // Only validate git repository if we didn't already validate during NuGet injection
+                if (!nugetSourceName || !nugetSourceUrl) {
+                    coreExports.info('Validating artifact contains git repository...');
+                    try {
+                        // Create temporary directory for validation
+                        const validationDir = path$1.join(process.cwd(), 'temp-validation');
+                        if (!fs.existsSync(validationDir)) {
+                            fs.mkdirSync(validationDir, { recursive: true });
+                        }
+                        // Extract zip to validation directory
+                        await execExports.exec('unzip', [
+                            '-q',
+                            modifiedFilePath,
+                            '-d',
+                            validationDir
+                        ]);
+                        // Validate git repository
+                        await validateGitRepository(validationDir, 'in artifact');
+                        // Clean up validation directory
+                        fs.rmSync(validationDir, { recursive: true, force: true });
                     }
-                    // Extract zip to validation directory
-                    await execExports.exec('unzip', [
-                        '-q',
-                        modifiedFilePath,
-                        '-d',
-                        validationDir
-                    ]);
-                    // Validate git repository
-                    await validateGitRepository(validationDir, 'in artifact');
-                    // Clean up validation directory
-                    fs.rmSync(validationDir, { recursive: true, force: true });
-                }
-                catch (error) {
-                    coreExports.setFailed(`Failed to validate git repository in artifact: ${error}`);
-                    throw error;
+                    catch (error) {
+                        coreExports.setFailed(`Failed to validate git repository in artifact: ${error}`);
+                        throw error;
+                    }
                 }
                 const artifactId = await api.addDeploymentArtifact(modifiedFilePath, description, version);
                 coreExports.setOutput('artifactId', artifactId);
