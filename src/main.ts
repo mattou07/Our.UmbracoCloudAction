@@ -3,6 +3,7 @@ import * as exec from '@actions/exec'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as github from '@actions/github'
+import { Octokit } from '@octokit/rest'
 
 interface DeploymentRequest {
   targetEnvironmentAlias: string
@@ -571,100 +572,11 @@ async function createPullRequestWithPatch(
 ): Promise<void> {
   try {
     // Create a new branch name using the format: umbcloud/{deploymentId}
-    const newBranchName = `umbcloud/${latestCompletedDeploymentId}`
+    let newBranchName = `umbcloud/${latestCompletedDeploymentId}`
+    let guidConflictOccurred = false
     core.info(`Creating new branch: ${newBranchName}`)
 
-    // Ensure we're in the correct directory (GitHub workspace)
-    const workspace = process.env.GITHUB_WORKSPACE
-    if (workspace) {
-      core.info(`Changing to workspace directory: ${workspace}`)
-      process.chdir(workspace)
-    }
-
-    // Check if we're in a git repository
-    try {
-      await exec.exec('git', ['rev-parse', '--git-dir'])
-      core.info('Git repository found')
-    } catch (error) {
-      core.setFailed(
-        'Not in a git repository. The zip file should have been extracted and contain a git repository.'
-      )
-      throw new Error('No git repository found')
-    }
-
-    // Checkout the base branch and create the new branch
-    // Get the current branch (the branch that was deployed)
-    let currentBranch: string
-    try {
-      // Try to get the current branch
-      let branchOutput = ''
-      await exec.exec('git', ['branch', '--show-current'], {
-        listeners: {
-          stdout: (data: Buffer) => {
-            branchOutput += data.toString()
-          }
-        }
-      })
-      currentBranch = branchOutput.trim()
-    } catch (error) {
-      core.setFailed(
-        'Could not determine current branch. This action requires a valid git repository with a current branch.'
-      )
-      throw new Error('No current branch found')
-    }
-
-    core.info(`Using current branch as base: ${currentBranch}`)
-
-    // Create the new branch from the current branch
-    await exec.exec('git', ['checkout', '-b', newBranchName])
-    core.info(`Branch ${newBranchName} created successfully`)
-
-    // Write the patch to a file
-    const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`
-    const patchFilePath = path.join(process.cwd(), patchFileName)
-    fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
-    core.info(`Patch file written to ${patchFilePath}`)
-
-    // Apply the patch
-    let myOutput = ''
-    let myError = ''
-    const options = {
-      listeners: {
-        stdout: (data: Buffer) => {
-          myOutput += data.toString()
-        },
-        stderr: (data: Buffer) => {
-          myError += data.toString()
-        }
-      }
-    }
-    try {
-      await exec.exec('git', ['apply', patchFilePath], options)
-      core.info('Patch applied successfully!')
-      if (myOutput) core.info(myOutput)
-      if (myError) core.warning(myError)
-    } catch (error) {
-      const err = error as Error
-      core.setFailed(`Failed to apply patch: ${err.message}`)
-      if (myError) core.error(myError)
-      throw err
-    }
-
-    // Commit the changes
-    await exec.exec('git', ['add', patchFileName])
-    await exec.exec('git', ['config', 'user.name', 'github-actions'])
-    await exec.exec('git', [
-      'config',
-      'user.email',
-      'github-actions@github.com'
-    ])
-    await exec.exec('git', [
-      'commit',
-      '-m',
-      `Apply changes from failed deployment\n\n${body}`
-    ])
-
-    // Configure remote with token for authentication
+    // Initialize Octokit
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
     if (!token) {
       throw new Error(
@@ -672,41 +584,123 @@ async function createPullRequestWithPatch(
       )
     }
 
-    const remoteUrl = `https://x-access-token:${token}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
-    await exec.exec('git', ['remote', 'set-url', 'origin', remoteUrl])
+    const octokit = new Octokit({
+      auth: token
+    })
 
-    // Push the branch
-    await exec.exec('git', ['push', 'origin', newBranchName])
+    const { owner, repo } = github.context.repo
 
-    // Create pull request using GitHub CLI
-    const prTitle = title
-    const prBody = body
+    // Get the latest commit SHA from the current workflow branch
+    const { data: baseBranchData } = await octokit.repos.getBranch({
+      owner,
+      repo,
+      branch: baseBranch
+    })
+    const baseSha = baseBranchData.commit.sha
+    core.info(`Base branch SHA: ${baseSha}`)
 
-    // Create a temporary file for the PR body
-    const bodyFilePath = path.join(process.cwd(), 'pr-body.txt')
-    fs.writeFileSync(bodyFilePath, prBody, 'utf8')
-
+    // Create the new branch using Octokit
     try {
-      await exec.exec('gh', [
-        'pr',
-        'create',
-        '--title',
-        prTitle,
-        '--body-file',
-        bodyFilePath,
-        '--head',
-        newBranchName,
-        '--base',
-        currentBranch
-      ])
+      await octokit.git.createRef({
+        owner,
+        repo,
+        ref: `refs/heads/${newBranchName}`,
+        sha: baseSha
+      })
+      core.info(`Branch ${newBranchName} created successfully`)
+    } catch (error) {
+      // Branch might already exist due to GUID conflict, try with a random suffix
+      if (
+        error instanceof Error &&
+        error.message.includes('Reference already exists')
+      ) {
+        const randomSuffix = Math.random().toString(36).substring(2, 8)
+        const newBranchNameWithSuffix = `${newBranchName}-${randomSuffix}`
+        core.warning(
+          `GUID conflict detected! Attempting to create branch with suffix: ${newBranchNameWithSuffix}`
+        )
 
-      core.info('Pull request created successfully using GitHub CLI')
+        await octokit.git.createRef({
+          owner,
+          repo,
+          ref: `refs/heads/${newBranchNameWithSuffix}`,
+          sha: baseSha
+        })
+        core.info(`Branch ${newBranchNameWithSuffix} created successfully`)
 
-      // Clean up the temporary file
-      fs.unlinkSync(bodyFilePath)
+        // Update the branch name for the rest of the function
+        newBranchName = newBranchNameWithSuffix
+        guidConflictOccurred = true
+      } else {
+        throw error
+      }
+    }
+
+    // Create a blob for the patch file
+    const { data: patchBlob } = await octokit.git.createBlob({
+      owner,
+      repo,
+      content: gitPatch,
+      encoding: 'utf-8'
+    })
+
+    // Create a new tree with the patch file
+    const { data: tree } = await octokit.git.createTree({
+      owner,
+      repo,
+      base_tree: baseSha,
+      tree: [
+        {
+          path: `git-patch-${latestCompletedDeploymentId}.diff`,
+          mode: '100644',
+          type: 'blob',
+          sha: patchBlob.sha
+        }
+      ]
+    })
+
+    // Create a new commit
+    const { data: commit } = await octokit.git.createCommit({
+      owner,
+      repo,
+      message: `Apply changes from failed deployment\n\n${body}`,
+      tree: tree.sha,
+      parents: [baseSha]
+    })
+
+    // Update the branch reference to point to the new commit
+    await octokit.git.updateRef({
+      owner,
+      repo,
+      ref: `heads/${newBranchName}`,
+      sha: commit.sha
+    })
+
+    core.info(`Commit created successfully: ${commit.sha}`)
+
+    // Create pull request using Octokit
+    try {
+      let prBodyWithConflictInfo = body
+      if (guidConflictOccurred) {
+        prBodyWithConflictInfo = `${body}
+
+**Note:** A GUID conflict occurred during branch creation. The branch name was modified with a random suffix to ensure uniqueness.`
+      }
+
+      const { data: pullRequest } = await octokit.pulls.create({
+        owner,
+        repo,
+        title,
+        body: prBodyWithConflictInfo,
+        head: newBranchName,
+        base: baseBranch
+      })
+
+      core.info(`Pull request created successfully: ${pullRequest.html_url}`)
+      core.setOutput('pull-request-number', pullRequest.number.toString())
+      core.setOutput('pull-request-url', pullRequest.html_url)
     } catch (prError) {
       core.error(`Failed to create pull request: ${prError}`)
-      core.error('Please ensure GitHub CLI is available and authenticated')
       throw prError
     }
   } catch (error) {
@@ -826,8 +820,7 @@ export async function run(): Promise<void> {
               core.setOutput('changes', JSON.stringify(changes))
 
               // Create GitHub PR with the changes
-              const baseBranch =
-                core.getInput('base-branch', { required: false }) || 'main'
+              const baseBranch = github.context.ref.replace('refs/heads/', '')
               const prTitle = `Fix: Apply changes from failed deployment ${deploymentId}`
               const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${deploymentId}).
 
