@@ -784,46 +784,65 @@ async function createPullRequestWithPatch(
       }
     }
 
-    // Get the current status to see what files were changed
-    await exec.exec('git', ['status', '--porcelain'], {
-      listeners: {
-        stdout: (data: Buffer) => {
-          const output = data.toString()
-          core.info(`Git status: ${output}`)
-        }
-      }
-    })
-
     // Stage all changes
     await exec.exec('git', ['add', '.'])
     core.info('All changes staged')
 
-    // Configure git user for the commit
-    await exec.exec('git', ['config', 'user.name', 'github-actions[bot]'])
-    await exec.exec('git', [
-      'config',
-      'user.email',
-      '41898282+github-actions[bot]@users.noreply.github.com'
-    ])
-    core.info('Git user configured for commit')
-
-    // Commit the changes using git
-    await exec.exec('git', [
-      'commit',
-      '-m',
-      `Apply changes from failed deployment\n\n${body}`
-    ])
-    core.info('Changes committed successfully')
-
-    // Get the commit SHA of the new commit
-    let commitSha = ''
-    await exec.exec('git', ['rev-parse', 'HEAD'], {
+    // Get the list of modified files
+    let modifiedFiles = ''
+    await exec.exec('git', ['diff', '--cached', '--name-only'], {
       listeners: {
         stdout: (data: Buffer) => {
-          commitSha = data.toString().trim()
+          modifiedFiles = data.toString().trim()
         }
       }
     })
+
+    if (!modifiedFiles) {
+      core.warning('No files were modified by the patch')
+      return
+    }
+
+    const fileList = modifiedFiles.split('\n').filter((file) => file.trim())
+    core.info(`Modified files: ${fileList.join(', ')}`)
+
+    // Create blobs for the modified files
+    const treeEntries = []
+    for (const filePath of fileList) {
+      const fileContent = fs.readFileSync(filePath, 'utf8')
+      const { data: blob } = await octokit.git.createBlob({
+        owner,
+        repo,
+        content: fileContent,
+        encoding: 'utf-8'
+      })
+
+      treeEntries.push({
+        path: filePath,
+        mode: '100644' as const,
+        type: 'blob' as const,
+        sha: blob.sha
+      })
+    }
+
+    // Create a new tree with the modified files
+    const { data: tree } = await octokit.git.createTree({
+      owner,
+      repo,
+      base_tree: baseSha,
+      tree: treeEntries
+    })
+
+    // Create a new commit using Octokit
+    const { data: commit } = await octokit.git.createCommit({
+      owner,
+      repo,
+      message: `Apply changes from failed deployment\n\n${body}`,
+      tree: tree.sha,
+      parents: [baseSha]
+    })
+
+    core.info(`Commit created successfully: ${commit.sha}`)
 
     // Update the branch reference to point to the new commit using Octokit
     try {
@@ -831,10 +850,10 @@ async function createPullRequestWithPatch(
         owner,
         repo,
         ref: `heads/${newBranchName}`,
-        sha: commitSha,
+        sha: commit.sha,
         force: true // Force update in case the reference exists
       })
-      core.info(`Branch ${newBranchName} updated to commit: ${commitSha}`)
+      core.info(`Branch ${newBranchName} updated to commit: ${commit.sha}`)
     } catch (updateError) {
       core.warning(`Failed to update branch reference: ${updateError}`)
       // If update fails, try to create the reference
@@ -843,9 +862,9 @@ async function createPullRequestWithPatch(
           owner,
           repo,
           ref: `refs/heads/${newBranchName}`,
-          sha: commitSha
+          sha: commit.sha
         })
-        core.info(`Branch ${newBranchName} created with commit: ${commitSha}`)
+        core.info(`Branch ${newBranchName} created with commit: ${commit.sha}`)
       } catch (createError) {
         core.error(`Failed to create branch reference: ${createError}`)
         throw createError

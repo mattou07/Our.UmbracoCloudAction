@@ -35078,52 +35078,67 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
                 coreExports.info(`Cleaned up patch file: ${patchFilePath}`);
             }
         }
-        // Get the current status to see what files were changed
-        await execExports.exec('git', ['status', '--porcelain'], {
-            listeners: {
-                stdout: (data) => {
-                    const output = data.toString();
-                    coreExports.info(`Git status: ${output}`);
-                }
-            }
-        });
         // Stage all changes
         await execExports.exec('git', ['add', '.']);
         coreExports.info('All changes staged');
-        // Configure git user for the commit
-        await execExports.exec('git', ['config', 'user.name', 'github-actions[bot]']);
-        await execExports.exec('git', [
-            'config',
-            'user.email',
-            '41898282+github-actions[bot]@users.noreply.github.com'
-        ]);
-        coreExports.info('Git user configured for commit');
-        // Commit the changes using git
-        await execExports.exec('git', [
-            'commit',
-            '-m',
-            `Apply changes from failed deployment\n\n${body}`
-        ]);
-        coreExports.info('Changes committed successfully');
-        // Get the commit SHA of the new commit
-        let commitSha = '';
-        await execExports.exec('git', ['rev-parse', 'HEAD'], {
+        // Get the list of modified files
+        let modifiedFiles = '';
+        await execExports.exec('git', ['diff', '--cached', '--name-only'], {
             listeners: {
                 stdout: (data) => {
-                    commitSha = data.toString().trim();
+                    modifiedFiles = data.toString().trim();
                 }
             }
         });
+        if (!modifiedFiles) {
+            coreExports.warning('No files were modified by the patch');
+            return;
+        }
+        const fileList = modifiedFiles.split('\n').filter((file) => file.trim());
+        coreExports.info(`Modified files: ${fileList.join(', ')}`);
+        // Create blobs for the modified files
+        const treeEntries = [];
+        for (const filePath of fileList) {
+            const fileContent = fs.readFileSync(filePath, 'utf8');
+            const { data: blob } = await octokit.git.createBlob({
+                owner,
+                repo,
+                content: fileContent,
+                encoding: 'utf-8'
+            });
+            treeEntries.push({
+                path: filePath,
+                mode: '100644',
+                type: 'blob',
+                sha: blob.sha
+            });
+        }
+        // Create a new tree with the modified files
+        const { data: tree } = await octokit.git.createTree({
+            owner,
+            repo,
+            base_tree: baseSha,
+            tree: treeEntries
+        });
+        // Create a new commit using Octokit
+        const { data: commit } = await octokit.git.createCommit({
+            owner,
+            repo,
+            message: `Apply changes from failed deployment\n\n${body}`,
+            tree: tree.sha,
+            parents: [baseSha]
+        });
+        coreExports.info(`Commit created successfully: ${commit.sha}`);
         // Update the branch reference to point to the new commit using Octokit
         try {
             await octokit.git.updateRef({
                 owner,
                 repo,
                 ref: `heads/${newBranchName}`,
-                sha: commitSha,
+                sha: commit.sha,
                 force: true // Force update in case the reference exists
             });
-            coreExports.info(`Branch ${newBranchName} updated to commit: ${commitSha}`);
+            coreExports.info(`Branch ${newBranchName} updated to commit: ${commit.sha}`);
         }
         catch (updateError) {
             coreExports.warning(`Failed to update branch reference: ${updateError}`);
@@ -35133,9 +35148,9 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
                     owner,
                     repo,
                     ref: `refs/heads/${newBranchName}`,
-                    sha: commitSha
+                    sha: commit.sha
                 });
-                coreExports.info(`Branch ${newBranchName} created with commit: ${commitSha}`);
+                coreExports.info(`Branch ${newBranchName} created with commit: ${commit.sha}`);
             }
             catch (createError) {
                 coreExports.error(`Failed to create branch reference: ${createError}`);
