@@ -1244,6 +1244,21 @@ export async function run(): Promise<void> {
             core.warning('- Build configuration errors')
             core.warning('- Missing dependencies')
             core.warning('- Version conflicts')
+
+            // Check if this is a NuGet-related failure
+            const isNuGetFailure = errorDetails.some(
+              (error) =>
+                error.toLowerCase().includes('error restoring packages') ||
+                error.toLowerCase().includes('nu1301') ||
+                error.toLowerCase().includes('nu1302')
+            )
+
+            if (isNuGetFailure) {
+              core.warning(
+                'NuGet-related failure detected. Skipping PR creation as this is likely a credential or configuration issue.'
+              )
+              return
+            }
           } catch (errorDetailsError) {
             core.warning(
               `Could not retrieve detailed error information: ${errorDetailsError}`
