@@ -64860,8 +64860,9 @@ async function run() {
                 const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
                     required: true
                 });
-                const timeoutSeconds = parseInt(coreExports.getInput('timeoutSeconds') || '1200', 10);
-                const deploymentStatus = await api.checkDeploymentStatus(deploymentId, targetEnvironmentAlias, timeoutSeconds);
+                coreExports.info(`Checking status for deployment ID: ${deploymentId}, environment: ${targetEnvironmentAlias}`);
+                // Poll until completed/failed, then use the result for the rest of the logic
+                const deploymentStatus = await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), deploymentId);
                 coreExports.setOutput('deploymentState', deploymentStatus.deploymentState);
                 coreExports.setOutput('deploymentStatus', JSON.stringify(deploymentStatus));
                 if (deploymentStatus.deploymentState === 'Completed') {
@@ -65079,18 +65080,6 @@ The changes in this PR are based on the git patch from the latest successful dep
                 const artifactId = await api.addDeploymentArtifact(modifiedFilePath, description, version);
                 coreExports.setOutput('artifactId', artifactId);
                 coreExports.info(`Artifact uploaded successfully with ID: ${artifactId}`);
-                // Start deployment and poll status
-                const deploymentId = await api.startDeployment({
-                    targetEnvironmentAlias: coreExports.getInput('targetEnvironmentAlias', {
-                        required: true
-                    }),
-                    artifactId,
-                    commitMessage: coreExports.getInput('commitMessage') || 'Automated deployment',
-                    noBuildAndRestore: coreExports.getBooleanInput('noBuildAndRestore'),
-                    skipVersionCheck: coreExports.getBooleanInput('skipVersionCheck')
-                });
-                coreExports.info(`Deployment started with ID: ${deploymentId}`);
-                await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), deploymentId);
                 break;
             }
             case 'get-changes': {

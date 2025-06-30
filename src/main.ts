@@ -1286,15 +1286,14 @@ export async function run(): Promise<void> {
         const targetEnvironmentAlias = core.getInput('targetEnvironmentAlias', {
           required: true
         })
-        const timeoutSeconds = parseInt(
-          core.getInput('timeoutSeconds') || '1200',
-          10
+        core.info(
+          `Checking status for deployment ID: ${deploymentId}, environment: ${targetEnvironmentAlias}`
         )
-
-        const deploymentStatus = await api.checkDeploymentStatus(
-          deploymentId,
-          targetEnvironmentAlias,
-          timeoutSeconds
+        // Poll until completed/failed, then use the result for the rest of the logic
+        const deploymentStatus = await pollDeploymentStatus(
+          api.getApiKey(),
+          api.getProjectId(),
+          deploymentId
         )
 
         core.setOutput('deploymentState', deploymentStatus.deploymentState)
@@ -1599,28 +1598,8 @@ The changes in this PR are based on the git patch from the latest successful dep
           description,
           version
         )
-
         core.setOutput('artifactId', artifactId)
         core.info(`Artifact uploaded successfully with ID: ${artifactId}`)
-
-        // Start deployment and poll status
-        const deploymentId = await api.startDeployment({
-          targetEnvironmentAlias: core.getInput('targetEnvironmentAlias', {
-            required: true
-          }),
-          artifactId,
-          commitMessage:
-            core.getInput('commitMessage') || 'Automated deployment',
-          noBuildAndRestore: core.getBooleanInput('noBuildAndRestore'),
-          skipVersionCheck: core.getBooleanInput('skipVersionCheck')
-        })
-        core.info(`Deployment started with ID: ${deploymentId}`)
-        await pollDeploymentStatus(
-          api.getApiKey(),
-          api.getProjectId(),
-          deploymentId
-        )
-
         break
       }
 
