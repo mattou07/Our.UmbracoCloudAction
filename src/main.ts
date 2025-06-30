@@ -1456,8 +1456,15 @@ The changes in this PR are based on the git patch from the latest successful dep
             fs.unlinkSync('NuGet.config')
 
             // Write the updated zip back to the original file
-            const updatedData = await zip.generateAsync({ type: 'nodebuffer' })
+            const updatedData = await zip.generateAsync({
+              type: 'nodebuffer',
+              compression: 'DEFLATE',
+              compressionOptions: { level: 9 }
+            })
             fs.writeFileSync(filePath, updatedData)
+            core.info(
+              `Zip file size after JSZip: ${fs.statSync(filePath).size} bytes`
+            )
             core.info(
               'Successfully injected NuGet.config and removed .git from artifact zip'
             )
