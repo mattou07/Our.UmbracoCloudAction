@@ -50195,11 +50195,13 @@ The changes in this PR are based on the git patch from the latest successful dep
                         try {
                             process.chdir(tempDir);
                             // Create zip with relative paths (just the file names, not full paths)
-                            const zipArgs = ['-r', 'temp-artifact.zip'];
+                            const zipArgs = ['-r', '-q', 'temp-artifact.zip'];
                             for (const item of extractedContents) {
                                 zipArgs.push(item);
                             }
+                            coreExports.info(`Creating zip with ${extractedContents.length} items...`);
                             await execExports.exec('zip', zipArgs);
+                            coreExports.info(`✓ Zip created successfully with ${extractedContents.length} items`);
                         }
                         finally {
                             // Always restore original working directory
