@@ -729,6 +729,14 @@ class UmbracoCloudAPI {
       nugetConfigPath
     }
   }
+
+  public getApiKey(): string {
+    return this.apiKey
+  }
+
+  public getProjectId(): string {
+    return this.projectId
+  }
 }
 
 // Helper function to validate git repository in a directory
@@ -1150,6 +1158,82 @@ async function createPullRequestWithPatch(
   }
 }
 
+// Add this helper function near the top-level functions
+async function pollDeploymentStatus(
+  apiKey: string,
+  projectId: string,
+  deploymentId: string,
+  maxDurationMs = 15 * 60 * 1000,
+  intervalMs = 25000
+) {
+  const start = Date.now()
+  let lastModifiedUtc: string | undefined = undefined
+
+  while (Date.now() - start < maxDurationMs) {
+    const url =
+      `https://api.cloud.umbraco.com/v2/projects/${projectId}/deployments/${deploymentId}` +
+      (lastModifiedUtc
+        ? `?lastModifiedUtc=${encodeURIComponent(lastModifiedUtc)}`
+        : '')
+
+    let response
+    try {
+      response = await fetch(url, {
+        headers: {
+          'Umbraco-Cloud-Api-Key': process.env.UMBRACO_CLOUD_API_KEY || apiKey,
+          'Content-Type': 'application/json'
+        }
+      })
+    } catch (err) {
+      core.warning(`Network error while polling deployment status: ${err}`)
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      continue
+    }
+
+    if (response.status === 401) {
+      core.warning(
+        'Unauthorized: The API key may have expired or lost permissions. Will retry.'
+      )
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      continue
+    }
+    if (response.status === 404) {
+      core.warning(
+        'Not Found: The project or deployment ID could not be found. Will retry.'
+      )
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      continue
+    }
+    if (!response.ok) {
+      core.warning(
+        `Failed to get deployment status: ${response.status} ${response.statusText}. Will retry.`
+      )
+      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      continue
+    }
+
+    const data = (await response.json()) as any
+    core.info(`Deployment status: ${data.deploymentState}`)
+    if (data.deploymentStatusMessages) {
+      data.deploymentStatusMessages.forEach((msg: any) =>
+        core.info(`[${msg.timestampUtc}] ${msg.message}`)
+      )
+    }
+
+    if (
+      data.deploymentState === 'Completed' ||
+      data.deploymentState === 'Failed'
+    ) {
+      return data
+    }
+
+    lastModifiedUtc = data.modifiedUtc
+    await new Promise((resolve) => setTimeout(resolve, intervalMs))
+  }
+
+  throw new Error('Deployment did not complete within the expected time.')
+}
+
 /**
  * The main function for the action.
  *
@@ -1189,6 +1273,11 @@ export async function run(): Promise<void> {
 
         core.setOutput('deploymentId', deploymentId)
         core.info(`Deployment started successfully with ID: ${deploymentId}`)
+        await pollDeploymentStatus(
+          api.getApiKey(),
+          api.getProjectId(),
+          deploymentId
+        )
         break
       }
 
@@ -1513,6 +1602,25 @@ The changes in this PR are based on the git patch from the latest successful dep
 
         core.setOutput('artifactId', artifactId)
         core.info(`Artifact uploaded successfully with ID: ${artifactId}`)
+
+        // Start deployment and poll status
+        const deploymentId = await api.startDeployment({
+          targetEnvironmentAlias: core.getInput('targetEnvironmentAlias', {
+            required: true
+          }),
+          artifactId,
+          commitMessage:
+            core.getInput('commitMessage') || 'Automated deployment',
+          noBuildAndRestore: core.getBooleanInput('noBuildAndRestore'),
+          skipVersionCheck: core.getBooleanInput('skipVersionCheck')
+        })
+        core.info(`Deployment started with ID: ${deploymentId}`)
+        await pollDeploymentStatus(
+          api.getApiKey(),
+          api.getProjectId(),
+          deploymentId
+        )
+
         break
       }
 
