@@ -6,6 +6,7 @@ import * as github from '@actions/github'
 import { Octokit } from '@octokit/rest'
 import * as xml2js from 'xml2js'
 import { glob } from 'glob'
+import JSZip from 'jszip'
 
 interface DeploymentRequest {
   targetEnvironmentAlias: string
@@ -868,6 +869,16 @@ async function createPullRequestWithPatch(
     const patchFilePath = path.join(process.cwd(), patchFileName)
 
     try {
+      // Check if we're in a git repository before attempting git operations
+      try {
+        await exec.exec('git', ['rev-parse', '--git-dir'])
+        core.info('Git repository detected, proceeding with patch application')
+      } catch (gitCheckError) {
+        throw new Error(
+          'Not in a git repository. This action must be run in a GitHub Actions workflow that has checked out the repository.'
+        )
+      }
+
       // Reset and clean the working directory before applying the patch
       core.info(
         'Resetting working directory to clean state before applying patch...'
@@ -1293,7 +1304,6 @@ export async function run(): Promise<void> {
               core.setOutput('changes', JSON.stringify(changes))
 
               // Create GitHub PR with the changes
-              const baseBranch = github.context.ref.replace('refs/heads/', '')
               const prTitle = `Fix: Apply changes from failed deployment ${deploymentId}`
               const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${deploymentId}).
 
@@ -1303,13 +1313,68 @@ export async function run(): Promise<void> {
 
 The changes in this PR are based on the git patch from the latest successful deployment.`
 
-              await createPullRequestWithPatch(
-                changes.changes,
-                baseBranch,
-                prTitle,
-                prBody,
-                latestCompletedDeploymentId
+              const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
+              const prWorkspace = path.join(
+                process.env.GITHUB_WORKSPACE || process.cwd(),
+                `pr-workspace-${runId}`
               )
+
+              try {
+                // Create the subfolder
+                fs.mkdirSync(prWorkspace, { recursive: true })
+
+                // Clone the current repo and checkout the current branch into the subfolder
+                const repoUrl = `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+                const currentBranch = github.context.ref.replace(
+                  'refs/heads/',
+                  ''
+                )
+                await exec.exec('git', [
+                  'clone',
+                  '--branch',
+                  currentBranch,
+                  '--single-branch',
+                  repoUrl,
+                  prWorkspace
+                ])
+
+                // Change working directory to the subfolder for all git/PR operations
+                const originalCwd = process.cwd()
+                process.chdir(prWorkspace)
+
+                // Ensure working directory is clean before proceeding
+                let gitStatusOutput = ''
+                await exec.exec('git', ['status', '--porcelain'], {
+                  listeners: {
+                    stdout: (data) => {
+                      gitStatusOutput += data.toString()
+                    }
+                  }
+                })
+                if (gitStatusOutput.trim() !== '') {
+                  core.info('Working directory is not clean. Resetting...')
+                  await exec.exec('git', ['reset', '--hard', 'HEAD'])
+                  await exec.exec('git', ['clean', '-fd'])
+                  core.info('Working directory reset complete')
+                } else {
+                  core.info('Working directory is already clean')
+                }
+
+                // Run the PR creation logic (patch application, branch creation, etc.)
+                await createPullRequestWithPatch(
+                  changes.changes,
+                  currentBranch,
+                  prTitle,
+                  prBody,
+                  latestCompletedDeploymentId
+                )
+
+                // Restore original working directory
+                process.chdir(originalCwd)
+              } finally {
+                // Clean up the subfolder after PR creation
+                fs.rmSync(prWorkspace, { recursive: true, force: true })
+              }
             } else {
               core.warning('No completed deployments found to create PR from')
             }
@@ -1317,6 +1382,20 @@ The changes in this PR are based on the git patch from the latest successful dep
             core.warning(
               `Failed to get latest completed deployment or create PR: ${error}`
             )
+            if (
+              error instanceof Error &&
+              error.message.includes('Not in a git repository')
+            ) {
+              core.warning(
+                'PR creation failed because the action is not running in a git repository context.'
+              )
+              core.warning(
+                'This typically happens when the action is not properly configured in the GitHub Actions workflow.'
+              )
+              core.warning(
+                'Please ensure the workflow includes: actions/checkout@v4'
+              )
+            }
           }
         } else {
           core.setFailed(
@@ -1344,78 +1423,44 @@ The changes in this PR are based on the git patch from the latest successful dep
           core.info(
             'NuGet source configuration provided. Injecting NuGet.config into zip...'
           )
-
           try {
-            // Create temporary directory for zip manipulation
-            const tempDir = path.join(process.cwd(), 'temp-nuget-injection')
-            const tempZipPath = path.join(tempDir, 'temp-artifact.zip')
+            // Load the zip file
+            const data = fs.readFileSync(filePath)
+            const zip = await JSZip.loadAsync(data)
 
-            // Ensure temp directory exists
-            if (!fs.existsSync(tempDir)) {
-              fs.mkdirSync(tempDir, { recursive: true })
-            }
+            // Remove all .git/ entries
+            let gitFolderRemoved = false
+            Object.keys(zip.files).forEach((filename) => {
+              if (filename.startsWith('.git/')) {
+                zip.remove(filename)
+                gitFolderRemoved = true
+              }
+            })
+            gitFolderRemoved &&
+              core.info('.git folder discovered and removed from the zip')
 
-            // Copy original zip to temp location
-            fs.copyFileSync(filePath, tempZipPath)
-
-            // Extract zip to temp directory
-            await exec.exec('unzip', ['-q', tempZipPath, '-d', tempDir])
-
-            // Add or update NuGet.config in the extracted content
+            // Add or update NuGet.config in the root
+            // Generate the NuGet.config content using the existing logic
             const nugetConfig = {
               name: nugetSourceName,
               source: nugetSourceUrl,
               username: nugetSourceUsername,
               password: nugetSourcePassword
             }
-
             const result = await api.addOrUpdateNuGetConfigSource(nugetConfig)
             core.info(`NuGet.config ${result.message}`)
+            // Read the generated NuGet.config from disk and add to zip
+            const nugetConfigContent = fs.readFileSync('NuGet.config', 'utf8')
+            zip.file('NuGet.config', nugetConfigContent)
+            // Optionally remove the temp NuGet.config file
+            fs.unlinkSync('NuGet.config')
 
-            // Validate that the extracted content still contains a git repository
+            // Write the updated zip back to the original file
+            const updatedData = await zip.generateAsync({ type: 'nodebuffer' })
+            fs.writeFileSync(filePath, updatedData)
             core.info(
-              'Validating git repository after NuGet.config injection...'
+              'Successfully injected NuGet.config and removed .git from artifact zip'
             )
-            await validateGitRepository(tempDir, 'NuGet.config injection')
-
-            // Recreate zip with the modified content
-            // Remove the temp zip file before recreating
-            fs.unlinkSync(tempZipPath)
-
-            // Get list of all files/directories in the temp directory (these are the extracted contents)
-            const extractedContents = fs.readdirSync(tempDir)
-
-            // Create new zip with only the extracted contents, using relative paths
-            // Change to temp directory to create zip with relative paths
-            const originalCwd = process.cwd()
-            try {
-              process.chdir(tempDir)
-
-              // Create zip with relative paths (just the file names, not full paths)
-              const zipArgs = ['-r', '-q', 'temp-artifact.zip']
-              for (const item of extractedContents) {
-                zipArgs.push(item)
-              }
-
-              core.info(
-                `Creating zip with ${extractedContents.length} items...`
-              )
-              await exec.exec('zip', zipArgs)
-              core.info(
-                `✓ Zip created successfully with ${extractedContents.length} items`
-              )
-            } finally {
-              // Always restore original working directory
-              process.chdir(originalCwd)
-            }
-
-            // Copy the new zip back to original location
-            fs.copyFileSync(path.join(tempDir, 'temp-artifact.zip'), filePath)
-
-            // Clean up temp directory
-            fs.rmSync(tempDir, { recursive: true, force: true })
-
-            core.info('Successfully injected NuGet.config into artifact zip')
           } catch (error) {
             core.warning(`Failed to inject NuGet.config into zip: ${error}`)
             core.warning('Proceeding with original artifact upload...')
