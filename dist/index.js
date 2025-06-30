@@ -64875,7 +64875,14 @@ async function run() {
                         coreExports.setOutput('changes', JSON.stringify(changes));
                     }
                     catch (diffError) {
-                        coreExports.warning(`Could not retrieve changes for completed deployment: ${diffError}`);
+                        if (diffError instanceof Error &&
+                            diffError.message.includes('409 Conflict') &&
+                            diffError.message.includes('CloudNullDeployment')) {
+                            coreExports.info('Deployment completed successfully, but there were no changes to apply to the cloud repository.');
+                        }
+                        else {
+                            coreExports.warning(`Could not retrieve changes for completed deployment: ${diffError}`);
+                        }
                     }
                 }
                 else if (deploymentStatus.deploymentState === 'Failed') {

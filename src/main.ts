@@ -1310,10 +1310,20 @@ export async function run(): Promise<void> {
             core.info('Deployment completed. Here is the diff/patch:')
             core.info(changes.changes)
             core.setOutput('changes', JSON.stringify(changes))
-          } catch (diffError) {
-            core.warning(
-              `Could not retrieve changes for completed deployment: ${diffError}`
-            )
+          } catch (diffError: any) {
+            if (
+              diffError instanceof Error &&
+              diffError.message.includes('409 Conflict') &&
+              diffError.message.includes('CloudNullDeployment')
+            ) {
+              core.info(
+                'Deployment completed successfully, but there were no changes to apply to the cloud repository.'
+              )
+            } else {
+              core.warning(
+                `Could not retrieve changes for completed deployment: ${diffError}`
+              )
+            }
           }
         } else if (deploymentStatus.deploymentState === 'Failed') {
           core.setFailed('Deployment failed')
