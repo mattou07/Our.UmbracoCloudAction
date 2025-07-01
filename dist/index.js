@@ -64018,6 +64018,31 @@ class UmbracoCloudAPI {
             throw error;
         }
     }
+    async retryWithRateLimit(request, maxRetries = 3, baseDelay = 1000) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return await request();
+            }
+            catch (error) {
+                if (error instanceof Error &&
+                    error.message.includes('429 Too Many Requests') &&
+                    attempt < maxRetries) {
+                    // Extract retry delay from error message if available
+                    let retryDelay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+                    // Try to parse the retry delay from the error message
+                    const match = error.message.match(/Try again in (\d+) seconds/);
+                    if (match) {
+                        retryDelay = parseInt(match[1], 10) * 1000 + 1000; // Add 1 second buffer
+                    }
+                    coreExports.info(`Rate limit exceeded (attempt ${attempt}/${maxRetries}). Retrying in ${retryDelay}ms...`);
+                    await new Promise((resolve) => setTimeout(resolve, retryDelay));
+                    continue;
+                }
+                throw error;
+            }
+        }
+        throw new Error(`Failed after ${maxRetries} attempts`);
+    }
     async startDeployment(request) {
         const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments`;
         coreExports.debug(`Starting deployment at ${url}`);
@@ -64233,7 +64258,25 @@ class UmbracoCloudAPI {
             coreExports.debug(`Changes (diff) retrieved successfully (retry with lowercase), length: ${diffText.length}`);
             return { changes: diffText };
         };
-        return this.retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, targetEnvironmentAlias, 'getChangesById');
+        try {
+            return await this.retryWithRateLimit(originalRequest);
+        }
+        catch (error) {
+            // Check if this is an environment alias resolution error
+            if (error instanceof Error &&
+                (error.message.includes('Unable to resolve target environment by Alias') ||
+                    error.message.includes('No environments matches the provided alias'))) {
+                coreExports.info(`Environment alias case sensitivity detected in getChangesById. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`);
+                try {
+                    return await this.retryWithRateLimit(retryRequest);
+                }
+                catch (retryError) {
+                    coreExports.error(`Error in getChangesById (retry with lowercase): ${retryError}`);
+                    throw retryError;
+                }
+            }
+            throw error;
+        }
     }
     async applyPatch(changeId, targetEnvironmentAlias) {
         const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}/apply`;
@@ -64264,7 +64307,7 @@ class UmbracoCloudAPI {
             url += `&targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
         }
         coreExports.debug(`Getting deployments from: ${url}`);
-        try {
+        const request = async () => {
             const response = await fetch(url, {
                 method: 'GET',
                 headers: this.getHeaders()
@@ -64276,6 +64319,9 @@ class UmbracoCloudAPI {
             const data = (await response.json());
             coreExports.debug(`Deployments retrieved successfully: ${JSON.stringify(data)}`);
             return data;
+        };
+        try {
+            return await this.retryWithRateLimit(request);
         }
         catch (error) {
             coreExports.error(`Error getting deployments: ${error}`);

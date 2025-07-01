@@ -109,6 +109,41 @@ class UmbracoCloudAPI {
     }
   }
 
+  private async retryWithRateLimit<T>(
+    request: () => Promise<T>,
+    maxRetries: number = 3,
+    baseDelay: number = 1000
+  ): Promise<T> {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        return await request()
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes('429 Too Many Requests') &&
+          attempt < maxRetries
+        ) {
+          // Extract retry delay from error message if available
+          let retryDelay = baseDelay * Math.pow(2, attempt - 1) // Exponential backoff
+
+          // Try to parse the retry delay from the error message
+          const match = error.message.match(/Try again in (\d+) seconds/)
+          if (match) {
+            retryDelay = parseInt(match[1], 10) * 1000 + 1000 // Add 1 second buffer
+          }
+
+          core.info(
+            `Rate limit exceeded (attempt ${attempt}/${maxRetries}). Retrying in ${retryDelay}ms...`
+          )
+          await new Promise((resolve) => setTimeout(resolve, retryDelay))
+          continue
+        }
+        throw error
+      }
+    }
+    throw new Error(`Failed after ${maxRetries} attempts`)
+  }
+
   async startDeployment(request: DeploymentRequest): Promise<string> {
     const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments`
 
@@ -445,12 +480,31 @@ class UmbracoCloudAPI {
       return { changes: diffText }
     }
 
-    return this.retryWithLowercaseEnvironmentAlias(
-      originalRequest,
-      retryRequest,
-      targetEnvironmentAlias,
-      'getChangesById'
-    )
+    try {
+      return await this.retryWithRateLimit(originalRequest)
+    } catch (error) {
+      // Check if this is an environment alias resolution error
+      if (
+        error instanceof Error &&
+        (error.message.includes(
+          'Unable to resolve target environment by Alias'
+        ) ||
+          error.message.includes('No environments matches the provided alias'))
+      ) {
+        core.info(
+          `Environment alias case sensitivity detected in getChangesById. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`
+        )
+        try {
+          return await this.retryWithRateLimit(retryRequest)
+        } catch (retryError) {
+          core.error(
+            `Error in getChangesById (retry with lowercase): ${retryError}`
+          )
+          throw retryError
+        }
+      }
+      throw error
+    }
   }
 
   async applyPatch(
@@ -515,7 +569,7 @@ class UmbracoCloudAPI {
 
     core.debug(`Getting deployments from: ${url}`)
 
-    try {
+    const request = async () => {
       const response = await fetch(url, {
         method: 'GET',
         headers: this.getHeaders()
@@ -546,6 +600,10 @@ class UmbracoCloudAPI {
       core.debug(`Deployments retrieved successfully: ${JSON.stringify(data)}`)
 
       return data
+    }
+
+    try {
+      return await this.retryWithRateLimit(request)
     } catch (error) {
       core.error(`Error getting deployments: ${error}`)
       throw error
