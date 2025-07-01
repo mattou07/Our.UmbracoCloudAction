@@ -305,9 +305,9 @@ class UmbracoCloudAPI {
     // Retry logic for artifact upload
     const maxRetries = parseInt(core.getInput('upload-retries') || '3', 10)
     const baseDelay = parseInt(
-      core.getInput('upload-retry-delay') || '30000',
+      core.getInput('upload-retry-delay') || '10000',
       10
-    ) // 30 seconds default
+    ) // 10 seconds default
     const timeoutMs = parseInt(core.getInput('upload-timeout') || '60000', 10) // 1 minute default
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {

@@ -73,9 +73,9 @@ inputs:
     default: '3'
   upload-retry-delay:
     description:
-      'Base delay in milliseconds between upload retries (default: 30000)'
+      'Base delay in milliseconds between upload retries (default: 10000)'
     required: false
-    default: '30000'
+    default: '10000'
   upload-timeout:
     description: 'Timeout in milliseconds for artifact upload (default: 60000)'
     required: false
