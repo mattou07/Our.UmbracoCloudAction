@@ -553,13 +553,13 @@ class UmbracoCloudAPI {
   }
 
   async getLatestCompletedDeployment(
-    targetEnvironmentAlias?: string
+    targetEnvironmentAlias: string
   ): Promise<string | null> {
-    core.debug('Finding latest completed deployment...')
+    core.debug('Finding latest completed deployment with changes...')
 
     let skip = 0
     const take = 10
-    const maxAttempts = 10 // Try up to 100 deployments (10 batches of 10)
+    const maxAttempts = 20 // Try up to 200 deployments (20 batches of 10)
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
@@ -579,22 +579,50 @@ class UmbracoCloudAPI {
           break
         }
 
-        // Find the first deployment with "Completed" state
-        const completedDeployment = deployments.data.find(
+        // Find completed deployments in this batch
+        const completedDeployments = deployments.data.filter(
           (deployment) => deployment.state === 'Completed'
         )
 
-        if (completedDeployment) {
-          core.debug(
-            `Found latest completed deployment: ${completedDeployment.id} (from batch ${attempt + 1})`
-          )
-          return completedDeployment.id
-        } else {
+        if (completedDeployments.length === 0) {
           core.debug(
             `No completed deployments found in batch ${attempt + 1}, trying next batch...`
           )
           skip += take
+          continue
         }
+
+        // Try each completed deployment to see if it has changes
+        for (const deployment of completedDeployments) {
+          try {
+            core.debug(`Testing deployment ${deployment.id} for changes...`)
+            await this.getChangesById(deployment.id, targetEnvironmentAlias!)
+            // If we get here without an error, the deployment has changes
+            core.debug(
+              `Found completed deployment with changes: ${deployment.id} (from batch ${attempt + 1})`
+            )
+            return deployment.id
+          } catch (error) {
+            if (
+              error instanceof Error &&
+              error.message.includes('409 Conflict')
+            ) {
+              core.debug(
+                `Deployment ${deployment.id} has no changes (null deployment), trying next...`
+              )
+              // Continue to next deployment
+            } else {
+              core.debug(`Error testing deployment ${deployment.id}: ${error}`)
+              // Continue to next deployment
+            }
+          }
+        }
+
+        // If we get here, none of the completed deployments in this batch had changes
+        core.debug(
+          `No completed deployments with changes found in batch ${attempt + 1}, trying next batch...`
+        )
+        skip += take
       } catch (error) {
         core.error(`Error fetching deployment batch ${attempt + 1}: ${error}`)
         // Continue to next batch instead of failing completely
@@ -602,7 +630,9 @@ class UmbracoCloudAPI {
       }
     }
 
-    core.debug('No completed deployments found after checking all batches')
+    core.debug(
+      'No completed deployments with changes found after checking all batches'
+    )
     return null
   }
 
@@ -1377,7 +1407,7 @@ export async function run(): Promise<void> {
           // Try to get the latest completed deployment and create a PR
           try {
             core.info(
-              'Attempting to get latest completed deployment and create PR...'
+              'Attempting to get latest completed deployment with changes and create PR...'
             )
 
             const latestCompletedDeploymentId =
@@ -1385,7 +1415,7 @@ export async function run(): Promise<void> {
 
             if (latestCompletedDeploymentId) {
               core.info(
-                `Found latest completed deployment ID: ${latestCompletedDeploymentId}`
+                `Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`
               )
 
               // Get the changes from the latest completed deployment
