@@ -7293,11 +7293,11 @@ function requireBody () {
 	return body;
 }
 
-var request$3;
+var request$2;
 var hasRequiredRequest$1;
 
 function requireRequest$1 () {
-	if (hasRequiredRequest$1) return request$3;
+	if (hasRequiredRequest$1) return request$2;
 	hasRequiredRequest$1 = 1;
 
 	const {
@@ -7796,8 +7796,8 @@ function requireRequest$1 () {
 	  }
 	}
 
-	request$3 = Request;
-	return request$3;
+	request$2 = Request;
+	return request$2;
 }
 
 var dispatcher;
@@ -16161,11 +16161,11 @@ function requireResponse () {
 
 /* globals AbortController */
 
-var request$2;
+var request$1;
 var hasRequiredRequest;
 
 function requireRequest () {
-	if (hasRequiredRequest) return request$2;
+	if (hasRequiredRequest) return request$1;
 	hasRequiredRequest = 1;
 
 	const { extractBody, mixinBody, cloneBody } = requireBody();
@@ -17109,8 +17109,8 @@ function requireRequest () {
 	  }
 	]);
 
-	request$2 = { Request, makeRequest };
-	return request$2;
+	request$1 = { Request, makeRequest };
+	return request$1;
 }
 
 var fetch_1;
@@ -21717,11 +21717,11 @@ function requireUtil$2 () {
 	return util$2;
 }
 
-var parse$2;
+var parse$1;
 var hasRequiredParse;
 
 function requireParse () {
-	if (hasRequiredParse) return parse$2;
+	if (hasRequiredParse) return parse$1;
 	hasRequiredParse = 1;
 
 	const { maxNameValuePairSize, maxAttributeValueSize } = requireConstants$2();
@@ -22035,11 +22035,11 @@ function requireParse () {
 	  return parseUnparsedAttributes(unparsedAttributes, cookieAttributeList)
 	}
 
-	parse$2 = {
+	parse$1 = {
 	  parseSetCookie,
 	  parseUnparsedAttributes
 	};
-	return parse$2;
+	return parse$1;
 }
 
 var cookies;
@@ -25042,14 +25042,14 @@ function requireLib$4 () {
 	return lib$4;
 }
 
-var auth$2 = {};
+var auth$1 = {};
 
 var hasRequiredAuth;
 
 function requireAuth () {
-	if (hasRequiredAuth) return auth$2;
+	if (hasRequiredAuth) return auth$1;
 	hasRequiredAuth = 1;
-	var __awaiter = (auth$2 && auth$2.__awaiter) || function (thisArg, _arguments, P, generator) {
+	var __awaiter = (auth$1 && auth$1.__awaiter) || function (thisArg, _arguments, P, generator) {
 	    function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
 	    return new (P || (P = Promise))(function (resolve, reject) {
 	        function fulfilled(value) { try { step(generator.next(value)); } catch (e) { reject(e); } }
@@ -25058,8 +25058,8 @@ function requireAuth () {
 	        step((generator = generator.apply(thisArg, _arguments || [])).next());
 	    });
 	};
-	Object.defineProperty(auth$2, "__esModule", { value: true });
-	auth$2.PersonalAccessTokenCredentialHandler = auth$2.BearerCredentialHandler = auth$2.BasicCredentialHandler = void 0;
+	Object.defineProperty(auth$1, "__esModule", { value: true });
+	auth$1.PersonalAccessTokenCredentialHandler = auth$1.BearerCredentialHandler = auth$1.BasicCredentialHandler = void 0;
 	class BasicCredentialHandler {
 	    constructor(username, password) {
 	        this.username = username;
@@ -25081,7 +25081,7 @@ function requireAuth () {
 	        });
 	    }
 	}
-	auth$2.BasicCredentialHandler = BasicCredentialHandler;
+	auth$1.BasicCredentialHandler = BasicCredentialHandler;
 	class BearerCredentialHandler {
 	    constructor(token) {
 	        this.token = token;
@@ -25104,7 +25104,7 @@ function requireAuth () {
 	        });
 	    }
 	}
-	auth$2.BearerCredentialHandler = BearerCredentialHandler;
+	auth$1.BearerCredentialHandler = BearerCredentialHandler;
 	class PersonalAccessTokenCredentialHandler {
 	    constructor(token) {
 	        this.token = token;
@@ -25127,9 +25127,9 @@ function requireAuth () {
 	        });
 	    }
 	}
-	auth$2.PersonalAccessTokenCredentialHandler = PersonalAccessTokenCredentialHandler;
+	auth$1.PersonalAccessTokenCredentialHandler = PersonalAccessTokenCredentialHandler;
 	
-	return auth$2;
+	return auth$1;
 }
 
 var hasRequiredOidcUtils;
@@ -27284,6 +27284,477 @@ var coreExports = requireCore();
 
 var execExports = requireExec();
 
+/**
+ * Helper function to sleep for a specified duration
+ */
+function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}
+/**
+ * Validate required inputs for actions
+ */
+function validateRequiredInputs(inputs, required) {
+    const missing = required.filter((key) => !inputs[key]);
+    if (missing.length > 0) {
+        throw new Error(`Missing required inputs: ${missing.join(', ')}`);
+    }
+}
+
+class UmbracoCloudAPI {
+    baseUrl;
+    projectId;
+    apiKey;
+    constructor(projectId, apiKey, baseUrl = 'https://api.cloud.umbraco.com') {
+        this.baseUrl = baseUrl;
+        this.projectId = projectId;
+        this.apiKey = apiKey;
+    }
+    getHeaders() {
+        return {
+            'Umbraco-Cloud-Api-Key': this.apiKey,
+            'Content-Type': 'application/json'
+        };
+    }
+    async retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, targetEnvironmentAlias, operationName) {
+        try {
+            return await originalRequest();
+        }
+        catch (error) {
+            // Check if this is a case sensitivity issue with environment alias
+            if (error instanceof Error &&
+                (error.message.includes('reason: No environments matches the provided alias') ||
+                    error.message.includes('Unable to resolve target environment by Alias')) &&
+                targetEnvironmentAlias !== targetEnvironmentAlias.toLowerCase()) {
+                coreExports.info(`Environment alias case sensitivity detected in ${operationName}. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`);
+                try {
+                    const result = await retryRequest();
+                    coreExports.debug(`${operationName} succeeded with lowercase retry`);
+                    return result;
+                }
+                catch (retryError) {
+                    coreExports.error(`Error in ${operationName} (retry with lowercase): ${retryError}`);
+                    throw retryError;
+                }
+            }
+            throw error;
+        }
+    }
+    async retryWithRateLimit(request, maxRetries = 3, baseDelay = 1000) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                return await request();
+            }
+            catch (error) {
+                if (error instanceof Error &&
+                    error.message.includes('429 Too Many Requests') &&
+                    attempt < maxRetries) {
+                    // Extract retry delay from error message if available
+                    let retryDelay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
+                    // Try to parse the retry delay from the error message
+                    const match = error.message.match(/Try again in (\d+) seconds/);
+                    if (match) {
+                        retryDelay = parseInt(match[1], 10) * 1000 + 1000; // Add 1 second buffer
+                    }
+                    coreExports.info(`Rate limit exceeded (attempt ${attempt}/${maxRetries}). Retrying in ${retryDelay}ms...`);
+                    await sleep(retryDelay);
+                    continue;
+                }
+                throw error;
+            }
+        }
+        throw new Error(`Failed after ${maxRetries} attempts`);
+    }
+    async startDeployment(request) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments`;
+        coreExports.debug(`Starting deployment at ${url}`);
+        coreExports.debug(`Request body: ${JSON.stringify(request)}`);
+        const originalRequest = async () => {
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: this.getHeaders(),
+                body: JSON.stringify(request)
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to start deployment: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            const data = (await response.json());
+            coreExports.debug(`Deployment started successfully: ${JSON.stringify(data)}`);
+            return data.deploymentId;
+        };
+        const retryRequest = async () => {
+            const retryRequestData = {
+                ...request,
+                targetEnvironmentAlias: request.targetEnvironmentAlias.toLowerCase()
+            };
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: this.getHeaders(),
+                body: JSON.stringify(retryRequestData)
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to start deployment (retry with lowercase): ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            const data = (await response.json());
+            coreExports.debug(`Deployment started successfully (retry with lowercase): ${JSON.stringify(data)}`);
+            return data.deploymentId;
+        };
+        return this.retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, request.targetEnvironmentAlias, 'startDeployment');
+    }
+    async checkDeploymentStatus(deploymentId, targetEnvironmentAlias, timeoutSeconds = 1200) {
+        const baseStatusUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`;
+        const startTime = Date.now();
+        const timeoutMs = timeoutSeconds * 1000;
+        const statusesBeforeCompleted = ['Pending', 'InProgress', 'Queued'];
+        let run = 1;
+        let url = baseStatusUrl;
+        let data = null;
+        coreExports.debug(`Checking deployment status for: ${deploymentId}`);
+        do {
+            coreExports.info(`[Run ${run}] Checking deployment status...`);
+            try {
+                const response = await this.retryWithRateLimit(async () => {
+                    const res = await fetch(url, {
+                        method: 'GET',
+                        headers: this.getHeaders()
+                    });
+                    if (!res.ok) {
+                        const errorText = await res.text();
+                        throw new Error(`Failed to check deployment status: ${res.status} ${res.statusText} - ${errorText}`);
+                    }
+                    return res;
+                });
+                data = (await response.json());
+                coreExports.info(`[Run ${run}] Current deployment state: ${data.deploymentState}`);
+                // Log deployment status messages if available
+                if (data.deploymentStatusMessages &&
+                    data.deploymentStatusMessages.length > 0) {
+                    data.deploymentStatusMessages.forEach((message) => {
+                        coreExports.info(`[${message.timestampUtc}] ${message.message}`);
+                    });
+                }
+                // Check if deployment is complete
+                if (!statusesBeforeCompleted.includes(data.deploymentState)) {
+                    coreExports.info(`Deployment ${data.deploymentState}`);
+                    return data;
+                }
+                // Update URL for next poll to only get new messages
+                url = `${baseStatusUrl}?lastModifiedUtc=${encodeURIComponent(data.modifiedUtc)}`;
+                run++;
+                // Check timeout
+                if (Date.now() - startTime > timeoutMs) {
+                    throw new Error(`Deployment status check timed out after ${timeoutSeconds} seconds. Current state: ${data.deploymentState}`);
+                }
+                // Wait before next poll
+                await sleep(25000); // 25 seconds
+            }
+            catch (error) {
+                coreExports.error(`Error checking deployment status: ${error}`);
+                throw error;
+            }
+        } while (data && statusesBeforeCompleted.includes(data.deploymentState));
+        // If we somehow get here without returning earlier, throw an error
+        if (!data) {
+            throw new Error('Failed to retrieve deployment status');
+        }
+        return data;
+    }
+    async addDeploymentArtifact(filePath, description, version) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/artifacts`;
+        // Validate file exists
+        if (!filePath) {
+            throw new Error('File path is required for artifact upload');
+        }
+        if (!fs.existsSync(filePath)) {
+            throw new Error(`File does not exist: ${filePath}`);
+        }
+        coreExports.debug(`Uploading artifact: ${filePath}`);
+        // Retry logic for artifact upload
+        const maxRetries = parseInt(coreExports.getInput('upload-retries') || '3', 10);
+        const baseDelay = parseInt(coreExports.getInput('upload-retry-delay') || '10000', 10);
+        const timeoutMs = parseInt(coreExports.getInput('upload-timeout') || '60000', 10);
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                coreExports.info(`Upload attempt ${attempt}/${maxRetries}...`);
+                const formData = new FormData();
+                // Read file and create a blob
+                const fileBuffer = fs.readFileSync(filePath);
+                const fileName = filePath.split(/[/\\]/).pop() || 'artifact.zip';
+                const blob = new Blob([fileBuffer], { type: 'application/zip' });
+                formData.append('file', blob, fileName);
+                if (description) {
+                    formData.append('description', description);
+                }
+                if (version) {
+                    formData.append('version', version);
+                }
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                try {
+                    const response = await fetch(url, {
+                        method: 'POST',
+                        headers: {
+                            'Umbraco-Cloud-Api-Key': this.apiKey
+                            // Don't set Content-Type, let fetch set it for FormData
+                        },
+                        body: formData,
+                        signal: controller.signal
+                    });
+                    clearTimeout(timeoutId);
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`Failed to upload artifact: ${response.status} ${response.statusText} - ${errorText}`);
+                    }
+                    const data = (await response.json());
+                    coreExports.info(`Artifact uploaded successfully: ${data.artifactId}`);
+                    return data.artifactId;
+                }
+                catch (error) {
+                    clearTimeout(timeoutId);
+                    throw error;
+                }
+            }
+            catch (error) {
+                const isLastAttempt = attempt === maxRetries;
+                if (error instanceof Error && error.name === 'AbortError') {
+                    coreExports.warning(`Upload attempt ${attempt} timed out after ${timeoutMs}ms`);
+                }
+                else {
+                    coreExports.warning(`Upload attempt ${attempt} failed: ${error}`);
+                }
+                if (isLastAttempt) {
+                    throw error;
+                }
+                // Wait before retry with exponential backoff
+                const delay = baseDelay * Math.pow(2, attempt - 1);
+                coreExports.info(`Waiting ${delay}ms before retry...`);
+                await sleep(delay);
+            }
+        }
+        throw new Error('Upload failed after all retry attempts');
+    }
+    async getChangesById(deploymentId, targetEnvironmentAlias) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
+        coreExports.debug(`Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`);
+        const originalRequest = async () => {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (response.status === 204) {
+                return { changes: '' }; // No changes
+            }
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to get changes: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            const changes = await response.text();
+            return { changes };
+        };
+        const retryRequest = async () => {
+            const retryUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`;
+            const response = await fetch(retryUrl, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (response.status === 204) {
+                return { changes: '' }; // No changes
+            }
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to get changes (retry with lowercase): ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            const changes = await response.text();
+            return { changes };
+        };
+        try {
+            return await this.retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, targetEnvironmentAlias, 'getChangesById');
+        }
+        catch (error) {
+            coreExports.error(`Error getting changes: ${error}`);
+            throw error;
+        }
+    }
+    async applyPatch(changeId, targetEnvironmentAlias) {
+        const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}/apply`;
+        coreExports.debug(`Applying patch for change ID: ${changeId} to environment: ${targetEnvironmentAlias}`);
+        try {
+            const requestBody = {
+                targetEnvironmentAlias
+            };
+            const response = await fetch(url, {
+                method: 'POST',
+                headers: this.getHeaders(),
+                body: JSON.stringify(requestBody)
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to apply patch: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            coreExports.info(`Patch applied successfully`);
+        }
+        catch (error) {
+            coreExports.error(`Error applying patch: ${error}`);
+            throw error;
+        }
+    }
+    async getDeployments(skip = 0, take = 100, includeNullDeployments = true, targetEnvironmentAlias) {
+        let url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments?skip=${skip}&take=${take}&includeNullDeployments=${includeNullDeployments}`;
+        if (targetEnvironmentAlias) {
+            url += `&targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
+        }
+        coreExports.debug(`Getting deployments from: ${url}`);
+        const request = async () => {
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (!response.ok) {
+                const errorText = await response.text();
+                throw new Error(`Failed to get deployments: ${response.status} ${response.statusText} - ${errorText}`);
+            }
+            return response.json();
+        };
+        try {
+            return await this.retryWithRateLimit(request);
+        }
+        catch (error) {
+            coreExports.error(`Error getting deployments: ${error}`);
+            throw error;
+        }
+    }
+    async getLatestCompletedDeployment(targetEnvironmentAlias) {
+        coreExports.debug('Finding latest completed deployment with changes...');
+        let skip = 0;
+        const take = 10;
+        const maxAttempts = 20;
+        for (let attempt = 0; attempt < maxAttempts; attempt++) {
+            coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
+            const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
+            targetEnvironmentAlias);
+            coreExports.debug(`Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`);
+            // Find the first completed deployment
+            const completedDeployment = deployments.data.find((d) => d.state === 'Completed');
+            if (completedDeployment) {
+                coreExports.debug(`Found latest completed deployment: ${completedDeployment.id}`);
+                return completedDeployment.id;
+            }
+            // Check if we've reached the end
+            if (deployments.data.length < take ||
+                skip + take >= deployments.totalItems) {
+                break;
+            }
+            skip += take;
+        }
+        coreExports.debug('No completed deployments with changes found after checking all batches');
+        return null;
+    }
+    async getDeploymentErrorDetails(deploymentId, targetEnvironmentAlias) {
+        try {
+            const deployment = await this.checkDeploymentStatus(deploymentId, targetEnvironmentAlias, 10 // Short timeout just to get current status
+            );
+            const errorMessages = [];
+            if (deployment.deploymentStatusMessages) {
+                deployment.deploymentStatusMessages
+                    .filter((msg) => msg.message.toLowerCase().includes('error') ||
+                    msg.message.toLowerCase().includes('failed') ||
+                    msg.message.toLowerCase().includes('exception'))
+                    .forEach((msg) => {
+                    errorMessages.push(`[${msg.timestampUtc}] ${msg.message}`);
+                });
+            }
+            return errorMessages;
+        }
+        catch (error) {
+            coreExports.debug(`Could not retrieve deployment error details: ${error}`);
+            return [];
+        }
+    }
+    getApiKey() {
+        return this.apiKey;
+    }
+    getProjectId() {
+        return this.projectId;
+    }
+}
+
+/**
+ * Polls deployment status until completion or timeout
+ */
+async function pollDeploymentStatus(apiKey, projectId, deploymentId, maxDurationMs = 15 * 60 * 1000, intervalMs = 25000) {
+    const start = Date.now();
+    let lastModifiedUtc = undefined;
+    while (Date.now() - start < maxDurationMs) {
+        const url = `https://api.cloud.umbraco.com/v2/projects/${projectId}/deployments/${deploymentId}` +
+            (lastModifiedUtc
+                ? `?lastModifiedUtc=${encodeURIComponent(lastModifiedUtc)}`
+                : '');
+        let response;
+        try {
+            response = await fetch(url, {
+                headers: {
+                    'Umbraco-Cloud-Api-Key': process.env.UMBRACO_CLOUD_API_KEY || apiKey,
+                    'Content-Type': 'application/json'
+                }
+            });
+        }
+        catch (err) {
+            coreExports.warning(`Network error while polling deployment status: ${err}`);
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            continue;
+        }
+        if (response.status === 401) {
+            coreExports.warning('Unauthorized: The API key may have expired or lost permissions. Will retry.');
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            continue;
+        }
+        if (response.status === 404) {
+            coreExports.warning('Not Found: The project or deployment ID could not be found. Will retry.');
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            continue;
+        }
+        if (!response.ok) {
+            coreExports.warning(`Failed to get deployment status: ${response.status} ${response.statusText}. Will retry.`);
+            await new Promise((resolve) => setTimeout(resolve, intervalMs));
+            continue;
+        }
+        const data = (await response.json());
+        coreExports.info(`Deployment status: ${data.deploymentState}`);
+        if (data.deploymentStatusMessages) {
+            data.deploymentStatusMessages.forEach((msg) => coreExports.info(`[${msg.timestampUtc}] ${msg.message}`));
+        }
+        if (data.deploymentState === 'Completed' ||
+            data.deploymentState === 'Failed') {
+            return data;
+        }
+        lastModifiedUtc = data.modifiedUtc;
+        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+    throw new Error('Deployment did not complete within the expected time.');
+}
+
+async function handleStartDeployment(api, inputs) {
+    validateRequiredInputs(inputs, [
+        'artifactId',
+        'targetEnvironmentAlias'
+    ]);
+    const deploymentId = await api.startDeployment({
+        targetEnvironmentAlias: inputs.targetEnvironmentAlias,
+        artifactId: inputs.artifactId,
+        commitMessage: inputs.commitMessage || 'Deployment from GitHub Actions',
+        noBuildAndRestore: inputs.noBuildAndRestore || false,
+        skipVersionCheck: inputs.skipVersionCheck || false
+    });
+    coreExports.info(`Deployment started successfully with ID: ${deploymentId}`);
+    coreExports.setOutput('deploymentId', deploymentId);
+    // Poll deployment status until completion
+    await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), deploymentId);
+    return {
+        deploymentId
+    };
+}
+
 var github = {};
 
 var context = {};
@@ -27431,7 +27902,7 @@ function requireUtils$2 () {
 	return utils$1;
 }
 
-function getUserAgent$1() {
+function getUserAgent() {
     if (typeof navigator === "object" && "userAgent" in navigator) {
         return navigator.userAgent;
     }
@@ -27441,15 +27912,15 @@ function getUserAgent$1() {
     return "<environment undetectable>";
 }
 
-var beforeAfterHook$1 = {exports: {}};
+var beforeAfterHook = {exports: {}};
 
-var register_1$1;
-var hasRequiredRegister$1;
+var register_1;
+var hasRequiredRegister;
 
-function requireRegister$1 () {
-	if (hasRequiredRegister$1) return register_1$1;
-	hasRequiredRegister$1 = 1;
-	register_1$1 = register;
+function requireRegister () {
+	if (hasRequiredRegister) return register_1;
+	hasRequiredRegister = 1;
+	register_1 = register;
 
 	function register(state, name, method, options) {
 	  if (typeof method !== "function") {
@@ -27476,16 +27947,16 @@ function requireRegister$1 () {
 	    }, method)();
 	  });
 	}
-	return register_1$1;
+	return register_1;
 }
 
-var add$1;
-var hasRequiredAdd$1;
+var add;
+var hasRequiredAdd;
 
-function requireAdd$1 () {
-	if (hasRequiredAdd$1) return add$1;
-	hasRequiredAdd$1 = 1;
-	add$1 = addHook;
+function requireAdd () {
+	if (hasRequiredAdd) return add;
+	hasRequiredAdd = 1;
+	add = addHook;
 
 	function addHook(state, kind, name, hook) {
 	  var orig = hook;
@@ -27531,16 +28002,16 @@ function requireAdd$1 () {
 	    orig: orig,
 	  });
 	}
-	return add$1;
+	return add;
 }
 
-var remove$1;
-var hasRequiredRemove$1;
+var remove;
+var hasRequiredRemove;
 
-function requireRemove$1 () {
-	if (hasRequiredRemove$1) return remove$1;
-	hasRequiredRemove$1 = 1;
-	remove$1 = removeHook;
+function requireRemove () {
+	if (hasRequiredRemove) return remove;
+	hasRequiredRemove = 1;
+	remove = removeHook;
 
 	function removeHook(state, name, method) {
 	  if (!state.registry[name]) {
@@ -27559,17 +28030,17 @@ function requireRemove$1 () {
 
 	  state.registry[name].splice(index, 1);
 	}
-	return remove$1;
+	return remove;
 }
 
-var hasRequiredBeforeAfterHook$1;
+var hasRequiredBeforeAfterHook;
 
-function requireBeforeAfterHook$1 () {
-	if (hasRequiredBeforeAfterHook$1) return beforeAfterHook$1.exports;
-	hasRequiredBeforeAfterHook$1 = 1;
-	var register = requireRegister$1();
-	var addHook = requireAdd$1();
-	var removeHook = requireRemove$1();
+function requireBeforeAfterHook () {
+	if (hasRequiredBeforeAfterHook) return beforeAfterHook.exports;
+	hasRequiredBeforeAfterHook = 1;
+	var register = requireRegister();
+	var addHook = requireAdd();
+	var removeHook = requireRemove();
 
 	// bind with array of arguments: https://stackoverflow.com/a/21792913
 	var bind = Function.bind;
@@ -27623,32 +28094,32 @@ function requireBeforeAfterHook$1 () {
 	Hook.Singular = HookSingular.bind();
 	Hook.Collection = HookCollection.bind();
 
-	beforeAfterHook$1.exports = Hook;
+	beforeAfterHook.exports = Hook;
 	// expose constructors as a named property for TypeScript
-	beforeAfterHook$1.exports.Hook = Hook;
-	beforeAfterHook$1.exports.Singular = Hook.Singular;
-	beforeAfterHook$1.exports.Collection = Hook.Collection;
-	return beforeAfterHook$1.exports;
+	beforeAfterHook.exports.Hook = Hook;
+	beforeAfterHook.exports.Singular = Hook.Singular;
+	beforeAfterHook.exports.Collection = Hook.Collection;
+	return beforeAfterHook.exports;
 }
 
-var beforeAfterHookExports$1 = requireBeforeAfterHook$1();
+var beforeAfterHookExports = requireBeforeAfterHook();
 
-const VERSION$d = "9.0.6";
+const VERSION$5 = "9.0.6";
 
-const userAgent$1 = `octokit-endpoint.js/${VERSION$d} ${getUserAgent$1()}`;
-const DEFAULTS$1 = {
+const userAgent = `octokit-endpoint.js/${VERSION$5} ${getUserAgent()}`;
+const DEFAULTS = {
   method: "GET",
   baseUrl: "https://api.github.com",
   headers: {
     accept: "application/vnd.github.v3+json",
-    "user-agent": userAgent$1
+    "user-agent": userAgent
   },
   mediaType: {
     format: ""
   }
 };
 
-function lowercaseKeys$1(object) {
+function lowercaseKeys(object) {
   if (!object) {
     return {};
   }
@@ -27658,7 +28129,7 @@ function lowercaseKeys$1(object) {
   }, {});
 }
 
-function isPlainObject$3(value) {
+function isPlainObject$1(value) {
   if (typeof value !== "object" || value === null)
     return false;
   if (Object.prototype.toString.call(value) !== "[object Object]")
@@ -27670,14 +28141,14 @@ function isPlainObject$3(value) {
   return typeof Ctor === "function" && Ctor instanceof Ctor && Function.prototype.call(Ctor) === Function.prototype.call(value);
 }
 
-function mergeDeep$1(defaults, options) {
+function mergeDeep(defaults, options) {
   const result = Object.assign({}, defaults);
   Object.keys(options).forEach((key) => {
-    if (isPlainObject$3(options[key])) {
+    if (isPlainObject$1(options[key])) {
       if (!(key in defaults))
         Object.assign(result, { [key]: options[key] });
       else
-        result[key] = mergeDeep$1(defaults[key], options[key]);
+        result[key] = mergeDeep(defaults[key], options[key]);
     } else {
       Object.assign(result, { [key]: options[key] });
     }
@@ -27685,7 +28156,7 @@ function mergeDeep$1(defaults, options) {
   return result;
 }
 
-function removeUndefinedProperties$1(obj) {
+function removeUndefinedProperties(obj) {
   for (const key in obj) {
     if (obj[key] === void 0) {
       delete obj[key];
@@ -27694,17 +28165,17 @@ function removeUndefinedProperties$1(obj) {
   return obj;
 }
 
-function merge$1(defaults, route, options) {
+function merge(defaults, route, options) {
   if (typeof route === "string") {
     let [method, url] = route.split(" ");
     options = Object.assign(url ? { method, url } : { url: method }, options);
   } else {
     options = Object.assign({}, route);
   }
-  options.headers = lowercaseKeys$1(options.headers);
-  removeUndefinedProperties$1(options);
-  removeUndefinedProperties$1(options.headers);
-  const mergedOptions = mergeDeep$1(defaults || {}, options);
+  options.headers = lowercaseKeys(options.headers);
+  removeUndefinedProperties(options);
+  removeUndefinedProperties(options.headers);
+  const mergedOptions = mergeDeep(defaults || {}, options);
   if (options.url === "/graphql") {
     if (defaults && defaults.mediaType.previews?.length) {
       mergedOptions.mediaType.previews = defaults.mediaType.previews.filter(
@@ -27716,7 +28187,7 @@ function merge$1(defaults, route, options) {
   return mergedOptions;
 }
 
-function addQueryParameters$1(url, parameters) {
+function addQueryParameters(url, parameters) {
   const separator = /\?/.test(url) ? "&" : "?";
   const names = Object.keys(parameters);
   if (names.length === 0) {
@@ -27730,19 +28201,19 @@ function addQueryParameters$1(url, parameters) {
   }).join("&");
 }
 
-const urlVariableRegex$1 = /\{[^{}}]+\}/g;
-function removeNonChars$1(variableName) {
+const urlVariableRegex = /\{[^{}}]+\}/g;
+function removeNonChars(variableName) {
   return variableName.replace(/(?:^\W+)|(?:(?<!\W)\W+$)/g, "").split(/,/);
 }
-function extractUrlVariableNames$1(url) {
-  const matches = url.match(urlVariableRegex$1);
+function extractUrlVariableNames(url) {
+  const matches = url.match(urlVariableRegex);
   if (!matches) {
     return [];
   }
-  return matches.map(removeNonChars$1).reduce((a, b) => a.concat(b), []);
+  return matches.map(removeNonChars).reduce((a, b) => a.concat(b), []);
 }
 
-function omit$1(object, keysToOmit) {
+function omit(object, keysToOmit) {
   const result = { __proto__: null };
   for (const key of Object.keys(object)) {
     if (keysToOmit.indexOf(key) === -1) {
@@ -27752,7 +28223,7 @@ function omit$1(object, keysToOmit) {
   return result;
 }
 
-function encodeReserved$1(str) {
+function encodeReserved(str) {
   return str.split(/(%[0-9A-Fa-f]{2})/g).map(function(part) {
     if (!/%[0-9A-Fa-f]/.test(part)) {
       part = encodeURI(part).replace(/%5B/g, "[").replace(/%5D/g, "]");
@@ -27760,67 +28231,67 @@ function encodeReserved$1(str) {
     return part;
   }).join("");
 }
-function encodeUnreserved$1(str) {
+function encodeUnreserved(str) {
   return encodeURIComponent(str).replace(/[!'()*]/g, function(c) {
     return "%" + c.charCodeAt(0).toString(16).toUpperCase();
   });
 }
-function encodeValue$1(operator, value, key) {
-  value = operator === "+" || operator === "#" ? encodeReserved$1(value) : encodeUnreserved$1(value);
+function encodeValue(operator, value, key) {
+  value = operator === "+" || operator === "#" ? encodeReserved(value) : encodeUnreserved(value);
   if (key) {
-    return encodeUnreserved$1(key) + "=" + value;
+    return encodeUnreserved(key) + "=" + value;
   } else {
     return value;
   }
 }
-function isDefined$1(value) {
+function isDefined(value) {
   return value !== void 0 && value !== null;
 }
-function isKeyOperator$1(operator) {
+function isKeyOperator(operator) {
   return operator === ";" || operator === "&" || operator === "?";
 }
-function getValues$1(context, operator, key, modifier) {
+function getValues(context, operator, key, modifier) {
   var value = context[key], result = [];
-  if (isDefined$1(value) && value !== "") {
+  if (isDefined(value) && value !== "") {
     if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
       value = value.toString();
       if (modifier && modifier !== "*") {
         value = value.substring(0, parseInt(modifier, 10));
       }
       result.push(
-        encodeValue$1(operator, value, isKeyOperator$1(operator) ? key : "")
+        encodeValue(operator, value, isKeyOperator(operator) ? key : "")
       );
     } else {
       if (modifier === "*") {
         if (Array.isArray(value)) {
-          value.filter(isDefined$1).forEach(function(value2) {
+          value.filter(isDefined).forEach(function(value2) {
             result.push(
-              encodeValue$1(operator, value2, isKeyOperator$1(operator) ? key : "")
+              encodeValue(operator, value2, isKeyOperator(operator) ? key : "")
             );
           });
         } else {
           Object.keys(value).forEach(function(k) {
-            if (isDefined$1(value[k])) {
-              result.push(encodeValue$1(operator, value[k], k));
+            if (isDefined(value[k])) {
+              result.push(encodeValue(operator, value[k], k));
             }
           });
         }
       } else {
         const tmp = [];
         if (Array.isArray(value)) {
-          value.filter(isDefined$1).forEach(function(value2) {
-            tmp.push(encodeValue$1(operator, value2));
+          value.filter(isDefined).forEach(function(value2) {
+            tmp.push(encodeValue(operator, value2));
           });
         } else {
           Object.keys(value).forEach(function(k) {
-            if (isDefined$1(value[k])) {
-              tmp.push(encodeUnreserved$1(k));
-              tmp.push(encodeValue$1(operator, value[k].toString()));
+            if (isDefined(value[k])) {
+              tmp.push(encodeUnreserved(k));
+              tmp.push(encodeValue(operator, value[k].toString()));
             }
           });
         }
-        if (isKeyOperator$1(operator)) {
-          result.push(encodeUnreserved$1(key) + "=" + tmp.join(","));
+        if (isKeyOperator(operator)) {
+          result.push(encodeUnreserved(key) + "=" + tmp.join(","));
         } else if (tmp.length !== 0) {
           result.push(tmp.join(","));
         }
@@ -27828,23 +28299,23 @@ function getValues$1(context, operator, key, modifier) {
     }
   } else {
     if (operator === ";") {
-      if (isDefined$1(value)) {
-        result.push(encodeUnreserved$1(key));
+      if (isDefined(value)) {
+        result.push(encodeUnreserved(key));
       }
     } else if (value === "" && (operator === "&" || operator === "?")) {
-      result.push(encodeUnreserved$1(key) + "=");
+      result.push(encodeUnreserved(key) + "=");
     } else if (value === "") {
       result.push("");
     }
   }
   return result;
 }
-function parseUrl$1(template) {
+function parseUrl(template) {
   return {
-    expand: expand$2.bind(null, template)
+    expand: expand$1.bind(null, template)
   };
 }
-function expand$2(template, context) {
+function expand$1(template, context) {
   var operators = ["+", "#", ".", "/", ";", "?", "&"];
   template = template.replace(
     /\{([^\{\}]+)\}|([^\{\}]+)/g,
@@ -27858,7 +28329,7 @@ function expand$2(template, context) {
         }
         expression.split(/,/g).forEach(function(variable) {
           var tmp = /([^:\*]*)(?::(\d+)|(\*))?/.exec(variable);
-          values.push(getValues$1(context, operator, tmp[1], tmp[2] || tmp[3]));
+          values.push(getValues(context, operator, tmp[1], tmp[2] || tmp[3]));
         });
         if (operator && operator !== "+") {
           var separator = ",";
@@ -27872,7 +28343,7 @@ function expand$2(template, context) {
           return values.join(",");
         }
       } else {
-        return encodeReserved$1(literal);
+        return encodeReserved(literal);
       }
     }
   );
@@ -27883,12 +28354,12 @@ function expand$2(template, context) {
   }
 }
 
-function parse$1(options) {
+function parse(options) {
   let method = options.method.toUpperCase();
   let url = (options.url || "/").replace(/:([a-z]\w+)/g, "{$1}");
   let headers = Object.assign({}, options.headers);
   let body;
-  let parameters = omit$1(options, [
+  let parameters = omit(options, [
     "method",
     "baseUrl",
     "url",
@@ -27896,13 +28367,13 @@ function parse$1(options) {
     "request",
     "mediaType"
   ]);
-  const urlVariableNames = extractUrlVariableNames$1(url);
-  url = parseUrl$1(url).expand(parameters);
+  const urlVariableNames = extractUrlVariableNames(url);
+  url = parseUrl(url).expand(parameters);
   if (!/^http/.test(url)) {
     url = options.baseUrl + url;
   }
   const omittedParameters = Object.keys(options).filter((option) => urlVariableNames.includes(option)).concat("baseUrl");
-  const remainingParameters = omit$1(parameters, omittedParameters);
+  const remainingParameters = omit(parameters, omittedParameters);
   const isBinaryRequest = /application\/octet-stream/i.test(headers.accept);
   if (!isBinaryRequest) {
     if (options.mediaType.format) {
@@ -27924,7 +28395,7 @@ function parse$1(options) {
     }
   }
   if (["GET", "HEAD"].includes(method)) {
-    url = addQueryParameters$1(url, remainingParameters);
+    url = addQueryParameters(url, remainingParameters);
   } else {
     if ("data" in remainingParameters) {
       body = remainingParameters.data;
@@ -27947,26 +28418,26 @@ function parse$1(options) {
   );
 }
 
-function endpointWithDefaults$1(defaults, route, options) {
-  return parse$1(merge$1(defaults, route, options));
+function endpointWithDefaults(defaults, route, options) {
+  return parse(merge(defaults, route, options));
 }
 
-function withDefaults$5(oldDefaults, newDefaults) {
-  const DEFAULTS = merge$1(oldDefaults, newDefaults);
-  const endpoint = endpointWithDefaults$1.bind(null, DEFAULTS);
+function withDefaults$2(oldDefaults, newDefaults) {
+  const DEFAULTS = merge(oldDefaults, newDefaults);
+  const endpoint = endpointWithDefaults.bind(null, DEFAULTS);
   return Object.assign(endpoint, {
     DEFAULTS,
-    defaults: withDefaults$5.bind(null, DEFAULTS),
-    merge: merge$1.bind(null, DEFAULTS),
-    parse: parse$1
+    defaults: withDefaults$2.bind(null, DEFAULTS),
+    merge: merge.bind(null, DEFAULTS),
+    parse
   });
 }
 
-const endpoint$1 = withDefaults$5(null, DEFAULTS$1);
+const endpoint = withDefaults$2(null, DEFAULTS);
 
-const VERSION$c = "8.4.1";
+const VERSION$4 = "8.4.1";
 
-function isPlainObject$2(value) {
+function isPlainObject(value) {
   if (typeof value !== "object" || value === null)
     return false;
   if (Object.prototype.toString.call(value) !== "[object Object]")
@@ -28142,14 +28613,14 @@ class RequestError extends Error {
   }
 }
 
-function getBufferResponse$1(response) {
+function getBufferResponse(response) {
   return response.arrayBuffer();
 }
 
-function fetchWrapper$1(requestOptions) {
+function fetchWrapper(requestOptions) {
   const log = requestOptions.request && requestOptions.request.log ? requestOptions.request.log : console;
   const parseSuccessResponseBody = requestOptions.request?.parseSuccessResponseBody !== false;
-  if (isPlainObject$2(requestOptions.body) || Array.isArray(requestOptions.body)) {
+  if (isPlainObject(requestOptions.body) || Array.isArray(requestOptions.body)) {
     requestOptions.body = JSON.stringify(requestOptions.body);
   }
   let headers = {};
@@ -28209,14 +28680,14 @@ function fetchWrapper$1(requestOptions) {
           url,
           status,
           headers,
-          data: await getResponseData$1(response)
+          data: await getResponseData(response)
         },
         request: requestOptions
       });
     }
     if (status >= 400) {
-      const data = await getResponseData$1(response);
-      const error = new RequestError(toErrorMessage$1(data), status, {
+      const data = await getResponseData(response);
+      const error = new RequestError(toErrorMessage(data), status, {
         response: {
           url,
           status,
@@ -28227,7 +28698,7 @@ function fetchWrapper$1(requestOptions) {
       });
       throw error;
     }
-    return parseSuccessResponseBody ? await getResponseData$1(response) : response.body;
+    return parseSuccessResponseBody ? await getResponseData(response) : response.body;
   }).then((data) => {
     return {
       status,
@@ -28253,7 +28724,7 @@ function fetchWrapper$1(requestOptions) {
     });
   });
 }
-async function getResponseData$1(response) {
+async function getResponseData(response) {
   const contentType = response.headers.get("content-type");
   if (/application\/json/.test(contentType)) {
     return response.json().catch(() => response.text()).catch(() => "");
@@ -28261,9 +28732,9 @@ async function getResponseData$1(response) {
   if (!contentType || /^text\/|charset=utf-8$/.test(contentType)) {
     return response.text();
   }
-  return getBufferResponse$1(response);
+  return getBufferResponse(response);
 }
-function toErrorMessage$1(data) {
+function toErrorMessage(data) {
   if (typeof data === "string")
     return data;
   let suffix;
@@ -28281,49 +28752,49 @@ function toErrorMessage$1(data) {
   return `Unknown error: ${JSON.stringify(data)}`;
 }
 
-function withDefaults$4(oldEndpoint, newDefaults) {
+function withDefaults$1(oldEndpoint, newDefaults) {
   const endpoint = oldEndpoint.defaults(newDefaults);
   const newApi = function(route, parameters) {
     const endpointOptions = endpoint.merge(route, parameters);
     if (!endpointOptions.request || !endpointOptions.request.hook) {
-      return fetchWrapper$1(endpoint.parse(endpointOptions));
+      return fetchWrapper(endpoint.parse(endpointOptions));
     }
     const request = (route2, parameters2) => {
-      return fetchWrapper$1(
+      return fetchWrapper(
         endpoint.parse(endpoint.merge(route2, parameters2))
       );
     };
     Object.assign(request, {
       endpoint,
-      defaults: withDefaults$4.bind(null, endpoint)
+      defaults: withDefaults$1.bind(null, endpoint)
     });
     return endpointOptions.request.hook(request, endpointOptions);
   };
   return Object.assign(newApi, {
     endpoint,
-    defaults: withDefaults$4.bind(null, endpoint)
+    defaults: withDefaults$1.bind(null, endpoint)
   });
 }
 
-const request$1 = withDefaults$4(endpoint$1, {
+const request = withDefaults$1(endpoint, {
   headers: {
-    "user-agent": `octokit-request.js/${VERSION$c} ${getUserAgent$1()}`
+    "user-agent": `octokit-request.js/${VERSION$4} ${getUserAgent()}`
   }
 });
 
 // pkg/dist-src/index.js
 
 // pkg/dist-src/version.js
-var VERSION$b = "7.1.1";
+var VERSION$3 = "7.1.1";
 
 // pkg/dist-src/error.js
-function _buildMessageForResponseErrors$1(data) {
+function _buildMessageForResponseErrors(data) {
   return `Request failed due to following response errors:
 ` + data.errors.map((e) => ` - ${e.message}`).join("\n");
 }
-var GraphqlResponseError$1 = class GraphqlResponseError extends Error {
+var GraphqlResponseError = class extends Error {
   constructor(request2, headers, response) {
-    super(_buildMessageForResponseErrors$1(response));
+    super(_buildMessageForResponseErrors(response));
     this.request = request2;
     this.headers = headers;
     this.response = response;
@@ -28337,7 +28808,7 @@ var GraphqlResponseError$1 = class GraphqlResponseError extends Error {
 };
 
 // pkg/dist-src/graphql.js
-var NON_VARIABLE_OPTIONS$1 = [
+var NON_VARIABLE_OPTIONS = [
   "method",
   "baseUrl",
   "url",
@@ -28346,9 +28817,9 @@ var NON_VARIABLE_OPTIONS$1 = [
   "query",
   "mediaType"
 ];
-var FORBIDDEN_VARIABLE_OPTIONS$1 = ["query", "method", "url"];
-var GHES_V3_SUFFIX_REGEX$1 = /\/api\/v3\/?$/;
-function graphql$1(request2, query, options) {
+var FORBIDDEN_VARIABLE_OPTIONS = ["query", "method", "url"];
+var GHES_V3_SUFFIX_REGEX = /\/api\/v3\/?$/;
+function graphql(request2, query, options) {
   if (options) {
     if (typeof query === "string" && "query" in options) {
       return Promise.reject(
@@ -28356,7 +28827,7 @@ function graphql$1(request2, query, options) {
       );
     }
     for (const key in options) {
-      if (!FORBIDDEN_VARIABLE_OPTIONS$1.includes(key)) continue;
+      if (!FORBIDDEN_VARIABLE_OPTIONS.includes(key)) continue;
       return Promise.reject(
         new Error(
           `[@octokit/graphql] "${key}" cannot be used as variable name`
@@ -28368,7 +28839,7 @@ function graphql$1(request2, query, options) {
   const requestOptions = Object.keys(
     parsedOptions
   ).reduce((result, key) => {
-    if (NON_VARIABLE_OPTIONS$1.includes(key)) {
+    if (NON_VARIABLE_OPTIONS.includes(key)) {
       result[key] = parsedOptions[key];
       return result;
     }
@@ -28379,8 +28850,8 @@ function graphql$1(request2, query, options) {
     return result;
   }, {});
   const baseUrl = parsedOptions.baseUrl || request2.endpoint.DEFAULTS.baseUrl;
-  if (GHES_V3_SUFFIX_REGEX$1.test(baseUrl)) {
-    requestOptions.url = baseUrl.replace(GHES_V3_SUFFIX_REGEX$1, "/api/graphql");
+  if (GHES_V3_SUFFIX_REGEX.test(baseUrl)) {
+    requestOptions.url = baseUrl.replace(GHES_V3_SUFFIX_REGEX, "/api/graphql");
   }
   return request2(requestOptions).then((response) => {
     if (response.data.errors) {
@@ -28388,7 +28859,7 @@ function graphql$1(request2, query, options) {
       for (const key of Object.keys(response.headers)) {
         headers[key] = response.headers[key];
       }
-      throw new GraphqlResponseError$1(
+      throw new GraphqlResponseError(
         requestOptions,
         headers,
         response.data
@@ -28399,39 +28870,39 @@ function graphql$1(request2, query, options) {
 }
 
 // pkg/dist-src/with-defaults.js
-function withDefaults$3(request2, newDefaults) {
+function withDefaults(request2, newDefaults) {
   const newRequest = request2.defaults(newDefaults);
   const newApi = (query, options) => {
-    return graphql$1(newRequest, query, options);
+    return graphql(newRequest, query, options);
   };
   return Object.assign(newApi, {
-    defaults: withDefaults$3.bind(null, newRequest),
+    defaults: withDefaults.bind(null, newRequest),
     endpoint: newRequest.endpoint
   });
 }
 
 // pkg/dist-src/index.js
-withDefaults$3(request$1, {
+withDefaults(request, {
   headers: {
-    "user-agent": `octokit-graphql.js/${VERSION$b} ${getUserAgent$1()}`
+    "user-agent": `octokit-graphql.js/${VERSION$3} ${getUserAgent()}`
   },
   method: "POST",
   url: "/graphql"
 });
-function withCustomRequest$1(customRequest) {
-  return withDefaults$3(customRequest, {
+function withCustomRequest(customRequest) {
+  return withDefaults(customRequest, {
     method: "POST",
     url: "/graphql"
   });
 }
 
-const REGEX_IS_INSTALLATION_LEGACY$1 = /^v1\./;
-const REGEX_IS_INSTALLATION$1 = /^ghs_/;
-const REGEX_IS_USER_TO_SERVER$1 = /^ghu_/;
-async function auth$1(token) {
+const REGEX_IS_INSTALLATION_LEGACY = /^v1\./;
+const REGEX_IS_INSTALLATION = /^ghs_/;
+const REGEX_IS_USER_TO_SERVER = /^ghu_/;
+async function auth(token) {
   const isApp = token.split(/\./).length === 3;
-  const isInstallation = REGEX_IS_INSTALLATION_LEGACY$1.test(token) || REGEX_IS_INSTALLATION$1.test(token);
-  const isUserToServer = REGEX_IS_USER_TO_SERVER$1.test(token);
+  const isInstallation = REGEX_IS_INSTALLATION_LEGACY.test(token) || REGEX_IS_INSTALLATION.test(token);
+  const isUserToServer = REGEX_IS_USER_TO_SERVER.test(token);
   const tokenType = isApp ? "app" : isInstallation ? "installation" : isUserToServer ? "user-to-server" : "oauth";
   return {
     type: "token",
@@ -28440,23 +28911,23 @@ async function auth$1(token) {
   };
 }
 
-function withAuthorizationPrefix$1(token) {
+function withAuthorizationPrefix(token) {
   if (token.split(/\./).length === 3) {
     return `bearer ${token}`;
   }
   return `token ${token}`;
 }
 
-async function hook$1(token, request, route, parameters) {
+async function hook(token, request, route, parameters) {
   const endpoint = request.endpoint.merge(
     route,
     parameters
   );
-  endpoint.headers.authorization = withAuthorizationPrefix$1(token);
+  endpoint.headers.authorization = withAuthorizationPrefix(token);
   return request(endpoint);
 }
 
-const createTokenAuth$1 = function createTokenAuth2(token) {
+const createTokenAuth = function createTokenAuth2(token) {
   if (!token) {
     throw new Error("[@octokit/auth-token] No token passed to createTokenAuth");
   }
@@ -28466,25 +28937,25 @@ const createTokenAuth$1 = function createTokenAuth2(token) {
     );
   }
   token = token.replace(/^(token|bearer) +/i, "");
-  return Object.assign(auth$1.bind(null, token), {
-    hook: hook$1.bind(null, token)
+  return Object.assign(auth.bind(null, token), {
+    hook: hook.bind(null, token)
   });
 };
 
 // pkg/dist-src/index.js
 
 // pkg/dist-src/version.js
-var VERSION$a = "5.2.0";
+var VERSION$2 = "5.2.0";
 
 // pkg/dist-src/index.js
-var noop$1 = () => {
+var noop = () => {
 };
-var consoleWarn$1 = console.warn.bind(console);
-var consoleError$1 = console.error.bind(console);
-var userAgentTrail$1 = `octokit-core.js/${VERSION$a} ${getUserAgent$1()}`;
-var Octokit$2 = class Octokit {
+var consoleWarn = console.warn.bind(console);
+var consoleError = console.error.bind(console);
+var userAgentTrail = `octokit-core.js/${VERSION$2} ${getUserAgent()}`;
+var Octokit = class {
   static {
-    this.VERSION = VERSION$a;
+    this.VERSION = VERSION$2;
   }
   static defaults(defaults) {
     const OctokitWithDefaults = class extends this {
@@ -28529,9 +29000,9 @@ var Octokit$2 = class Octokit {
     return NewOctokit;
   }
   constructor(options = {}) {
-    const hook = new beforeAfterHookExports$1.Collection();
+    const hook = new beforeAfterHookExports.Collection();
     const requestDefaults = {
-      baseUrl: request$1.endpoint.DEFAULTS.baseUrl,
+      baseUrl: request.endpoint.DEFAULTS.baseUrl,
       headers: {},
       request: Object.assign({}, options.request, {
         // @ts-ignore internal usage only, no need to type
@@ -28542,7 +29013,7 @@ var Octokit$2 = class Octokit {
         format: ""
       }
     };
-    requestDefaults.headers["user-agent"] = options.userAgent ? `${options.userAgent} ${userAgentTrail$1}` : userAgentTrail$1;
+    requestDefaults.headers["user-agent"] = options.userAgent ? `${options.userAgent} ${userAgentTrail}` : userAgentTrail;
     if (options.baseUrl) {
       requestDefaults.baseUrl = options.baseUrl;
     }
@@ -28552,14 +29023,14 @@ var Octokit$2 = class Octokit {
     if (options.timeZone) {
       requestDefaults.headers["time-zone"] = options.timeZone;
     }
-    this.request = request$1.defaults(requestDefaults);
-    this.graphql = withCustomRequest$1(this.request).defaults(requestDefaults);
+    this.request = request.defaults(requestDefaults);
+    this.graphql = withCustomRequest(this.request).defaults(requestDefaults);
     this.log = Object.assign(
       {
-        debug: noop$1,
-        info: noop$1,
-        warn: consoleWarn$1,
-        error: consoleError$1
+        debug: noop,
+        info: noop,
+        warn: consoleWarn,
+        error: consoleError
       },
       options.log
     );
@@ -28570,7 +29041,7 @@ var Octokit$2 = class Octokit {
           type: "unauthenticated"
         });
       } else {
-        const auth = createTokenAuth$1(options.auth);
+        const auth = createTokenAuth(options.auth);
         hook.wrap("request", auth.hook);
         this.auth = auth;
       }
@@ -28604,14 +29075,14 @@ var Octokit$2 = class Octokit {
 
 var distWeb$1 = /*#__PURE__*/Object.freeze({
 	__proto__: null,
-	Octokit: Octokit$2
+	Octokit: Octokit
 });
 
 var require$$2 = /*@__PURE__*/getAugmentedNamespace(distWeb$1);
 
-const VERSION$9 = "10.4.1";
+const VERSION$1 = "10.4.1";
 
-const Endpoints$1 = {
+const Endpoints = {
   actions: {
     addCustomLabelsToSelfHostedRunnerForOrg: [
       "POST /orgs/{org}/actions/runners/{runner_id}/labels"
@@ -30599,10 +31070,10 @@ const Endpoints$1 = {
     updateAuthenticated: ["PATCH /user"]
   }
 };
-var endpoints_default$1 = Endpoints$1;
+var endpoints_default = Endpoints;
 
-const endpointMethodsMap$1 = /* @__PURE__ */ new Map();
-for (const [scope, endpoints] of Object.entries(endpoints_default$1)) {
+const endpointMethodsMap = /* @__PURE__ */ new Map();
+for (const [scope, endpoints] of Object.entries(endpoints_default)) {
   for (const [methodName, endpoint] of Object.entries(endpoints)) {
     const [route, defaults, decorations] = endpoint;
     const [method, url] = route.split(/ /);
@@ -30613,10 +31084,10 @@ for (const [scope, endpoints] of Object.entries(endpoints_default$1)) {
       },
       defaults
     );
-    if (!endpointMethodsMap$1.has(scope)) {
-      endpointMethodsMap$1.set(scope, /* @__PURE__ */ new Map());
+    if (!endpointMethodsMap.has(scope)) {
+      endpointMethodsMap.set(scope, /* @__PURE__ */ new Map());
     }
-    endpointMethodsMap$1.get(scope).set(methodName, {
+    endpointMethodsMap.get(scope).set(methodName, {
       scope,
       methodName,
       endpointDefaults,
@@ -30624,9 +31095,9 @@ for (const [scope, endpoints] of Object.entries(endpoints_default$1)) {
     });
   }
 }
-const handler$1 = {
+const handler = {
   has({ scope }, methodName) {
-    return endpointMethodsMap$1.get(scope).has(methodName);
+    return endpointMethodsMap.get(scope).has(methodName);
   },
   getOwnPropertyDescriptor(target, methodName) {
     return {
@@ -30646,7 +31117,7 @@ const handler$1 = {
     return true;
   },
   ownKeys({ scope }) {
-    return [...endpointMethodsMap$1.get(scope).keys()];
+    return [...endpointMethodsMap.get(scope).keys()];
   },
   set(target, methodName, value) {
     return target.cache[methodName] = value;
@@ -30655,13 +31126,13 @@ const handler$1 = {
     if (cache[methodName]) {
       return cache[methodName];
     }
-    const method = endpointMethodsMap$1.get(scope).get(methodName);
+    const method = endpointMethodsMap.get(scope).get(methodName);
     if (!method) {
       return void 0;
     }
     const { endpointDefaults, decorations } = method;
     if (decorations) {
-      cache[methodName] = decorate$1(
+      cache[methodName] = decorate(
         octokit,
         scope,
         methodName,
@@ -30674,14 +31145,14 @@ const handler$1 = {
     return cache[methodName];
   }
 };
-function endpointsToMethods$1(octokit) {
+function endpointsToMethods(octokit) {
   const newMethods = {};
-  for (const scope of endpointMethodsMap$1.keys()) {
-    newMethods[scope] = new Proxy({ octokit, scope, cache: {} }, handler$1);
+  for (const scope of endpointMethodsMap.keys()) {
+    newMethods[scope] = new Proxy({ octokit, scope, cache: {} }, handler);
   }
   return newMethods;
 }
-function decorate$1(octokit, scope, methodName, defaults, decorations) {
+function decorate(octokit, scope, methodName, defaults, decorations) {
   const requestWithDefaults = octokit.request.defaults(defaults);
   function withDecorations(...args) {
     let options = requestWithDefaults.endpoint.merge(...args);
@@ -30724,34 +31195,34 @@ function decorate$1(octokit, scope, methodName, defaults, decorations) {
 }
 
 function restEndpointMethods(octokit) {
-  const api = endpointsToMethods$1(octokit);
+  const api = endpointsToMethods(octokit);
   return {
     rest: api
   };
 }
-restEndpointMethods.VERSION = VERSION$9;
-function legacyRestEndpointMethods$1(octokit) {
-  const api = endpointsToMethods$1(octokit);
+restEndpointMethods.VERSION = VERSION$1;
+function legacyRestEndpointMethods(octokit) {
+  const api = endpointsToMethods(octokit);
   return {
     ...api,
     rest: api
   };
 }
-legacyRestEndpointMethods$1.VERSION = VERSION$9;
+legacyRestEndpointMethods.VERSION = VERSION$1;
 
 var distSrc = /*#__PURE__*/Object.freeze({
 	__proto__: null,
-	legacyRestEndpointMethods: legacyRestEndpointMethods$1,
+	legacyRestEndpointMethods: legacyRestEndpointMethods,
 	restEndpointMethods: restEndpointMethods
 });
 
 var require$$3 = /*@__PURE__*/getAugmentedNamespace(distSrc);
 
 // pkg/dist-src/version.js
-var VERSION$8 = "9.2.2";
+var VERSION = "9.2.2";
 
 // pkg/dist-src/normalize-paginated-list-response.js
-function normalizePaginatedListResponse$1(response) {
+function normalizePaginatedListResponse(response) {
   if (!response.data) {
     return {
       ...response,
@@ -30781,7 +31252,7 @@ function normalizePaginatedListResponse$1(response) {
 }
 
 // pkg/dist-src/iterator.js
-function iterator$1(octokit, route, parameters) {
+function iterator(octokit, route, parameters) {
   const options = typeof route === "function" ? route.endpoint(parameters) : octokit.request.endpoint(route, parameters);
   const requestMethod = typeof route === "function" ? route : octokit.request;
   const method = options.method;
@@ -30794,7 +31265,7 @@ function iterator$1(octokit, route, parameters) {
           return { done: true };
         try {
           const response = await requestMethod({ method, url, headers });
-          const normalizedResponse = normalizePaginatedListResponse$1(response);
+          const normalizedResponse = normalizePaginatedListResponse(response);
           url = ((normalizedResponse.headers.link || "").match(
             /<([^<>]+)>;\s*rel="next"/
           ) || [])[1];
@@ -30817,19 +31288,19 @@ function iterator$1(octokit, route, parameters) {
 }
 
 // pkg/dist-src/paginate.js
-function paginate$1(octokit, route, parameters, mapFn) {
+function paginate(octokit, route, parameters, mapFn) {
   if (typeof parameters === "function") {
     mapFn = parameters;
     parameters = void 0;
   }
-  return gather$1(
+  return gather(
     octokit,
     [],
-    iterator$1(octokit, route, parameters)[Symbol.asyncIterator](),
+    iterator(octokit, route, parameters)[Symbol.asyncIterator](),
     mapFn
   );
 }
-function gather$1(octokit, results, iterator2, mapFn) {
+function gather(octokit, results, iterator2, mapFn) {
   return iterator2.next().then((result) => {
     if (result.done) {
       return results;
@@ -30844,13 +31315,13 @@ function gather$1(octokit, results, iterator2, mapFn) {
     if (earlyExit) {
       return results;
     }
-    return gather$1(octokit, results, iterator2, mapFn);
+    return gather(octokit, results, iterator2, mapFn);
   });
 }
 
 // pkg/dist-src/compose-paginate.js
-var composePaginateRest = Object.assign(paginate$1, {
-  iterator: iterator$1
+var composePaginateRest = Object.assign(paginate, {
+  iterator
 });
 
 // pkg/dist-src/generated/paginating-endpoints.js
@@ -31101,20 +31572,20 @@ function isPaginatingEndpoint(arg) {
 }
 
 // pkg/dist-src/index.js
-function paginateRest$1(octokit) {
+function paginateRest(octokit) {
   return {
-    paginate: Object.assign(paginate$1.bind(null, octokit), {
-      iterator: iterator$1.bind(null, octokit)
+    paginate: Object.assign(paginate.bind(null, octokit), {
+      iterator: iterator.bind(null, octokit)
     })
   };
 }
-paginateRest$1.VERSION = VERSION$8;
+paginateRest.VERSION = VERSION;
 
 var distWeb = /*#__PURE__*/Object.freeze({
 	__proto__: null,
 	composePaginateRest: composePaginateRest,
 	isPaginatingEndpoint: isPaginatingEndpoint,
-	paginateRest: paginateRest$1,
+	paginateRest: paginateRest,
 	paginatingEndpoints: paginatingEndpoints
 });
 
@@ -31238,3362 +31709,219 @@ function requireGithub () {
 
 var githubExports = requireGithub();
 
-function getUserAgent() {
-    if (typeof navigator === "object" && "userAgent" in navigator) {
-        return navigator.userAgent;
+async function handleCheckStatus(api, inputs) {
+    validateRequiredInputs(inputs, [
+        'deploymentId',
+        'targetEnvironmentAlias'
+    ]);
+    coreExports.info(`Checking status for deployment ID: ${inputs.deploymentId}, environment: ${inputs.targetEnvironmentAlias}`);
+    // Poll until completed/failed, then use the result for the rest of the logic
+    const deploymentStatus = await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), inputs.deploymentId);
+    coreExports.setOutput('deploymentState', deploymentStatus.deploymentState);
+    coreExports.setOutput('deploymentStatus', JSON.stringify(deploymentStatus));
+    // Type guard to check if a DeploymentResponse is a DeploymentStatus
+    function isDeploymentStatus(obj) {
+        return (typeof obj.id === 'string' &&
+            typeof obj.projectId === 'string' &&
+            typeof obj.targetEnvironmentAlias === 'string' &&
+            typeof obj.state === 'string' &&
+            typeof obj.createdUtc === 'string');
     }
-    if (typeof process === "object" && process.version !== undefined) {
-        return `Node.js/${process.version.substr(1)} (${process.platform}; ${process.arch})`;
+    if (isDeploymentStatus(deploymentStatus)) {
+        if (deploymentStatus.deploymentState === 'Completed') {
+            return await handleCompletedDeployment(api, inputs, deploymentStatus);
+        }
+        else if (deploymentStatus.deploymentState === 'Failed') {
+            return await handleFailedDeployment(api, inputs, deploymentStatus);
+        }
+        else {
+            coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
+            return {
+                deploymentState: deploymentStatus.deploymentState,
+                deploymentStatus: JSON.stringify(deploymentStatus)
+            };
+        }
     }
-    return "<environment undetectable>";
-}
-
-var beforeAfterHook = {exports: {}};
-
-var register_1;
-var hasRequiredRegister;
-
-function requireRegister () {
-	if (hasRequiredRegister) return register_1;
-	hasRequiredRegister = 1;
-	register_1 = register;
-
-	function register(state, name, method, options) {
-	  if (typeof method !== "function") {
-	    throw new Error("method for before hook must be a function");
-	  }
-
-	  if (!options) {
-	    options = {};
-	  }
-
-	  if (Array.isArray(name)) {
-	    return name.reverse().reduce(function (callback, name) {
-	      return register.bind(null, state, name, callback, options);
-	    }, method)();
-	  }
-
-	  return Promise.resolve().then(function () {
-	    if (!state.registry[name]) {
-	      return method(options);
-	    }
-
-	    return state.registry[name].reduce(function (method, registered) {
-	      return registered.hook.bind(null, method, options);
-	    }, method)();
-	  });
-	}
-	return register_1;
-}
-
-var add;
-var hasRequiredAdd;
-
-function requireAdd () {
-	if (hasRequiredAdd) return add;
-	hasRequiredAdd = 1;
-	add = addHook;
-
-	function addHook(state, kind, name, hook) {
-	  var orig = hook;
-	  if (!state.registry[name]) {
-	    state.registry[name] = [];
-	  }
-
-	  if (kind === "before") {
-	    hook = function (method, options) {
-	      return Promise.resolve()
-	        .then(orig.bind(null, options))
-	        .then(method.bind(null, options));
-	    };
-	  }
-
-	  if (kind === "after") {
-	    hook = function (method, options) {
-	      var result;
-	      return Promise.resolve()
-	        .then(method.bind(null, options))
-	        .then(function (result_) {
-	          result = result_;
-	          return orig(result, options);
-	        })
-	        .then(function () {
-	          return result;
-	        });
-	    };
-	  }
-
-	  if (kind === "error") {
-	    hook = function (method, options) {
-	      return Promise.resolve()
-	        .then(method.bind(null, options))
-	        .catch(function (error) {
-	          return orig(error, options);
-	        });
-	    };
-	  }
-
-	  state.registry[name].push({
-	    hook: hook,
-	    orig: orig,
-	  });
-	}
-	return add;
-}
-
-var remove;
-var hasRequiredRemove;
-
-function requireRemove () {
-	if (hasRequiredRemove) return remove;
-	hasRequiredRemove = 1;
-	remove = removeHook;
-
-	function removeHook(state, name, method) {
-	  if (!state.registry[name]) {
-	    return;
-	  }
-
-	  var index = state.registry[name]
-	    .map(function (registered) {
-	      return registered.orig;
-	    })
-	    .indexOf(method);
-
-	  if (index === -1) {
-	    return;
-	  }
-
-	  state.registry[name].splice(index, 1);
-	}
-	return remove;
-}
-
-var hasRequiredBeforeAfterHook;
-
-function requireBeforeAfterHook () {
-	if (hasRequiredBeforeAfterHook) return beforeAfterHook.exports;
-	hasRequiredBeforeAfterHook = 1;
-	var register = requireRegister();
-	var addHook = requireAdd();
-	var removeHook = requireRemove();
-
-	// bind with array of arguments: https://stackoverflow.com/a/21792913
-	var bind = Function.bind;
-	var bindable = bind.bind(bind);
-
-	function bindApi(hook, state, name) {
-	  var removeHookRef = bindable(removeHook, null).apply(
-	    null,
-	    name ? [state, name] : [state]
-	  );
-	  hook.api = { remove: removeHookRef };
-	  hook.remove = removeHookRef;
-	  ["before", "error", "after", "wrap"].forEach(function (kind) {
-	    var args = name ? [state, kind, name] : [state, kind];
-	    hook[kind] = hook.api[kind] = bindable(addHook, null).apply(null, args);
-	  });
-	}
-
-	function HookSingular() {
-	  var singularHookName = "h";
-	  var singularHookState = {
-	    registry: {},
-	  };
-	  var singularHook = register.bind(null, singularHookState, singularHookName);
-	  bindApi(singularHook, singularHookState, singularHookName);
-	  return singularHook;
-	}
-
-	function HookCollection() {
-	  var state = {
-	    registry: {},
-	  };
-
-	  var hook = register.bind(null, state);
-	  bindApi(hook, state);
-
-	  return hook;
-	}
-
-	var collectionHookDeprecationMessageDisplayed = false;
-	function Hook() {
-	  if (!collectionHookDeprecationMessageDisplayed) {
-	    console.warn(
-	      '[before-after-hook]: "Hook()" repurposing warning, use "Hook.Collection()". Read more: https://git.io/upgrade-before-after-hook-to-1.4'
-	    );
-	    collectionHookDeprecationMessageDisplayed = true;
-	  }
-	  return HookCollection();
-	}
-
-	Hook.Singular = HookSingular.bind();
-	Hook.Collection = HookCollection.bind();
-
-	beforeAfterHook.exports = Hook;
-	// expose constructors as a named property for TypeScript
-	beforeAfterHook.exports.Hook = Hook;
-	beforeAfterHook.exports.Singular = Hook.Singular;
-	beforeAfterHook.exports.Collection = Hook.Collection;
-	return beforeAfterHook.exports;
-}
-
-var beforeAfterHookExports = requireBeforeAfterHook();
-
-const VERSION$7 = "9.0.6";
-
-const userAgent = `octokit-endpoint.js/${VERSION$7} ${getUserAgent()}`;
-const DEFAULTS = {
-  method: "GET",
-  baseUrl: "https://api.github.com",
-  headers: {
-    accept: "application/vnd.github.v3+json",
-    "user-agent": userAgent
-  },
-  mediaType: {
-    format: ""
-  }
-};
-
-function lowercaseKeys(object) {
-  if (!object) {
-    return {};
-  }
-  return Object.keys(object).reduce((newObj, key) => {
-    newObj[key.toLowerCase()] = object[key];
-    return newObj;
-  }, {});
-}
-
-function isPlainObject$1(value) {
-  if (typeof value !== "object" || value === null)
-    return false;
-  if (Object.prototype.toString.call(value) !== "[object Object]")
-    return false;
-  const proto = Object.getPrototypeOf(value);
-  if (proto === null)
-    return true;
-  const Ctor = Object.prototype.hasOwnProperty.call(proto, "constructor") && proto.constructor;
-  return typeof Ctor === "function" && Ctor instanceof Ctor && Function.prototype.call(Ctor) === Function.prototype.call(value);
-}
-
-function mergeDeep(defaults, options) {
-  const result = Object.assign({}, defaults);
-  Object.keys(options).forEach((key) => {
-    if (isPlainObject$1(options[key])) {
-      if (!(key in defaults))
-        Object.assign(result, { [key]: options[key] });
-      else
-        result[key] = mergeDeep(defaults[key], options[key]);
-    } else {
-      Object.assign(result, { [key]: options[key] });
+    else {
+        throw new Error('DeploymentStatus is not valid');
     }
-  });
-  return result;
 }
-
-function removeUndefinedProperties(obj) {
-  for (const key in obj) {
-    if (obj[key] === void 0) {
-      delete obj[key];
+async function handleCompletedDeployment(api, inputs, deploymentStatus) {
+    coreExports.info('Deployment completed successfully');
+    // Get changes (diff) for completed deployment
+    try {
+        const changes = await api.getChangesById(inputs.deploymentId, inputs.targetEnvironmentAlias);
+        coreExports.info('Deployment completed. Here is the diff/patch:');
+        coreExports.info(changes.changes);
+        coreExports.setOutput('changes', JSON.stringify(changes));
+        return {
+            deploymentState: deploymentStatus.deploymentState,
+            deploymentStatus: JSON.stringify(deploymentStatus),
+            changes: JSON.stringify(changes)
+        };
     }
-  }
-  return obj;
-}
-
-function merge(defaults, route, options) {
-  if (typeof route === "string") {
-    let [method, url] = route.split(" ");
-    options = Object.assign(url ? { method, url } : { url: method }, options);
-  } else {
-    options = Object.assign({}, route);
-  }
-  options.headers = lowercaseKeys(options.headers);
-  removeUndefinedProperties(options);
-  removeUndefinedProperties(options.headers);
-  const mergedOptions = mergeDeep(defaults || {}, options);
-  if (options.url === "/graphql") {
-    if (defaults && defaults.mediaType.previews?.length) {
-      mergedOptions.mediaType.previews = defaults.mediaType.previews.filter(
-        (preview) => !mergedOptions.mediaType.previews.includes(preview)
-      ).concat(mergedOptions.mediaType.previews);
+    catch (diffError) {
+        if (diffError instanceof Error &&
+            diffError.message.includes('409 Conflict') &&
+            diffError.message.includes('CloudNullDeployment')) {
+            coreExports.info('Deployment completed successfully, but there were no changes to apply to the cloud repository.');
+        }
+        else {
+            coreExports.warning(`Could not retrieve changes for completed deployment: ${diffError}`);
+        }
+        return {
+            deploymentState: deploymentStatus.deploymentState,
+            deploymentStatus: JSON.stringify(deploymentStatus)
+        };
     }
-    mergedOptions.mediaType.previews = (mergedOptions.mediaType.previews || []).map((preview) => preview.replace(/-preview/, ""));
-  }
-  return mergedOptions;
 }
-
-function addQueryParameters(url, parameters) {
-  const separator = /\?/.test(url) ? "&" : "?";
-  const names = Object.keys(parameters);
-  if (names.length === 0) {
-    return url;
-  }
-  return url + separator + names.map((name) => {
-    if (name === "q") {
-      return "q=" + parameters.q.split("+").map(encodeURIComponent).join("+");
+async function handleFailedDeployment(api, inputs, deploymentStatus) {
+    coreExports.setFailed('Deployment failed');
+    coreExports.warning('Cannot retrieve changes for failed deployments - only completed deployments can be used to get git patches');
+    // Get detailed error information from Umbraco Cloud
+    const errorDetails = await getErrorDetails(api, inputs);
+    // Check if this is a NuGet-related failure
+    const isNuGetFailure = errorDetails.some((error) => error.toLowerCase().includes('error restoring packages') ||
+        error.toLowerCase().includes('nu1301') ||
+        error.toLowerCase().includes('nu1302'));
+    if (isNuGetFailure) {
+        coreExports.warning('NuGet-related failure detected. Skipping PR creation as this is likely a credential or configuration issue.');
+        return {
+            deploymentState: deploymentStatus.deploymentState,
+            deploymentStatus: JSON.stringify(deploymentStatus)
+        };
     }
-    return `${name}=${encodeURIComponent(parameters[name])}`;
-  }).join("&");
+    // Try to get the latest completed deployment and create a PR
+    return await attemptPullRequestCreation(api, inputs, deploymentStatus);
 }
-
-const urlVariableRegex = /\{[^{}}]+\}/g;
-function removeNonChars(variableName) {
-  return variableName.replace(/(?:^\W+)|(?:(?<!\W)\W+$)/g, "").split(/,/);
-}
-function extractUrlVariableNames(url) {
-  const matches = url.match(urlVariableRegex);
-  if (!matches) {
-    return [];
-  }
-  return matches.map(removeNonChars).reduce((a, b) => a.concat(b), []);
-}
-
-function omit(object, keysToOmit) {
-  const result = { __proto__: null };
-  for (const key of Object.keys(object)) {
-    if (keysToOmit.indexOf(key) === -1) {
-      result[key] = object[key];
+async function getErrorDetails(api, inputs) {
+    try {
+        const errorDetails = await api.getDeploymentErrorDetails(inputs.deploymentId, inputs.targetEnvironmentAlias);
+        if (errorDetails.length > 0) {
+            coreExports.warning('Deployment failed with the following errors:');
+            errorDetails.forEach((error) => {
+                coreExports.warning(`- ${error}`);
+            });
+        }
+        coreExports.warning('Please check the Umbraco Cloud portal for more detailed error information.');
+        coreExports.warning('Common issues include:');
+        coreExports.warning('- Private NuGet repository access');
+        coreExports.warning('- Build configuration errors');
+        coreExports.warning('- Missing dependencies');
+        coreExports.warning('- Version conflicts');
+        return errorDetails;
     }
-  }
-  return result;
-}
-
-function encodeReserved(str) {
-  return str.split(/(%[0-9A-Fa-f]{2})/g).map(function(part) {
-    if (!/%[0-9A-Fa-f]/.test(part)) {
-      part = encodeURI(part).replace(/%5B/g, "[").replace(/%5D/g, "]");
+    catch (errorDetailsError) {
+        coreExports.warning(`Could not retrieve detailed error information: ${errorDetailsError}`);
+        return [];
     }
-    return part;
-  }).join("");
 }
-function encodeUnreserved(str) {
-  return encodeURIComponent(str).replace(/[!'()*]/g, function(c) {
-    return "%" + c.charCodeAt(0).toString(16).toUpperCase();
-  });
+async function attemptPullRequestCreation(api, inputs, deploymentStatus) {
+    try {
+        coreExports.info('Attempting to get latest completed deployment with changes and create PR...');
+        const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(inputs.targetEnvironmentAlias);
+        if (!latestCompletedDeploymentId) {
+            coreExports.warning('No completed deployments found to create PR from');
+            return {
+                deploymentState: deploymentStatus.deploymentState,
+                deploymentStatus: JSON.stringify(deploymentStatus)
+            };
+        }
+        coreExports.info(`Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`);
+        // Get the changes from the latest completed deployment
+        const changes = await api.getChangesById(latestCompletedDeploymentId, inputs.targetEnvironmentAlias);
+        coreExports.info('Retrieved changes from latest completed deployment');
+        coreExports.setOutput('latest-completed-deployment-id', latestCompletedDeploymentId);
+        coreExports.setOutput('changes', JSON.stringify(changes));
+        // Create GitHub PR with the changes
+        const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`;
+        const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).
+
+**Failed Deployment ID:** ${inputs.deploymentId}
+**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
+**Target Environment:** ${inputs.targetEnvironmentAlias}
+
+The changes in this PR are based on the git patch from the latest successful deployment.`;
+        await createPullRequestInWorkspace(changes.changes, prTitle, prBody, latestCompletedDeploymentId);
+        return {
+            deploymentState: deploymentStatus.deploymentState,
+            deploymentStatus: JSON.stringify(deploymentStatus),
+            latestCompletedDeploymentId,
+            changes: JSON.stringify(changes)
+        };
+    }
+    catch (error) {
+        coreExports.warning(`Failed to get latest completed deployment or create PR: ${error}`);
+        if (error instanceof Error &&
+            error.message.includes('Not in a git repository')) {
+            coreExports.warning('PR creation failed because the action is not running in a git repository context.');
+            coreExports.warning('This typically happens when the action is not properly configured in the GitHub Actions workflow.');
+            coreExports.warning('Please ensure the workflow includes: actions/checkout@v4');
+        }
+        return {
+            deploymentState: deploymentStatus.deploymentState,
+            deploymentStatus: JSON.stringify(deploymentStatus)
+        };
+    }
 }
-function encodeValue(operator, value, key) {
-  value = operator === "+" || operator === "#" ? encodeReserved(value) : encodeUnreserved(value);
-  if (key) {
-    return encodeUnreserved(key) + "=" + value;
-  } else {
-    return value;
-  }
+async function createPullRequestInWorkspace(changes, prTitle, prBody, latestCompletedDeploymentId) {
+    const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
+    const prWorkspace = path$1.join(process.env.GITHUB_WORKSPACE || process.cwd(), `pr-workspace-${runId}`);
+    try {
+        // Create the subfolder
+        fs.mkdirSync(prWorkspace, { recursive: true });
+        // Clone the current repo and checkout the current branch into the subfolder
+        const repoUrl = `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${githubExports.context.repo.owner}/${githubExports.context.repo.repo}.git`;
+        const currentBranch = githubExports.context.ref.replace('refs/heads/', '');
+        await execExports.exec('git', [
+            'clone',
+            '--branch',
+            currentBranch,
+            '--single-branch',
+            repoUrl,
+            prWorkspace
+        ]);
+        // Change working directory to the subfolder for all git/PR operations
+        const originalCwd = process.cwd();
+        process.chdir(prWorkspace);
+        // Ensure working directory is clean before proceeding
+        await ensureCleanWorkingDirectory();
+        // Run the PR creation logic (patch application, branch creation, etc.)
+        await createPullRequestWithPatch(changes, currentBranch, prTitle, prBody, latestCompletedDeploymentId);
+        // Restore original working directory
+        process.chdir(originalCwd);
+    }
+    finally {
+        // Clean up the subfolder after PR creation
+        if (fs.existsSync(prWorkspace)) {
+            fs.rmSync(prWorkspace, { recursive: true, force: true });
+        }
+    }
 }
-function isDefined(value) {
-  return value !== void 0 && value !== null;
-}
-function isKeyOperator(operator) {
-  return operator === ";" || operator === "&" || operator === "?";
-}
-function getValues(context, operator, key, modifier) {
-  var value = context[key], result = [];
-  if (isDefined(value) && value !== "") {
-    if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      value = value.toString();
-      if (modifier && modifier !== "*") {
-        value = value.substring(0, parseInt(modifier, 10));
-      }
-      result.push(
-        encodeValue(operator, value, isKeyOperator(operator) ? key : "")
-      );
-    } else {
-      if (modifier === "*") {
-        if (Array.isArray(value)) {
-          value.filter(isDefined).forEach(function(value2) {
-            result.push(
-              encodeValue(operator, value2, isKeyOperator(operator) ? key : "")
-            );
-          });
-        } else {
-          Object.keys(value).forEach(function(k) {
-            if (isDefined(value[k])) {
-              result.push(encodeValue(operator, value[k], k));
+async function ensureCleanWorkingDirectory() {
+    let gitStatusOutput = '';
+    await execExports.exec('git', ['status', '--porcelain'], {
+        listeners: {
+            stdout: (data) => {
+                gitStatusOutput += data.toString();
             }
-          });
         }
-      } else {
-        const tmp = [];
-        if (Array.isArray(value)) {
-          value.filter(isDefined).forEach(function(value2) {
-            tmp.push(encodeValue(operator, value2));
-          });
-        } else {
-          Object.keys(value).forEach(function(k) {
-            if (isDefined(value[k])) {
-              tmp.push(encodeUnreserved(k));
-              tmp.push(encodeValue(operator, value[k].toString()));
-            }
-          });
-        }
-        if (isKeyOperator(operator)) {
-          result.push(encodeUnreserved(key) + "=" + tmp.join(","));
-        } else if (tmp.length !== 0) {
-          result.push(tmp.join(","));
-        }
-      }
-    }
-  } else {
-    if (operator === ";") {
-      if (isDefined(value)) {
-        result.push(encodeUnreserved(key));
-      }
-    } else if (value === "" && (operator === "&" || operator === "?")) {
-      result.push(encodeUnreserved(key) + "=");
-    } else if (value === "") {
-      result.push("");
-    }
-  }
-  return result;
-}
-function parseUrl(template) {
-  return {
-    expand: expand$1.bind(null, template)
-  };
-}
-function expand$1(template, context) {
-  var operators = ["+", "#", ".", "/", ";", "?", "&"];
-  template = template.replace(
-    /\{([^\{\}]+)\}|([^\{\}]+)/g,
-    function(_, expression, literal) {
-      if (expression) {
-        let operator = "";
-        const values = [];
-        if (operators.indexOf(expression.charAt(0)) !== -1) {
-          operator = expression.charAt(0);
-          expression = expression.substr(1);
-        }
-        expression.split(/,/g).forEach(function(variable) {
-          var tmp = /([^:\*]*)(?::(\d+)|(\*))?/.exec(variable);
-          values.push(getValues(context, operator, tmp[1], tmp[2] || tmp[3]));
-        });
-        if (operator && operator !== "+") {
-          var separator = ",";
-          if (operator === "?") {
-            separator = "&";
-          } else if (operator !== "#") {
-            separator = operator;
-          }
-          return (values.length !== 0 ? operator : "") + values.join(separator);
-        } else {
-          return values.join(",");
-        }
-      } else {
-        return encodeReserved(literal);
-      }
-    }
-  );
-  if (template === "/") {
-    return template;
-  } else {
-    return template.replace(/\/$/, "");
-  }
-}
-
-function parse(options) {
-  let method = options.method.toUpperCase();
-  let url = (options.url || "/").replace(/:([a-z]\w+)/g, "{$1}");
-  let headers = Object.assign({}, options.headers);
-  let body;
-  let parameters = omit(options, [
-    "method",
-    "baseUrl",
-    "url",
-    "headers",
-    "request",
-    "mediaType"
-  ]);
-  const urlVariableNames = extractUrlVariableNames(url);
-  url = parseUrl(url).expand(parameters);
-  if (!/^http/.test(url)) {
-    url = options.baseUrl + url;
-  }
-  const omittedParameters = Object.keys(options).filter((option) => urlVariableNames.includes(option)).concat("baseUrl");
-  const remainingParameters = omit(parameters, omittedParameters);
-  const isBinaryRequest = /application\/octet-stream/i.test(headers.accept);
-  if (!isBinaryRequest) {
-    if (options.mediaType.format) {
-      headers.accept = headers.accept.split(/,/).map(
-        (format) => format.replace(
-          /application\/vnd(\.\w+)(\.v3)?(\.\w+)?(\+json)?$/,
-          `application/vnd$1$2.${options.mediaType.format}`
-        )
-      ).join(",");
-    }
-    if (url.endsWith("/graphql")) {
-      if (options.mediaType.previews?.length) {
-        const previewsFromAcceptHeader = headers.accept.match(/(?<![\w-])[\w-]+(?=-preview)/g) || [];
-        headers.accept = previewsFromAcceptHeader.concat(options.mediaType.previews).map((preview) => {
-          const format = options.mediaType.format ? `.${options.mediaType.format}` : "+json";
-          return `application/vnd.github.${preview}-preview${format}`;
-        }).join(",");
-      }
-    }
-  }
-  if (["GET", "HEAD"].includes(method)) {
-    url = addQueryParameters(url, remainingParameters);
-  } else {
-    if ("data" in remainingParameters) {
-      body = remainingParameters.data;
-    } else {
-      if (Object.keys(remainingParameters).length) {
-        body = remainingParameters;
-      }
-    }
-  }
-  if (!headers["content-type"] && typeof body !== "undefined") {
-    headers["content-type"] = "application/json; charset=utf-8";
-  }
-  if (["PATCH", "PUT"].includes(method) && typeof body === "undefined") {
-    body = "";
-  }
-  return Object.assign(
-    { method, url, headers },
-    typeof body !== "undefined" ? { body } : null,
-    options.request ? { request: options.request } : null
-  );
-}
-
-function endpointWithDefaults(defaults, route, options) {
-  return parse(merge(defaults, route, options));
-}
-
-function withDefaults$2(oldDefaults, newDefaults) {
-  const DEFAULTS = merge(oldDefaults, newDefaults);
-  const endpoint = endpointWithDefaults.bind(null, DEFAULTS);
-  return Object.assign(endpoint, {
-    DEFAULTS,
-    defaults: withDefaults$2.bind(null, DEFAULTS),
-    merge: merge.bind(null, DEFAULTS),
-    parse
-  });
-}
-
-const endpoint = withDefaults$2(null, DEFAULTS);
-
-const VERSION$6 = "8.4.1";
-
-function isPlainObject(value) {
-  if (typeof value !== "object" || value === null)
-    return false;
-  if (Object.prototype.toString.call(value) !== "[object Object]")
-    return false;
-  const proto = Object.getPrototypeOf(value);
-  if (proto === null)
-    return true;
-  const Ctor = Object.prototype.hasOwnProperty.call(proto, "constructor") && proto.constructor;
-  return typeof Ctor === "function" && Ctor instanceof Ctor && Function.prototype.call(Ctor) === Function.prototype.call(value);
-}
-
-function getBufferResponse(response) {
-  return response.arrayBuffer();
-}
-
-function fetchWrapper(requestOptions) {
-  const log = requestOptions.request && requestOptions.request.log ? requestOptions.request.log : console;
-  const parseSuccessResponseBody = requestOptions.request?.parseSuccessResponseBody !== false;
-  if (isPlainObject(requestOptions.body) || Array.isArray(requestOptions.body)) {
-    requestOptions.body = JSON.stringify(requestOptions.body);
-  }
-  let headers = {};
-  let status;
-  let url;
-  let { fetch } = globalThis;
-  if (requestOptions.request?.fetch) {
-    fetch = requestOptions.request.fetch;
-  }
-  if (!fetch) {
-    throw new Error(
-      "fetch is not set. Please pass a fetch implementation as new Octokit({ request: { fetch }}). Learn more at https://github.com/octokit/octokit.js/#fetch-missing"
-    );
-  }
-  return fetch(requestOptions.url, {
-    method: requestOptions.method,
-    body: requestOptions.body,
-    redirect: requestOptions.request?.redirect,
-    headers: requestOptions.headers,
-    signal: requestOptions.request?.signal,
-    // duplex must be set if request.body is ReadableStream or Async Iterables.
-    // See https://fetch.spec.whatwg.org/#dom-requestinit-duplex.
-    ...requestOptions.body && { duplex: "half" }
-  }).then(async (response) => {
-    url = response.url;
-    status = response.status;
-    for (const keyAndValue of response.headers) {
-      headers[keyAndValue[0]] = keyAndValue[1];
-    }
-    if ("deprecation" in headers) {
-      const matches = headers.link && headers.link.match(/<([^<>]+)>; rel="deprecation"/);
-      const deprecationLink = matches && matches.pop();
-      log.warn(
-        `[@octokit/request] "${requestOptions.method} ${requestOptions.url}" is deprecated. It is scheduled to be removed on ${headers.sunset}${deprecationLink ? `. See ${deprecationLink}` : ""}`
-      );
-    }
-    if (status === 204 || status === 205) {
-      return;
-    }
-    if (requestOptions.method === "HEAD") {
-      if (status < 400) {
-        return;
-      }
-      throw new RequestError(response.statusText, status, {
-        response: {
-          url,
-          status,
-          headers,
-          data: void 0
-        },
-        request: requestOptions
-      });
-    }
-    if (status === 304) {
-      throw new RequestError("Not modified", status, {
-        response: {
-          url,
-          status,
-          headers,
-          data: await getResponseData(response)
-        },
-        request: requestOptions
-      });
-    }
-    if (status >= 400) {
-      const data = await getResponseData(response);
-      const error = new RequestError(toErrorMessage(data), status, {
-        response: {
-          url,
-          status,
-          headers,
-          data
-        },
-        request: requestOptions
-      });
-      throw error;
-    }
-    return parseSuccessResponseBody ? await getResponseData(response) : response.body;
-  }).then((data) => {
-    return {
-      status,
-      url,
-      headers,
-      data
-    };
-  }).catch((error) => {
-    if (error instanceof RequestError)
-      throw error;
-    else if (error.name === "AbortError")
-      throw error;
-    let message = error.message;
-    if (error.name === "TypeError" && "cause" in error) {
-      if (error.cause instanceof Error) {
-        message = error.cause.message;
-      } else if (typeof error.cause === "string") {
-        message = error.cause;
-      }
-    }
-    throw new RequestError(message, 500, {
-      request: requestOptions
     });
-  });
+    if (gitStatusOutput.trim() !== '') {
+        coreExports.info('Working directory is not clean. Resetting...');
+        await execExports.exec('git', ['reset', '--hard', 'HEAD']);
+        await execExports.exec('git', ['clean', '-fd']);
+        coreExports.info('Working directory reset complete');
+    }
+    else {
+        coreExports.info('Working directory is already clean');
+    }
 }
-async function getResponseData(response) {
-  const contentType = response.headers.get("content-type");
-  if (/application\/json/.test(contentType)) {
-    return response.json().catch(() => response.text()).catch(() => "");
-  }
-  if (!contentType || /^text\/|charset=utf-8$/.test(contentType)) {
-    return response.text();
-  }
-  return getBufferResponse(response);
+// Stub for createPullRequestWithPatch if not imported
+async function createPullRequestWithPatch(_changes, _currentBranch, _prTitle, _prBody, _latestCompletedDeploymentId) {
+    // Implement or mock as needed
+    coreExports.info('createPullRequestWithPatch called (stub)');
 }
-function toErrorMessage(data) {
-  if (typeof data === "string")
-    return data;
-  let suffix;
-  if ("documentation_url" in data) {
-    suffix = ` - ${data.documentation_url}`;
-  } else {
-    suffix = "";
-  }
-  if ("message" in data) {
-    if (Array.isArray(data.errors)) {
-      return `${data.message}: ${data.errors.map(JSON.stringify).join(", ")}${suffix}`;
-    }
-    return `${data.message}${suffix}`;
-  }
-  return `Unknown error: ${JSON.stringify(data)}`;
-}
-
-function withDefaults$1(oldEndpoint, newDefaults) {
-  const endpoint = oldEndpoint.defaults(newDefaults);
-  const newApi = function(route, parameters) {
-    const endpointOptions = endpoint.merge(route, parameters);
-    if (!endpointOptions.request || !endpointOptions.request.hook) {
-      return fetchWrapper(endpoint.parse(endpointOptions));
-    }
-    const request = (route2, parameters2) => {
-      return fetchWrapper(
-        endpoint.parse(endpoint.merge(route2, parameters2))
-      );
-    };
-    Object.assign(request, {
-      endpoint,
-      defaults: withDefaults$1.bind(null, endpoint)
-    });
-    return endpointOptions.request.hook(request, endpointOptions);
-  };
-  return Object.assign(newApi, {
-    endpoint,
-    defaults: withDefaults$1.bind(null, endpoint)
-  });
-}
-
-const request = withDefaults$1(endpoint, {
-  headers: {
-    "user-agent": `octokit-request.js/${VERSION$6} ${getUserAgent()}`
-  }
-});
-
-// pkg/dist-src/index.js
-
-// pkg/dist-src/version.js
-var VERSION$5 = "7.1.1";
-
-// pkg/dist-src/error.js
-function _buildMessageForResponseErrors(data) {
-  return `Request failed due to following response errors:
-` + data.errors.map((e) => ` - ${e.message}`).join("\n");
-}
-var GraphqlResponseError = class extends Error {
-  constructor(request2, headers, response) {
-    super(_buildMessageForResponseErrors(response));
-    this.request = request2;
-    this.headers = headers;
-    this.response = response;
-    this.name = "GraphqlResponseError";
-    this.errors = response.errors;
-    this.data = response.data;
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, this.constructor);
-    }
-  }
-};
-
-// pkg/dist-src/graphql.js
-var NON_VARIABLE_OPTIONS = [
-  "method",
-  "baseUrl",
-  "url",
-  "headers",
-  "request",
-  "query",
-  "mediaType"
-];
-var FORBIDDEN_VARIABLE_OPTIONS = ["query", "method", "url"];
-var GHES_V3_SUFFIX_REGEX = /\/api\/v3\/?$/;
-function graphql(request2, query, options) {
-  if (options) {
-    if (typeof query === "string" && "query" in options) {
-      return Promise.reject(
-        new Error(`[@octokit/graphql] "query" cannot be used as variable name`)
-      );
-    }
-    for (const key in options) {
-      if (!FORBIDDEN_VARIABLE_OPTIONS.includes(key)) continue;
-      return Promise.reject(
-        new Error(
-          `[@octokit/graphql] "${key}" cannot be used as variable name`
-        )
-      );
-    }
-  }
-  const parsedOptions = typeof query === "string" ? Object.assign({ query }, options) : query;
-  const requestOptions = Object.keys(
-    parsedOptions
-  ).reduce((result, key) => {
-    if (NON_VARIABLE_OPTIONS.includes(key)) {
-      result[key] = parsedOptions[key];
-      return result;
-    }
-    if (!result.variables) {
-      result.variables = {};
-    }
-    result.variables[key] = parsedOptions[key];
-    return result;
-  }, {});
-  const baseUrl = parsedOptions.baseUrl || request2.endpoint.DEFAULTS.baseUrl;
-  if (GHES_V3_SUFFIX_REGEX.test(baseUrl)) {
-    requestOptions.url = baseUrl.replace(GHES_V3_SUFFIX_REGEX, "/api/graphql");
-  }
-  return request2(requestOptions).then((response) => {
-    if (response.data.errors) {
-      const headers = {};
-      for (const key of Object.keys(response.headers)) {
-        headers[key] = response.headers[key];
-      }
-      throw new GraphqlResponseError(
-        requestOptions,
-        headers,
-        response.data
-      );
-    }
-    return response.data.data;
-  });
-}
-
-// pkg/dist-src/with-defaults.js
-function withDefaults(request2, newDefaults) {
-  const newRequest = request2.defaults(newDefaults);
-  const newApi = (query, options) => {
-    return graphql(newRequest, query, options);
-  };
-  return Object.assign(newApi, {
-    defaults: withDefaults.bind(null, newRequest),
-    endpoint: newRequest.endpoint
-  });
-}
-
-// pkg/dist-src/index.js
-withDefaults(request, {
-  headers: {
-    "user-agent": `octokit-graphql.js/${VERSION$5} ${getUserAgent()}`
-  },
-  method: "POST",
-  url: "/graphql"
-});
-function withCustomRequest(customRequest) {
-  return withDefaults(customRequest, {
-    method: "POST",
-    url: "/graphql"
-  });
-}
-
-const REGEX_IS_INSTALLATION_LEGACY = /^v1\./;
-const REGEX_IS_INSTALLATION = /^ghs_/;
-const REGEX_IS_USER_TO_SERVER = /^ghu_/;
-async function auth(token) {
-  const isApp = token.split(/\./).length === 3;
-  const isInstallation = REGEX_IS_INSTALLATION_LEGACY.test(token) || REGEX_IS_INSTALLATION.test(token);
-  const isUserToServer = REGEX_IS_USER_TO_SERVER.test(token);
-  const tokenType = isApp ? "app" : isInstallation ? "installation" : isUserToServer ? "user-to-server" : "oauth";
-  return {
-    type: "token",
-    token,
-    tokenType
-  };
-}
-
-function withAuthorizationPrefix(token) {
-  if (token.split(/\./).length === 3) {
-    return `bearer ${token}`;
-  }
-  return `token ${token}`;
-}
-
-async function hook(token, request, route, parameters) {
-  const endpoint = request.endpoint.merge(
-    route,
-    parameters
-  );
-  endpoint.headers.authorization = withAuthorizationPrefix(token);
-  return request(endpoint);
-}
-
-const createTokenAuth = function createTokenAuth2(token) {
-  if (!token) {
-    throw new Error("[@octokit/auth-token] No token passed to createTokenAuth");
-  }
-  if (typeof token !== "string") {
-    throw new Error(
-      "[@octokit/auth-token] Token passed to createTokenAuth is not a string"
-    );
-  }
-  token = token.replace(/^(token|bearer) +/i, "");
-  return Object.assign(auth.bind(null, token), {
-    hook: hook.bind(null, token)
-  });
-};
-
-// pkg/dist-src/index.js
-
-// pkg/dist-src/version.js
-var VERSION$4 = "5.2.1";
-
-// pkg/dist-src/index.js
-var noop = () => {
-};
-var consoleWarn = console.warn.bind(console);
-var consoleError = console.error.bind(console);
-var userAgentTrail = `octokit-core.js/${VERSION$4} ${getUserAgent()}`;
-var Octokit$1 = class Octokit {
-  static {
-    this.VERSION = VERSION$4;
-  }
-  static defaults(defaults) {
-    const OctokitWithDefaults = class extends this {
-      constructor(...args) {
-        const options = args[0] || {};
-        if (typeof defaults === "function") {
-          super(defaults(options));
-          return;
-        }
-        super(
-          Object.assign(
-            {},
-            defaults,
-            options,
-            options.userAgent && defaults.userAgent ? {
-              userAgent: `${options.userAgent} ${defaults.userAgent}`
-            } : null
-          )
-        );
-      }
-    };
-    return OctokitWithDefaults;
-  }
-  static {
-    this.plugins = [];
-  }
-  /**
-   * Attach a plugin (or many) to your Octokit instance.
-   *
-   * @example
-   * const API = Octokit.plugin(plugin1, plugin2, plugin3, ...)
-   */
-  static plugin(...newPlugins) {
-    const currentPlugins = this.plugins;
-    const NewOctokit = class extends this {
-      static {
-        this.plugins = currentPlugins.concat(
-          newPlugins.filter((plugin) => !currentPlugins.includes(plugin))
-        );
-      }
-    };
-    return NewOctokit;
-  }
-  constructor(options = {}) {
-    const hook = new beforeAfterHookExports.Collection();
-    const requestDefaults = {
-      baseUrl: request.endpoint.DEFAULTS.baseUrl,
-      headers: {},
-      request: Object.assign({}, options.request, {
-        // @ts-ignore internal usage only, no need to type
-        hook: hook.bind(null, "request")
-      }),
-      mediaType: {
-        previews: [],
-        format: ""
-      }
-    };
-    requestDefaults.headers["user-agent"] = options.userAgent ? `${options.userAgent} ${userAgentTrail}` : userAgentTrail;
-    if (options.baseUrl) {
-      requestDefaults.baseUrl = options.baseUrl;
-    }
-    if (options.previews) {
-      requestDefaults.mediaType.previews = options.previews;
-    }
-    if (options.timeZone) {
-      requestDefaults.headers["time-zone"] = options.timeZone;
-    }
-    this.request = request.defaults(requestDefaults);
-    this.graphql = withCustomRequest(this.request).defaults(requestDefaults);
-    this.log = Object.assign(
-      {
-        debug: noop,
-        info: noop,
-        warn: consoleWarn,
-        error: consoleError
-      },
-      options.log
-    );
-    this.hook = hook;
-    if (!options.authStrategy) {
-      if (!options.auth) {
-        this.auth = async () => ({
-          type: "unauthenticated"
-        });
-      } else {
-        const auth = createTokenAuth(options.auth);
-        hook.wrap("request", auth.hook);
-        this.auth = auth;
-      }
-    } else {
-      const { authStrategy, ...otherOptions } = options;
-      const auth = authStrategy(
-        Object.assign(
-          {
-            request: this.request,
-            log: this.log,
-            // we pass the current octokit instance as well as its constructor options
-            // to allow for authentication strategies that return a new octokit instance
-            // that shares the same internal state as the current one. The original
-            // requirement for this was the "event-octokit" authentication strategy
-            // of https://github.com/probot/octokit-auth-probot.
-            octokit: this,
-            octokitOptions: otherOptions
-          },
-          options.auth
-        )
-      );
-      hook.wrap("request", auth.hook);
-      this.auth = auth;
-    }
-    const classConstructor = this.constructor;
-    for (let i = 0; i < classConstructor.plugins.length; ++i) {
-      Object.assign(this, classConstructor.plugins[i](this, options));
-    }
-  }
-};
-
-const VERSION$3 = "4.0.1";
-
-function requestLog(octokit) {
-  octokit.hook.wrap("request", (request, options) => {
-    octokit.log.debug("request", options);
-    const start = Date.now();
-    const requestOptions = octokit.request.endpoint.parse(options);
-    const path = requestOptions.url.replace(options.baseUrl, "");
-    return request(options).then((response) => {
-      octokit.log.info(
-        `${requestOptions.method} ${path} - ${response.status} in ${Date.now() - start}ms`
-      );
-      return response;
-    }).catch((error) => {
-      octokit.log.info(
-        `${requestOptions.method} ${path} - ${error.status} in ${Date.now() - start}ms`
-      );
-      throw error;
-    });
-  });
-}
-requestLog.VERSION = VERSION$3;
-
-// pkg/dist-src/version.js
-var VERSION$2 = "11.4.4-cjs.2";
-
-// pkg/dist-src/normalize-paginated-list-response.js
-function normalizePaginatedListResponse(response) {
-  if (!response.data) {
-    return {
-      ...response,
-      data: []
-    };
-  }
-  const responseNeedsNormalization = "total_count" in response.data && !("url" in response.data);
-  if (!responseNeedsNormalization) return response;
-  const incompleteResults = response.data.incomplete_results;
-  const repositorySelection = response.data.repository_selection;
-  const totalCount = response.data.total_count;
-  delete response.data.incomplete_results;
-  delete response.data.repository_selection;
-  delete response.data.total_count;
-  const namespaceKey = Object.keys(response.data)[0];
-  const data = response.data[namespaceKey];
-  response.data = data;
-  if (typeof incompleteResults !== "undefined") {
-    response.data.incomplete_results = incompleteResults;
-  }
-  if (typeof repositorySelection !== "undefined") {
-    response.data.repository_selection = repositorySelection;
-  }
-  response.data.total_count = totalCount;
-  return response;
-}
-
-// pkg/dist-src/iterator.js
-function iterator(octokit, route, parameters) {
-  const options = typeof route === "function" ? route.endpoint(parameters) : octokit.request.endpoint(route, parameters);
-  const requestMethod = typeof route === "function" ? route : octokit.request;
-  const method = options.method;
-  const headers = options.headers;
-  let url = options.url;
-  return {
-    [Symbol.asyncIterator]: () => ({
-      async next() {
-        if (!url) return { done: true };
-        try {
-          const response = await requestMethod({ method, url, headers });
-          const normalizedResponse = normalizePaginatedListResponse(response);
-          url = ((normalizedResponse.headers.link || "").match(
-            /<([^<>]+)>;\s*rel="next"/
-          ) || [])[1];
-          return { value: normalizedResponse };
-        } catch (error) {
-          if (error.status !== 409) throw error;
-          url = "";
-          return {
-            value: {
-              status: 200,
-              headers: {},
-              data: []
-            }
-          };
-        }
-      }
-    })
-  };
-}
-
-// pkg/dist-src/paginate.js
-function paginate(octokit, route, parameters, mapFn) {
-  if (typeof parameters === "function") {
-    mapFn = parameters;
-    parameters = void 0;
-  }
-  return gather(
-    octokit,
-    [],
-    iterator(octokit, route, parameters)[Symbol.asyncIterator](),
-    mapFn
-  );
-}
-function gather(octokit, results, iterator2, mapFn) {
-  return iterator2.next().then((result) => {
-    if (result.done) {
-      return results;
-    }
-    let earlyExit = false;
-    function done() {
-      earlyExit = true;
-    }
-    results = results.concat(
-      mapFn ? mapFn(result.value, done) : result.value.data
-    );
-    if (earlyExit) {
-      return results;
-    }
-    return gather(octokit, results, iterator2, mapFn);
-  });
-}
-
-// pkg/dist-src/compose-paginate.js
-Object.assign(paginate, {
-  iterator
-});
-
-// pkg/dist-src/index.js
-function paginateRest(octokit) {
-  return {
-    paginate: Object.assign(paginate.bind(null, octokit), {
-      iterator: iterator.bind(null, octokit)
-    })
-  };
-}
-paginateRest.VERSION = VERSION$2;
-
-const VERSION$1 = "13.3.2-cjs.1";
-
-const Endpoints = {
-  actions: {
-    addCustomLabelsToSelfHostedRunnerForOrg: [
-      "POST /orgs/{org}/actions/runners/{runner_id}/labels"
-    ],
-    addCustomLabelsToSelfHostedRunnerForRepo: [
-      "POST /repos/{owner}/{repo}/actions/runners/{runner_id}/labels"
-    ],
-    addRepoAccessToSelfHostedRunnerGroupInOrg: [
-      "PUT /orgs/{org}/actions/runner-groups/{runner_group_id}/repositories/{repository_id}"
-    ],
-    addSelectedRepoToOrgSecret: [
-      "PUT /orgs/{org}/actions/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    addSelectedRepoToOrgVariable: [
-      "PUT /orgs/{org}/actions/variables/{name}/repositories/{repository_id}"
-    ],
-    approveWorkflowRun: [
-      "POST /repos/{owner}/{repo}/actions/runs/{run_id}/approve"
-    ],
-    cancelWorkflowRun: [
-      "POST /repos/{owner}/{repo}/actions/runs/{run_id}/cancel"
-    ],
-    createEnvironmentVariable: [
-      "POST /repos/{owner}/{repo}/environments/{environment_name}/variables"
-    ],
-    createOrUpdateEnvironmentSecret: [
-      "PUT /repos/{owner}/{repo}/environments/{environment_name}/secrets/{secret_name}"
-    ],
-    createOrUpdateOrgSecret: ["PUT /orgs/{org}/actions/secrets/{secret_name}"],
-    createOrUpdateRepoSecret: [
-      "PUT /repos/{owner}/{repo}/actions/secrets/{secret_name}"
-    ],
-    createOrgVariable: ["POST /orgs/{org}/actions/variables"],
-    createRegistrationTokenForOrg: [
-      "POST /orgs/{org}/actions/runners/registration-token"
-    ],
-    createRegistrationTokenForRepo: [
-      "POST /repos/{owner}/{repo}/actions/runners/registration-token"
-    ],
-    createRemoveTokenForOrg: ["POST /orgs/{org}/actions/runners/remove-token"],
-    createRemoveTokenForRepo: [
-      "POST /repos/{owner}/{repo}/actions/runners/remove-token"
-    ],
-    createRepoVariable: ["POST /repos/{owner}/{repo}/actions/variables"],
-    createWorkflowDispatch: [
-      "POST /repos/{owner}/{repo}/actions/workflows/{workflow_id}/dispatches"
-    ],
-    deleteActionsCacheById: [
-      "DELETE /repos/{owner}/{repo}/actions/caches/{cache_id}"
-    ],
-    deleteActionsCacheByKey: [
-      "DELETE /repos/{owner}/{repo}/actions/caches{?key,ref}"
-    ],
-    deleteArtifact: [
-      "DELETE /repos/{owner}/{repo}/actions/artifacts/{artifact_id}"
-    ],
-    deleteEnvironmentSecret: [
-      "DELETE /repos/{owner}/{repo}/environments/{environment_name}/secrets/{secret_name}"
-    ],
-    deleteEnvironmentVariable: [
-      "DELETE /repos/{owner}/{repo}/environments/{environment_name}/variables/{name}"
-    ],
-    deleteOrgSecret: ["DELETE /orgs/{org}/actions/secrets/{secret_name}"],
-    deleteOrgVariable: ["DELETE /orgs/{org}/actions/variables/{name}"],
-    deleteRepoSecret: [
-      "DELETE /repos/{owner}/{repo}/actions/secrets/{secret_name}"
-    ],
-    deleteRepoVariable: [
-      "DELETE /repos/{owner}/{repo}/actions/variables/{name}"
-    ],
-    deleteSelfHostedRunnerFromOrg: [
-      "DELETE /orgs/{org}/actions/runners/{runner_id}"
-    ],
-    deleteSelfHostedRunnerFromRepo: [
-      "DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}"
-    ],
-    deleteWorkflowRun: ["DELETE /repos/{owner}/{repo}/actions/runs/{run_id}"],
-    deleteWorkflowRunLogs: [
-      "DELETE /repos/{owner}/{repo}/actions/runs/{run_id}/logs"
-    ],
-    disableSelectedRepositoryGithubActionsOrganization: [
-      "DELETE /orgs/{org}/actions/permissions/repositories/{repository_id}"
-    ],
-    disableWorkflow: [
-      "PUT /repos/{owner}/{repo}/actions/workflows/{workflow_id}/disable"
-    ],
-    downloadArtifact: [
-      "GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id}/{archive_format}"
-    ],
-    downloadJobLogsForWorkflowRun: [
-      "GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs"
-    ],
-    downloadWorkflowRunAttemptLogs: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/logs"
-    ],
-    downloadWorkflowRunLogs: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs"
-    ],
-    enableSelectedRepositoryGithubActionsOrganization: [
-      "PUT /orgs/{org}/actions/permissions/repositories/{repository_id}"
-    ],
-    enableWorkflow: [
-      "PUT /repos/{owner}/{repo}/actions/workflows/{workflow_id}/enable"
-    ],
-    forceCancelWorkflowRun: [
-      "POST /repos/{owner}/{repo}/actions/runs/{run_id}/force-cancel"
-    ],
-    generateRunnerJitconfigForOrg: [
-      "POST /orgs/{org}/actions/runners/generate-jitconfig"
-    ],
-    generateRunnerJitconfigForRepo: [
-      "POST /repos/{owner}/{repo}/actions/runners/generate-jitconfig"
-    ],
-    getActionsCacheList: ["GET /repos/{owner}/{repo}/actions/caches"],
-    getActionsCacheUsage: ["GET /repos/{owner}/{repo}/actions/cache/usage"],
-    getActionsCacheUsageByRepoForOrg: [
-      "GET /orgs/{org}/actions/cache/usage-by-repository"
-    ],
-    getActionsCacheUsageForOrg: ["GET /orgs/{org}/actions/cache/usage"],
-    getAllowedActionsOrganization: [
-      "GET /orgs/{org}/actions/permissions/selected-actions"
-    ],
-    getAllowedActionsRepository: [
-      "GET /repos/{owner}/{repo}/actions/permissions/selected-actions"
-    ],
-    getArtifact: ["GET /repos/{owner}/{repo}/actions/artifacts/{artifact_id}"],
-    getCustomOidcSubClaimForRepo: [
-      "GET /repos/{owner}/{repo}/actions/oidc/customization/sub"
-    ],
-    getEnvironmentPublicKey: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/secrets/public-key"
-    ],
-    getEnvironmentSecret: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/secrets/{secret_name}"
-    ],
-    getEnvironmentVariable: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/variables/{name}"
-    ],
-    getGithubActionsDefaultWorkflowPermissionsOrganization: [
-      "GET /orgs/{org}/actions/permissions/workflow"
-    ],
-    getGithubActionsDefaultWorkflowPermissionsRepository: [
-      "GET /repos/{owner}/{repo}/actions/permissions/workflow"
-    ],
-    getGithubActionsPermissionsOrganization: [
-      "GET /orgs/{org}/actions/permissions"
-    ],
-    getGithubActionsPermissionsRepository: [
-      "GET /repos/{owner}/{repo}/actions/permissions"
-    ],
-    getJobForWorkflowRun: ["GET /repos/{owner}/{repo}/actions/jobs/{job_id}"],
-    getOrgPublicKey: ["GET /orgs/{org}/actions/secrets/public-key"],
-    getOrgSecret: ["GET /orgs/{org}/actions/secrets/{secret_name}"],
-    getOrgVariable: ["GET /orgs/{org}/actions/variables/{name}"],
-    getPendingDeploymentsForRun: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/pending_deployments"
-    ],
-    getRepoPermissions: [
-      "GET /repos/{owner}/{repo}/actions/permissions",
-      {},
-      { renamed: ["actions", "getGithubActionsPermissionsRepository"] }
-    ],
-    getRepoPublicKey: ["GET /repos/{owner}/{repo}/actions/secrets/public-key"],
-    getRepoSecret: ["GET /repos/{owner}/{repo}/actions/secrets/{secret_name}"],
-    getRepoVariable: ["GET /repos/{owner}/{repo}/actions/variables/{name}"],
-    getReviewsForRun: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/approvals"
-    ],
-    getSelfHostedRunnerForOrg: ["GET /orgs/{org}/actions/runners/{runner_id}"],
-    getSelfHostedRunnerForRepo: [
-      "GET /repos/{owner}/{repo}/actions/runners/{runner_id}"
-    ],
-    getWorkflow: ["GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}"],
-    getWorkflowAccessToRepository: [
-      "GET /repos/{owner}/{repo}/actions/permissions/access"
-    ],
-    getWorkflowRun: ["GET /repos/{owner}/{repo}/actions/runs/{run_id}"],
-    getWorkflowRunAttempt: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}"
-    ],
-    getWorkflowRunUsage: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/timing"
-    ],
-    getWorkflowUsage: [
-      "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/timing"
-    ],
-    listArtifactsForRepo: ["GET /repos/{owner}/{repo}/actions/artifacts"],
-    listEnvironmentSecrets: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/secrets"
-    ],
-    listEnvironmentVariables: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/variables"
-    ],
-    listJobsForWorkflowRun: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs"
-    ],
-    listJobsForWorkflowRunAttempt: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/attempts/{attempt_number}/jobs"
-    ],
-    listLabelsForSelfHostedRunnerForOrg: [
-      "GET /orgs/{org}/actions/runners/{runner_id}/labels"
-    ],
-    listLabelsForSelfHostedRunnerForRepo: [
-      "GET /repos/{owner}/{repo}/actions/runners/{runner_id}/labels"
-    ],
-    listOrgSecrets: ["GET /orgs/{org}/actions/secrets"],
-    listOrgVariables: ["GET /orgs/{org}/actions/variables"],
-    listRepoOrganizationSecrets: [
-      "GET /repos/{owner}/{repo}/actions/organization-secrets"
-    ],
-    listRepoOrganizationVariables: [
-      "GET /repos/{owner}/{repo}/actions/organization-variables"
-    ],
-    listRepoSecrets: ["GET /repos/{owner}/{repo}/actions/secrets"],
-    listRepoVariables: ["GET /repos/{owner}/{repo}/actions/variables"],
-    listRepoWorkflows: ["GET /repos/{owner}/{repo}/actions/workflows"],
-    listRunnerApplicationsForOrg: ["GET /orgs/{org}/actions/runners/downloads"],
-    listRunnerApplicationsForRepo: [
-      "GET /repos/{owner}/{repo}/actions/runners/downloads"
-    ],
-    listSelectedReposForOrgSecret: [
-      "GET /orgs/{org}/actions/secrets/{secret_name}/repositories"
-    ],
-    listSelectedReposForOrgVariable: [
-      "GET /orgs/{org}/actions/variables/{name}/repositories"
-    ],
-    listSelectedRepositoriesEnabledGithubActionsOrganization: [
-      "GET /orgs/{org}/actions/permissions/repositories"
-    ],
-    listSelfHostedRunnersForOrg: ["GET /orgs/{org}/actions/runners"],
-    listSelfHostedRunnersForRepo: ["GET /repos/{owner}/{repo}/actions/runners"],
-    listWorkflowRunArtifacts: [
-      "GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts"
-    ],
-    listWorkflowRuns: [
-      "GET /repos/{owner}/{repo}/actions/workflows/{workflow_id}/runs"
-    ],
-    listWorkflowRunsForRepo: ["GET /repos/{owner}/{repo}/actions/runs"],
-    reRunJobForWorkflowRun: [
-      "POST /repos/{owner}/{repo}/actions/jobs/{job_id}/rerun"
-    ],
-    reRunWorkflow: ["POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun"],
-    reRunWorkflowFailedJobs: [
-      "POST /repos/{owner}/{repo}/actions/runs/{run_id}/rerun-failed-jobs"
-    ],
-    removeAllCustomLabelsFromSelfHostedRunnerForOrg: [
-      "DELETE /orgs/{org}/actions/runners/{runner_id}/labels"
-    ],
-    removeAllCustomLabelsFromSelfHostedRunnerForRepo: [
-      "DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}/labels"
-    ],
-    removeCustomLabelFromSelfHostedRunnerForOrg: [
-      "DELETE /orgs/{org}/actions/runners/{runner_id}/labels/{name}"
-    ],
-    removeCustomLabelFromSelfHostedRunnerForRepo: [
-      "DELETE /repos/{owner}/{repo}/actions/runners/{runner_id}/labels/{name}"
-    ],
-    removeSelectedRepoFromOrgSecret: [
-      "DELETE /orgs/{org}/actions/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    removeSelectedRepoFromOrgVariable: [
-      "DELETE /orgs/{org}/actions/variables/{name}/repositories/{repository_id}"
-    ],
-    reviewCustomGatesForRun: [
-      "POST /repos/{owner}/{repo}/actions/runs/{run_id}/deployment_protection_rule"
-    ],
-    reviewPendingDeploymentsForRun: [
-      "POST /repos/{owner}/{repo}/actions/runs/{run_id}/pending_deployments"
-    ],
-    setAllowedActionsOrganization: [
-      "PUT /orgs/{org}/actions/permissions/selected-actions"
-    ],
-    setAllowedActionsRepository: [
-      "PUT /repos/{owner}/{repo}/actions/permissions/selected-actions"
-    ],
-    setCustomLabelsForSelfHostedRunnerForOrg: [
-      "PUT /orgs/{org}/actions/runners/{runner_id}/labels"
-    ],
-    setCustomLabelsForSelfHostedRunnerForRepo: [
-      "PUT /repos/{owner}/{repo}/actions/runners/{runner_id}/labels"
-    ],
-    setCustomOidcSubClaimForRepo: [
-      "PUT /repos/{owner}/{repo}/actions/oidc/customization/sub"
-    ],
-    setGithubActionsDefaultWorkflowPermissionsOrganization: [
-      "PUT /orgs/{org}/actions/permissions/workflow"
-    ],
-    setGithubActionsDefaultWorkflowPermissionsRepository: [
-      "PUT /repos/{owner}/{repo}/actions/permissions/workflow"
-    ],
-    setGithubActionsPermissionsOrganization: [
-      "PUT /orgs/{org}/actions/permissions"
-    ],
-    setGithubActionsPermissionsRepository: [
-      "PUT /repos/{owner}/{repo}/actions/permissions"
-    ],
-    setSelectedReposForOrgSecret: [
-      "PUT /orgs/{org}/actions/secrets/{secret_name}/repositories"
-    ],
-    setSelectedReposForOrgVariable: [
-      "PUT /orgs/{org}/actions/variables/{name}/repositories"
-    ],
-    setSelectedRepositoriesEnabledGithubActionsOrganization: [
-      "PUT /orgs/{org}/actions/permissions/repositories"
-    ],
-    setWorkflowAccessToRepository: [
-      "PUT /repos/{owner}/{repo}/actions/permissions/access"
-    ],
-    updateEnvironmentVariable: [
-      "PATCH /repos/{owner}/{repo}/environments/{environment_name}/variables/{name}"
-    ],
-    updateOrgVariable: ["PATCH /orgs/{org}/actions/variables/{name}"],
-    updateRepoVariable: [
-      "PATCH /repos/{owner}/{repo}/actions/variables/{name}"
-    ]
-  },
-  activity: {
-    checkRepoIsStarredByAuthenticatedUser: ["GET /user/starred/{owner}/{repo}"],
-    deleteRepoSubscription: ["DELETE /repos/{owner}/{repo}/subscription"],
-    deleteThreadSubscription: [
-      "DELETE /notifications/threads/{thread_id}/subscription"
-    ],
-    getFeeds: ["GET /feeds"],
-    getRepoSubscription: ["GET /repos/{owner}/{repo}/subscription"],
-    getThread: ["GET /notifications/threads/{thread_id}"],
-    getThreadSubscriptionForAuthenticatedUser: [
-      "GET /notifications/threads/{thread_id}/subscription"
-    ],
-    listEventsForAuthenticatedUser: ["GET /users/{username}/events"],
-    listNotificationsForAuthenticatedUser: ["GET /notifications"],
-    listOrgEventsForAuthenticatedUser: [
-      "GET /users/{username}/events/orgs/{org}"
-    ],
-    listPublicEvents: ["GET /events"],
-    listPublicEventsForRepoNetwork: ["GET /networks/{owner}/{repo}/events"],
-    listPublicEventsForUser: ["GET /users/{username}/events/public"],
-    listPublicOrgEvents: ["GET /orgs/{org}/events"],
-    listReceivedEventsForUser: ["GET /users/{username}/received_events"],
-    listReceivedPublicEventsForUser: [
-      "GET /users/{username}/received_events/public"
-    ],
-    listRepoEvents: ["GET /repos/{owner}/{repo}/events"],
-    listRepoNotificationsForAuthenticatedUser: [
-      "GET /repos/{owner}/{repo}/notifications"
-    ],
-    listReposStarredByAuthenticatedUser: ["GET /user/starred"],
-    listReposStarredByUser: ["GET /users/{username}/starred"],
-    listReposWatchedByUser: ["GET /users/{username}/subscriptions"],
-    listStargazersForRepo: ["GET /repos/{owner}/{repo}/stargazers"],
-    listWatchedReposForAuthenticatedUser: ["GET /user/subscriptions"],
-    listWatchersForRepo: ["GET /repos/{owner}/{repo}/subscribers"],
-    markNotificationsAsRead: ["PUT /notifications"],
-    markRepoNotificationsAsRead: ["PUT /repos/{owner}/{repo}/notifications"],
-    markThreadAsDone: ["DELETE /notifications/threads/{thread_id}"],
-    markThreadAsRead: ["PATCH /notifications/threads/{thread_id}"],
-    setRepoSubscription: ["PUT /repos/{owner}/{repo}/subscription"],
-    setThreadSubscription: [
-      "PUT /notifications/threads/{thread_id}/subscription"
-    ],
-    starRepoForAuthenticatedUser: ["PUT /user/starred/{owner}/{repo}"],
-    unstarRepoForAuthenticatedUser: ["DELETE /user/starred/{owner}/{repo}"]
-  },
-  apps: {
-    addRepoToInstallation: [
-      "PUT /user/installations/{installation_id}/repositories/{repository_id}",
-      {},
-      { renamed: ["apps", "addRepoToInstallationForAuthenticatedUser"] }
-    ],
-    addRepoToInstallationForAuthenticatedUser: [
-      "PUT /user/installations/{installation_id}/repositories/{repository_id}"
-    ],
-    checkToken: ["POST /applications/{client_id}/token"],
-    createFromManifest: ["POST /app-manifests/{code}/conversions"],
-    createInstallationAccessToken: [
-      "POST /app/installations/{installation_id}/access_tokens"
-    ],
-    deleteAuthorization: ["DELETE /applications/{client_id}/grant"],
-    deleteInstallation: ["DELETE /app/installations/{installation_id}"],
-    deleteToken: ["DELETE /applications/{client_id}/token"],
-    getAuthenticated: ["GET /app"],
-    getBySlug: ["GET /apps/{app_slug}"],
-    getInstallation: ["GET /app/installations/{installation_id}"],
-    getOrgInstallation: ["GET /orgs/{org}/installation"],
-    getRepoInstallation: ["GET /repos/{owner}/{repo}/installation"],
-    getSubscriptionPlanForAccount: [
-      "GET /marketplace_listing/accounts/{account_id}"
-    ],
-    getSubscriptionPlanForAccountStubbed: [
-      "GET /marketplace_listing/stubbed/accounts/{account_id}"
-    ],
-    getUserInstallation: ["GET /users/{username}/installation"],
-    getWebhookConfigForApp: ["GET /app/hook/config"],
-    getWebhookDelivery: ["GET /app/hook/deliveries/{delivery_id}"],
-    listAccountsForPlan: ["GET /marketplace_listing/plans/{plan_id}/accounts"],
-    listAccountsForPlanStubbed: [
-      "GET /marketplace_listing/stubbed/plans/{plan_id}/accounts"
-    ],
-    listInstallationReposForAuthenticatedUser: [
-      "GET /user/installations/{installation_id}/repositories"
-    ],
-    listInstallationRequestsForAuthenticatedApp: [
-      "GET /app/installation-requests"
-    ],
-    listInstallations: ["GET /app/installations"],
-    listInstallationsForAuthenticatedUser: ["GET /user/installations"],
-    listPlans: ["GET /marketplace_listing/plans"],
-    listPlansStubbed: ["GET /marketplace_listing/stubbed/plans"],
-    listReposAccessibleToInstallation: ["GET /installation/repositories"],
-    listSubscriptionsForAuthenticatedUser: ["GET /user/marketplace_purchases"],
-    listSubscriptionsForAuthenticatedUserStubbed: [
-      "GET /user/marketplace_purchases/stubbed"
-    ],
-    listWebhookDeliveries: ["GET /app/hook/deliveries"],
-    redeliverWebhookDelivery: [
-      "POST /app/hook/deliveries/{delivery_id}/attempts"
-    ],
-    removeRepoFromInstallation: [
-      "DELETE /user/installations/{installation_id}/repositories/{repository_id}",
-      {},
-      { renamed: ["apps", "removeRepoFromInstallationForAuthenticatedUser"] }
-    ],
-    removeRepoFromInstallationForAuthenticatedUser: [
-      "DELETE /user/installations/{installation_id}/repositories/{repository_id}"
-    ],
-    resetToken: ["PATCH /applications/{client_id}/token"],
-    revokeInstallationAccessToken: ["DELETE /installation/token"],
-    scopeToken: ["POST /applications/{client_id}/token/scoped"],
-    suspendInstallation: ["PUT /app/installations/{installation_id}/suspended"],
-    unsuspendInstallation: [
-      "DELETE /app/installations/{installation_id}/suspended"
-    ],
-    updateWebhookConfigForApp: ["PATCH /app/hook/config"]
-  },
-  billing: {
-    getGithubActionsBillingOrg: ["GET /orgs/{org}/settings/billing/actions"],
-    getGithubActionsBillingUser: [
-      "GET /users/{username}/settings/billing/actions"
-    ],
-    getGithubBillingUsageReportOrg: [
-      "GET /organizations/{org}/settings/billing/usage"
-    ],
-    getGithubPackagesBillingOrg: ["GET /orgs/{org}/settings/billing/packages"],
-    getGithubPackagesBillingUser: [
-      "GET /users/{username}/settings/billing/packages"
-    ],
-    getSharedStorageBillingOrg: [
-      "GET /orgs/{org}/settings/billing/shared-storage"
-    ],
-    getSharedStorageBillingUser: [
-      "GET /users/{username}/settings/billing/shared-storage"
-    ]
-  },
-  checks: {
-    create: ["POST /repos/{owner}/{repo}/check-runs"],
-    createSuite: ["POST /repos/{owner}/{repo}/check-suites"],
-    get: ["GET /repos/{owner}/{repo}/check-runs/{check_run_id}"],
-    getSuite: ["GET /repos/{owner}/{repo}/check-suites/{check_suite_id}"],
-    listAnnotations: [
-      "GET /repos/{owner}/{repo}/check-runs/{check_run_id}/annotations"
-    ],
-    listForRef: ["GET /repos/{owner}/{repo}/commits/{ref}/check-runs"],
-    listForSuite: [
-      "GET /repos/{owner}/{repo}/check-suites/{check_suite_id}/check-runs"
-    ],
-    listSuitesForRef: ["GET /repos/{owner}/{repo}/commits/{ref}/check-suites"],
-    rerequestRun: [
-      "POST /repos/{owner}/{repo}/check-runs/{check_run_id}/rerequest"
-    ],
-    rerequestSuite: [
-      "POST /repos/{owner}/{repo}/check-suites/{check_suite_id}/rerequest"
-    ],
-    setSuitesPreferences: [
-      "PATCH /repos/{owner}/{repo}/check-suites/preferences"
-    ],
-    update: ["PATCH /repos/{owner}/{repo}/check-runs/{check_run_id}"]
-  },
-  codeScanning: {
-    commitAutofix: [
-      "POST /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}/autofix/commits"
-    ],
-    createAutofix: [
-      "POST /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}/autofix"
-    ],
-    createVariantAnalysis: [
-      "POST /repos/{owner}/{repo}/code-scanning/codeql/variant-analyses"
-    ],
-    deleteAnalysis: [
-      "DELETE /repos/{owner}/{repo}/code-scanning/analyses/{analysis_id}{?confirm_delete}"
-    ],
-    deleteCodeqlDatabase: [
-      "DELETE /repos/{owner}/{repo}/code-scanning/codeql/databases/{language}"
-    ],
-    getAlert: [
-      "GET /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}",
-      {},
-      { renamedParameters: { alert_id: "alert_number" } }
-    ],
-    getAnalysis: [
-      "GET /repos/{owner}/{repo}/code-scanning/analyses/{analysis_id}"
-    ],
-    getAutofix: [
-      "GET /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}/autofix"
-    ],
-    getCodeqlDatabase: [
-      "GET /repos/{owner}/{repo}/code-scanning/codeql/databases/{language}"
-    ],
-    getDefaultSetup: ["GET /repos/{owner}/{repo}/code-scanning/default-setup"],
-    getSarif: ["GET /repos/{owner}/{repo}/code-scanning/sarifs/{sarif_id}"],
-    getVariantAnalysis: [
-      "GET /repos/{owner}/{repo}/code-scanning/codeql/variant-analyses/{codeql_variant_analysis_id}"
-    ],
-    getVariantAnalysisRepoTask: [
-      "GET /repos/{owner}/{repo}/code-scanning/codeql/variant-analyses/{codeql_variant_analysis_id}/repos/{repo_owner}/{repo_name}"
-    ],
-    listAlertInstances: [
-      "GET /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}/instances"
-    ],
-    listAlertsForOrg: ["GET /orgs/{org}/code-scanning/alerts"],
-    listAlertsForRepo: ["GET /repos/{owner}/{repo}/code-scanning/alerts"],
-    listAlertsInstances: [
-      "GET /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}/instances",
-      {},
-      { renamed: ["codeScanning", "listAlertInstances"] }
-    ],
-    listCodeqlDatabases: [
-      "GET /repos/{owner}/{repo}/code-scanning/codeql/databases"
-    ],
-    listRecentAnalyses: ["GET /repos/{owner}/{repo}/code-scanning/analyses"],
-    updateAlert: [
-      "PATCH /repos/{owner}/{repo}/code-scanning/alerts/{alert_number}"
-    ],
-    updateDefaultSetup: [
-      "PATCH /repos/{owner}/{repo}/code-scanning/default-setup"
-    ],
-    uploadSarif: ["POST /repos/{owner}/{repo}/code-scanning/sarifs"]
-  },
-  codeSecurity: {
-    attachConfiguration: [
-      "POST /orgs/{org}/code-security/configurations/{configuration_id}/attach"
-    ],
-    attachEnterpriseConfiguration: [
-      "POST /enterprises/{enterprise}/code-security/configurations/{configuration_id}/attach"
-    ],
-    createConfiguration: ["POST /orgs/{org}/code-security/configurations"],
-    createConfigurationForEnterprise: [
-      "POST /enterprises/{enterprise}/code-security/configurations"
-    ],
-    deleteConfiguration: [
-      "DELETE /orgs/{org}/code-security/configurations/{configuration_id}"
-    ],
-    deleteConfigurationForEnterprise: [
-      "DELETE /enterprises/{enterprise}/code-security/configurations/{configuration_id}"
-    ],
-    detachConfiguration: [
-      "DELETE /orgs/{org}/code-security/configurations/detach"
-    ],
-    getConfiguration: [
-      "GET /orgs/{org}/code-security/configurations/{configuration_id}"
-    ],
-    getConfigurationForRepository: [
-      "GET /repos/{owner}/{repo}/code-security-configuration"
-    ],
-    getConfigurationsForEnterprise: [
-      "GET /enterprises/{enterprise}/code-security/configurations"
-    ],
-    getConfigurationsForOrg: ["GET /orgs/{org}/code-security/configurations"],
-    getDefaultConfigurations: [
-      "GET /orgs/{org}/code-security/configurations/defaults"
-    ],
-    getDefaultConfigurationsForEnterprise: [
-      "GET /enterprises/{enterprise}/code-security/configurations/defaults"
-    ],
-    getRepositoriesForConfiguration: [
-      "GET /orgs/{org}/code-security/configurations/{configuration_id}/repositories"
-    ],
-    getRepositoriesForEnterpriseConfiguration: [
-      "GET /enterprises/{enterprise}/code-security/configurations/{configuration_id}/repositories"
-    ],
-    getSingleConfigurationForEnterprise: [
-      "GET /enterprises/{enterprise}/code-security/configurations/{configuration_id}"
-    ],
-    setConfigurationAsDefault: [
-      "PUT /orgs/{org}/code-security/configurations/{configuration_id}/defaults"
-    ],
-    setConfigurationAsDefaultForEnterprise: [
-      "PUT /enterprises/{enterprise}/code-security/configurations/{configuration_id}/defaults"
-    ],
-    updateConfiguration: [
-      "PATCH /orgs/{org}/code-security/configurations/{configuration_id}"
-    ],
-    updateEnterpriseConfiguration: [
-      "PATCH /enterprises/{enterprise}/code-security/configurations/{configuration_id}"
-    ]
-  },
-  codesOfConduct: {
-    getAllCodesOfConduct: ["GET /codes_of_conduct"],
-    getConductCode: ["GET /codes_of_conduct/{key}"]
-  },
-  codespaces: {
-    addRepositoryForSecretForAuthenticatedUser: [
-      "PUT /user/codespaces/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    addSelectedRepoToOrgSecret: [
-      "PUT /orgs/{org}/codespaces/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    checkPermissionsForDevcontainer: [
-      "GET /repos/{owner}/{repo}/codespaces/permissions_check"
-    ],
-    codespaceMachinesForAuthenticatedUser: [
-      "GET /user/codespaces/{codespace_name}/machines"
-    ],
-    createForAuthenticatedUser: ["POST /user/codespaces"],
-    createOrUpdateOrgSecret: [
-      "PUT /orgs/{org}/codespaces/secrets/{secret_name}"
-    ],
-    createOrUpdateRepoSecret: [
-      "PUT /repos/{owner}/{repo}/codespaces/secrets/{secret_name}"
-    ],
-    createOrUpdateSecretForAuthenticatedUser: [
-      "PUT /user/codespaces/secrets/{secret_name}"
-    ],
-    createWithPrForAuthenticatedUser: [
-      "POST /repos/{owner}/{repo}/pulls/{pull_number}/codespaces"
-    ],
-    createWithRepoForAuthenticatedUser: [
-      "POST /repos/{owner}/{repo}/codespaces"
-    ],
-    deleteForAuthenticatedUser: ["DELETE /user/codespaces/{codespace_name}"],
-    deleteFromOrganization: [
-      "DELETE /orgs/{org}/members/{username}/codespaces/{codespace_name}"
-    ],
-    deleteOrgSecret: ["DELETE /orgs/{org}/codespaces/secrets/{secret_name}"],
-    deleteRepoSecret: [
-      "DELETE /repos/{owner}/{repo}/codespaces/secrets/{secret_name}"
-    ],
-    deleteSecretForAuthenticatedUser: [
-      "DELETE /user/codespaces/secrets/{secret_name}"
-    ],
-    exportForAuthenticatedUser: [
-      "POST /user/codespaces/{codespace_name}/exports"
-    ],
-    getCodespacesForUserInOrg: [
-      "GET /orgs/{org}/members/{username}/codespaces"
-    ],
-    getExportDetailsForAuthenticatedUser: [
-      "GET /user/codespaces/{codespace_name}/exports/{export_id}"
-    ],
-    getForAuthenticatedUser: ["GET /user/codespaces/{codespace_name}"],
-    getOrgPublicKey: ["GET /orgs/{org}/codespaces/secrets/public-key"],
-    getOrgSecret: ["GET /orgs/{org}/codespaces/secrets/{secret_name}"],
-    getPublicKeyForAuthenticatedUser: [
-      "GET /user/codespaces/secrets/public-key"
-    ],
-    getRepoPublicKey: [
-      "GET /repos/{owner}/{repo}/codespaces/secrets/public-key"
-    ],
-    getRepoSecret: [
-      "GET /repos/{owner}/{repo}/codespaces/secrets/{secret_name}"
-    ],
-    getSecretForAuthenticatedUser: [
-      "GET /user/codespaces/secrets/{secret_name}"
-    ],
-    listDevcontainersInRepositoryForAuthenticatedUser: [
-      "GET /repos/{owner}/{repo}/codespaces/devcontainers"
-    ],
-    listForAuthenticatedUser: ["GET /user/codespaces"],
-    listInOrganization: [
-      "GET /orgs/{org}/codespaces",
-      {},
-      { renamedParameters: { org_id: "org" } }
-    ],
-    listInRepositoryForAuthenticatedUser: [
-      "GET /repos/{owner}/{repo}/codespaces"
-    ],
-    listOrgSecrets: ["GET /orgs/{org}/codespaces/secrets"],
-    listRepoSecrets: ["GET /repos/{owner}/{repo}/codespaces/secrets"],
-    listRepositoriesForSecretForAuthenticatedUser: [
-      "GET /user/codespaces/secrets/{secret_name}/repositories"
-    ],
-    listSecretsForAuthenticatedUser: ["GET /user/codespaces/secrets"],
-    listSelectedReposForOrgSecret: [
-      "GET /orgs/{org}/codespaces/secrets/{secret_name}/repositories"
-    ],
-    preFlightWithRepoForAuthenticatedUser: [
-      "GET /repos/{owner}/{repo}/codespaces/new"
-    ],
-    publishForAuthenticatedUser: [
-      "POST /user/codespaces/{codespace_name}/publish"
-    ],
-    removeRepositoryForSecretForAuthenticatedUser: [
-      "DELETE /user/codespaces/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    removeSelectedRepoFromOrgSecret: [
-      "DELETE /orgs/{org}/codespaces/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    repoMachinesForAuthenticatedUser: [
-      "GET /repos/{owner}/{repo}/codespaces/machines"
-    ],
-    setRepositoriesForSecretForAuthenticatedUser: [
-      "PUT /user/codespaces/secrets/{secret_name}/repositories"
-    ],
-    setSelectedReposForOrgSecret: [
-      "PUT /orgs/{org}/codespaces/secrets/{secret_name}/repositories"
-    ],
-    startForAuthenticatedUser: ["POST /user/codespaces/{codespace_name}/start"],
-    stopForAuthenticatedUser: ["POST /user/codespaces/{codespace_name}/stop"],
-    stopInOrganization: [
-      "POST /orgs/{org}/members/{username}/codespaces/{codespace_name}/stop"
-    ],
-    updateForAuthenticatedUser: ["PATCH /user/codespaces/{codespace_name}"]
-  },
-  copilot: {
-    addCopilotSeatsForTeams: [
-      "POST /orgs/{org}/copilot/billing/selected_teams"
-    ],
-    addCopilotSeatsForUsers: [
-      "POST /orgs/{org}/copilot/billing/selected_users"
-    ],
-    cancelCopilotSeatAssignmentForTeams: [
-      "DELETE /orgs/{org}/copilot/billing/selected_teams"
-    ],
-    cancelCopilotSeatAssignmentForUsers: [
-      "DELETE /orgs/{org}/copilot/billing/selected_users"
-    ],
-    copilotMetricsForOrganization: ["GET /orgs/{org}/copilot/metrics"],
-    copilotMetricsForTeam: ["GET /orgs/{org}/team/{team_slug}/copilot/metrics"],
-    getCopilotOrganizationDetails: ["GET /orgs/{org}/copilot/billing"],
-    getCopilotSeatDetailsForUser: [
-      "GET /orgs/{org}/members/{username}/copilot"
-    ],
-    listCopilotSeats: ["GET /orgs/{org}/copilot/billing/seats"],
-    usageMetricsForOrg: ["GET /orgs/{org}/copilot/usage"],
-    usageMetricsForTeam: ["GET /orgs/{org}/team/{team_slug}/copilot/usage"]
-  },
-  dependabot: {
-    addSelectedRepoToOrgSecret: [
-      "PUT /orgs/{org}/dependabot/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    createOrUpdateOrgSecret: [
-      "PUT /orgs/{org}/dependabot/secrets/{secret_name}"
-    ],
-    createOrUpdateRepoSecret: [
-      "PUT /repos/{owner}/{repo}/dependabot/secrets/{secret_name}"
-    ],
-    deleteOrgSecret: ["DELETE /orgs/{org}/dependabot/secrets/{secret_name}"],
-    deleteRepoSecret: [
-      "DELETE /repos/{owner}/{repo}/dependabot/secrets/{secret_name}"
-    ],
-    getAlert: ["GET /repos/{owner}/{repo}/dependabot/alerts/{alert_number}"],
-    getOrgPublicKey: ["GET /orgs/{org}/dependabot/secrets/public-key"],
-    getOrgSecret: ["GET /orgs/{org}/dependabot/secrets/{secret_name}"],
-    getRepoPublicKey: [
-      "GET /repos/{owner}/{repo}/dependabot/secrets/public-key"
-    ],
-    getRepoSecret: [
-      "GET /repos/{owner}/{repo}/dependabot/secrets/{secret_name}"
-    ],
-    listAlertsForEnterprise: [
-      "GET /enterprises/{enterprise}/dependabot/alerts"
-    ],
-    listAlertsForOrg: ["GET /orgs/{org}/dependabot/alerts"],
-    listAlertsForRepo: ["GET /repos/{owner}/{repo}/dependabot/alerts"],
-    listOrgSecrets: ["GET /orgs/{org}/dependabot/secrets"],
-    listRepoSecrets: ["GET /repos/{owner}/{repo}/dependabot/secrets"],
-    listSelectedReposForOrgSecret: [
-      "GET /orgs/{org}/dependabot/secrets/{secret_name}/repositories"
-    ],
-    removeSelectedRepoFromOrgSecret: [
-      "DELETE /orgs/{org}/dependabot/secrets/{secret_name}/repositories/{repository_id}"
-    ],
-    setSelectedReposForOrgSecret: [
-      "PUT /orgs/{org}/dependabot/secrets/{secret_name}/repositories"
-    ],
-    updateAlert: [
-      "PATCH /repos/{owner}/{repo}/dependabot/alerts/{alert_number}"
-    ]
-  },
-  dependencyGraph: {
-    createRepositorySnapshot: [
-      "POST /repos/{owner}/{repo}/dependency-graph/snapshots"
-    ],
-    diffRange: [
-      "GET /repos/{owner}/{repo}/dependency-graph/compare/{basehead}"
-    ],
-    exportSbom: ["GET /repos/{owner}/{repo}/dependency-graph/sbom"]
-  },
-  emojis: { get: ["GET /emojis"] },
-  gists: {
-    checkIsStarred: ["GET /gists/{gist_id}/star"],
-    create: ["POST /gists"],
-    createComment: ["POST /gists/{gist_id}/comments"],
-    delete: ["DELETE /gists/{gist_id}"],
-    deleteComment: ["DELETE /gists/{gist_id}/comments/{comment_id}"],
-    fork: ["POST /gists/{gist_id}/forks"],
-    get: ["GET /gists/{gist_id}"],
-    getComment: ["GET /gists/{gist_id}/comments/{comment_id}"],
-    getRevision: ["GET /gists/{gist_id}/{sha}"],
-    list: ["GET /gists"],
-    listComments: ["GET /gists/{gist_id}/comments"],
-    listCommits: ["GET /gists/{gist_id}/commits"],
-    listForUser: ["GET /users/{username}/gists"],
-    listForks: ["GET /gists/{gist_id}/forks"],
-    listPublic: ["GET /gists/public"],
-    listStarred: ["GET /gists/starred"],
-    star: ["PUT /gists/{gist_id}/star"],
-    unstar: ["DELETE /gists/{gist_id}/star"],
-    update: ["PATCH /gists/{gist_id}"],
-    updateComment: ["PATCH /gists/{gist_id}/comments/{comment_id}"]
-  },
-  git: {
-    createBlob: ["POST /repos/{owner}/{repo}/git/blobs"],
-    createCommit: ["POST /repos/{owner}/{repo}/git/commits"],
-    createRef: ["POST /repos/{owner}/{repo}/git/refs"],
-    createTag: ["POST /repos/{owner}/{repo}/git/tags"],
-    createTree: ["POST /repos/{owner}/{repo}/git/trees"],
-    deleteRef: ["DELETE /repos/{owner}/{repo}/git/refs/{ref}"],
-    getBlob: ["GET /repos/{owner}/{repo}/git/blobs/{file_sha}"],
-    getCommit: ["GET /repos/{owner}/{repo}/git/commits/{commit_sha}"],
-    getRef: ["GET /repos/{owner}/{repo}/git/ref/{ref}"],
-    getTag: ["GET /repos/{owner}/{repo}/git/tags/{tag_sha}"],
-    getTree: ["GET /repos/{owner}/{repo}/git/trees/{tree_sha}"],
-    listMatchingRefs: ["GET /repos/{owner}/{repo}/git/matching-refs/{ref}"],
-    updateRef: ["PATCH /repos/{owner}/{repo}/git/refs/{ref}"]
-  },
-  gitignore: {
-    getAllTemplates: ["GET /gitignore/templates"],
-    getTemplate: ["GET /gitignore/templates/{name}"]
-  },
-  interactions: {
-    getRestrictionsForAuthenticatedUser: ["GET /user/interaction-limits"],
-    getRestrictionsForOrg: ["GET /orgs/{org}/interaction-limits"],
-    getRestrictionsForRepo: ["GET /repos/{owner}/{repo}/interaction-limits"],
-    getRestrictionsForYourPublicRepos: [
-      "GET /user/interaction-limits",
-      {},
-      { renamed: ["interactions", "getRestrictionsForAuthenticatedUser"] }
-    ],
-    removeRestrictionsForAuthenticatedUser: ["DELETE /user/interaction-limits"],
-    removeRestrictionsForOrg: ["DELETE /orgs/{org}/interaction-limits"],
-    removeRestrictionsForRepo: [
-      "DELETE /repos/{owner}/{repo}/interaction-limits"
-    ],
-    removeRestrictionsForYourPublicRepos: [
-      "DELETE /user/interaction-limits",
-      {},
-      { renamed: ["interactions", "removeRestrictionsForAuthenticatedUser"] }
-    ],
-    setRestrictionsForAuthenticatedUser: ["PUT /user/interaction-limits"],
-    setRestrictionsForOrg: ["PUT /orgs/{org}/interaction-limits"],
-    setRestrictionsForRepo: ["PUT /repos/{owner}/{repo}/interaction-limits"],
-    setRestrictionsForYourPublicRepos: [
-      "PUT /user/interaction-limits",
-      {},
-      { renamed: ["interactions", "setRestrictionsForAuthenticatedUser"] }
-    ]
-  },
-  issues: {
-    addAssignees: [
-      "POST /repos/{owner}/{repo}/issues/{issue_number}/assignees"
-    ],
-    addLabels: ["POST /repos/{owner}/{repo}/issues/{issue_number}/labels"],
-    addSubIssue: [
-      "POST /repos/{owner}/{repo}/issues/{issue_number}/sub_issues"
-    ],
-    checkUserCanBeAssigned: ["GET /repos/{owner}/{repo}/assignees/{assignee}"],
-    checkUserCanBeAssignedToIssue: [
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/assignees/{assignee}"
-    ],
-    create: ["POST /repos/{owner}/{repo}/issues"],
-    createComment: [
-      "POST /repos/{owner}/{repo}/issues/{issue_number}/comments"
-    ],
-    createLabel: ["POST /repos/{owner}/{repo}/labels"],
-    createMilestone: ["POST /repos/{owner}/{repo}/milestones"],
-    deleteComment: [
-      "DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}"
-    ],
-    deleteLabel: ["DELETE /repos/{owner}/{repo}/labels/{name}"],
-    deleteMilestone: [
-      "DELETE /repos/{owner}/{repo}/milestones/{milestone_number}"
-    ],
-    get: ["GET /repos/{owner}/{repo}/issues/{issue_number}"],
-    getComment: ["GET /repos/{owner}/{repo}/issues/comments/{comment_id}"],
-    getEvent: ["GET /repos/{owner}/{repo}/issues/events/{event_id}"],
-    getLabel: ["GET /repos/{owner}/{repo}/labels/{name}"],
-    getMilestone: ["GET /repos/{owner}/{repo}/milestones/{milestone_number}"],
-    list: ["GET /issues"],
-    listAssignees: ["GET /repos/{owner}/{repo}/assignees"],
-    listComments: ["GET /repos/{owner}/{repo}/issues/{issue_number}/comments"],
-    listCommentsForRepo: ["GET /repos/{owner}/{repo}/issues/comments"],
-    listEvents: ["GET /repos/{owner}/{repo}/issues/{issue_number}/events"],
-    listEventsForRepo: ["GET /repos/{owner}/{repo}/issues/events"],
-    listEventsForTimeline: [
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/timeline"
-    ],
-    listForAuthenticatedUser: ["GET /user/issues"],
-    listForOrg: ["GET /orgs/{org}/issues"],
-    listForRepo: ["GET /repos/{owner}/{repo}/issues"],
-    listLabelsForMilestone: [
-      "GET /repos/{owner}/{repo}/milestones/{milestone_number}/labels"
-    ],
-    listLabelsForRepo: ["GET /repos/{owner}/{repo}/labels"],
-    listLabelsOnIssue: [
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/labels"
-    ],
-    listMilestones: ["GET /repos/{owner}/{repo}/milestones"],
-    listSubIssues: [
-      "GET /repos/{owner}/{repo}/issues/{issue_number}/sub_issues"
-    ],
-    lock: ["PUT /repos/{owner}/{repo}/issues/{issue_number}/lock"],
-    removeAllLabels: [
-      "DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels"
-    ],
-    removeAssignees: [
-      "DELETE /repos/{owner}/{repo}/issues/{issue_number}/assignees"
-    ],
-    removeLabel: [
-      "DELETE /repos/{owner}/{repo}/issues/{issue_number}/labels/{name}"
-    ],
-    removeSubIssue: [
-      "DELETE /repos/{owner}/{repo}/issues/{issue_number}/sub_issue"
-    ],
-    reprioritizeSubIssue: [
-      "PATCH /repos/{owner}/{repo}/issues/{issue_number}/sub_issues/priority"
-    ],
-    setLabels: ["PUT /repos/{owner}/{repo}/issues/{issue_number}/labels"],
-    unlock: ["DELETE /repos/{owner}/{repo}/issues/{issue_number}/lock"],
-    update: ["PATCH /repos/{owner}/{repo}/issues/{issue_number}"],
-    updateComment: ["PATCH /repos/{owner}/{repo}/issues/comments/{comment_id}"],
-    updateLabel: ["PATCH /repos/{owner}/{repo}/labels/{name}"],
-    updateMilestone: [
-      "PATCH /repos/{owner}/{repo}/milestones/{milestone_number}"
-    ]
-  },
-  licenses: {
-    get: ["GET /licenses/{license}"],
-    getAllCommonlyUsed: ["GET /licenses"],
-    getForRepo: ["GET /repos/{owner}/{repo}/license"]
-  },
-  markdown: {
-    render: ["POST /markdown"],
-    renderRaw: [
-      "POST /markdown/raw",
-      { headers: { "content-type": "text/plain; charset=utf-8" } }
-    ]
-  },
-  meta: {
-    get: ["GET /meta"],
-    getAllVersions: ["GET /versions"],
-    getOctocat: ["GET /octocat"],
-    getZen: ["GET /zen"],
-    root: ["GET /"]
-  },
-  migrations: {
-    deleteArchiveForAuthenticatedUser: [
-      "DELETE /user/migrations/{migration_id}/archive"
-    ],
-    deleteArchiveForOrg: [
-      "DELETE /orgs/{org}/migrations/{migration_id}/archive"
-    ],
-    downloadArchiveForOrg: [
-      "GET /orgs/{org}/migrations/{migration_id}/archive"
-    ],
-    getArchiveForAuthenticatedUser: [
-      "GET /user/migrations/{migration_id}/archive"
-    ],
-    getStatusForAuthenticatedUser: ["GET /user/migrations/{migration_id}"],
-    getStatusForOrg: ["GET /orgs/{org}/migrations/{migration_id}"],
-    listForAuthenticatedUser: ["GET /user/migrations"],
-    listForOrg: ["GET /orgs/{org}/migrations"],
-    listReposForAuthenticatedUser: [
-      "GET /user/migrations/{migration_id}/repositories"
-    ],
-    listReposForOrg: ["GET /orgs/{org}/migrations/{migration_id}/repositories"],
-    listReposForUser: [
-      "GET /user/migrations/{migration_id}/repositories",
-      {},
-      { renamed: ["migrations", "listReposForAuthenticatedUser"] }
-    ],
-    startForAuthenticatedUser: ["POST /user/migrations"],
-    startForOrg: ["POST /orgs/{org}/migrations"],
-    unlockRepoForAuthenticatedUser: [
-      "DELETE /user/migrations/{migration_id}/repos/{repo_name}/lock"
-    ],
-    unlockRepoForOrg: [
-      "DELETE /orgs/{org}/migrations/{migration_id}/repos/{repo_name}/lock"
-    ]
-  },
-  oidc: {
-    getOidcCustomSubTemplateForOrg: [
-      "GET /orgs/{org}/actions/oidc/customization/sub"
-    ],
-    updateOidcCustomSubTemplateForOrg: [
-      "PUT /orgs/{org}/actions/oidc/customization/sub"
-    ]
-  },
-  orgs: {
-    addSecurityManagerTeam: [
-      "PUT /orgs/{org}/security-managers/teams/{team_slug}",
-      {},
-      {
-        deprecated: "octokit.rest.orgs.addSecurityManagerTeam() is deprecated, see https://docs.github.com/rest/orgs/security-managers#add-a-security-manager-team"
-      }
-    ],
-    assignTeamToOrgRole: [
-      "PUT /orgs/{org}/organization-roles/teams/{team_slug}/{role_id}"
-    ],
-    assignUserToOrgRole: [
-      "PUT /orgs/{org}/organization-roles/users/{username}/{role_id}"
-    ],
-    blockUser: ["PUT /orgs/{org}/blocks/{username}"],
-    cancelInvitation: ["DELETE /orgs/{org}/invitations/{invitation_id}"],
-    checkBlockedUser: ["GET /orgs/{org}/blocks/{username}"],
-    checkMembershipForUser: ["GET /orgs/{org}/members/{username}"],
-    checkPublicMembershipForUser: ["GET /orgs/{org}/public_members/{username}"],
-    convertMemberToOutsideCollaborator: [
-      "PUT /orgs/{org}/outside_collaborators/{username}"
-    ],
-    createInvitation: ["POST /orgs/{org}/invitations"],
-    createOrUpdateCustomProperties: ["PATCH /orgs/{org}/properties/schema"],
-    createOrUpdateCustomPropertiesValuesForRepos: [
-      "PATCH /orgs/{org}/properties/values"
-    ],
-    createOrUpdateCustomProperty: [
-      "PUT /orgs/{org}/properties/schema/{custom_property_name}"
-    ],
-    createWebhook: ["POST /orgs/{org}/hooks"],
-    delete: ["DELETE /orgs/{org}"],
-    deleteWebhook: ["DELETE /orgs/{org}/hooks/{hook_id}"],
-    enableOrDisableSecurityProductOnAllOrgRepos: [
-      "POST /orgs/{org}/{security_product}/{enablement}",
-      {},
-      {
-        deprecated: "octokit.rest.orgs.enableOrDisableSecurityProductOnAllOrgRepos() is deprecated, see https://docs.github.com/rest/orgs/orgs#enable-or-disable-a-security-feature-for-an-organization"
-      }
-    ],
-    get: ["GET /orgs/{org}"],
-    getAllCustomProperties: ["GET /orgs/{org}/properties/schema"],
-    getCustomProperty: [
-      "GET /orgs/{org}/properties/schema/{custom_property_name}"
-    ],
-    getMembershipForAuthenticatedUser: ["GET /user/memberships/orgs/{org}"],
-    getMembershipForUser: ["GET /orgs/{org}/memberships/{username}"],
-    getOrgRole: ["GET /orgs/{org}/organization-roles/{role_id}"],
-    getWebhook: ["GET /orgs/{org}/hooks/{hook_id}"],
-    getWebhookConfigForOrg: ["GET /orgs/{org}/hooks/{hook_id}/config"],
-    getWebhookDelivery: [
-      "GET /orgs/{org}/hooks/{hook_id}/deliveries/{delivery_id}"
-    ],
-    list: ["GET /organizations"],
-    listAppInstallations: ["GET /orgs/{org}/installations"],
-    listAttestations: ["GET /orgs/{org}/attestations/{subject_digest}"],
-    listBlockedUsers: ["GET /orgs/{org}/blocks"],
-    listCustomPropertiesValuesForRepos: ["GET /orgs/{org}/properties/values"],
-    listFailedInvitations: ["GET /orgs/{org}/failed_invitations"],
-    listForAuthenticatedUser: ["GET /user/orgs"],
-    listForUser: ["GET /users/{username}/orgs"],
-    listInvitationTeams: ["GET /orgs/{org}/invitations/{invitation_id}/teams"],
-    listMembers: ["GET /orgs/{org}/members"],
-    listMembershipsForAuthenticatedUser: ["GET /user/memberships/orgs"],
-    listOrgRoleTeams: ["GET /orgs/{org}/organization-roles/{role_id}/teams"],
-    listOrgRoleUsers: ["GET /orgs/{org}/organization-roles/{role_id}/users"],
-    listOrgRoles: ["GET /orgs/{org}/organization-roles"],
-    listOrganizationFineGrainedPermissions: [
-      "GET /orgs/{org}/organization-fine-grained-permissions"
-    ],
-    listOutsideCollaborators: ["GET /orgs/{org}/outside_collaborators"],
-    listPatGrantRepositories: [
-      "GET /orgs/{org}/personal-access-tokens/{pat_id}/repositories"
-    ],
-    listPatGrantRequestRepositories: [
-      "GET /orgs/{org}/personal-access-token-requests/{pat_request_id}/repositories"
-    ],
-    listPatGrantRequests: ["GET /orgs/{org}/personal-access-token-requests"],
-    listPatGrants: ["GET /orgs/{org}/personal-access-tokens"],
-    listPendingInvitations: ["GET /orgs/{org}/invitations"],
-    listPublicMembers: ["GET /orgs/{org}/public_members"],
-    listSecurityManagerTeams: [
-      "GET /orgs/{org}/security-managers",
-      {},
-      {
-        deprecated: "octokit.rest.orgs.listSecurityManagerTeams() is deprecated, see https://docs.github.com/rest/orgs/security-managers#list-security-manager-teams"
-      }
-    ],
-    listWebhookDeliveries: ["GET /orgs/{org}/hooks/{hook_id}/deliveries"],
-    listWebhooks: ["GET /orgs/{org}/hooks"],
-    pingWebhook: ["POST /orgs/{org}/hooks/{hook_id}/pings"],
-    redeliverWebhookDelivery: [
-      "POST /orgs/{org}/hooks/{hook_id}/deliveries/{delivery_id}/attempts"
-    ],
-    removeCustomProperty: [
-      "DELETE /orgs/{org}/properties/schema/{custom_property_name}"
-    ],
-    removeMember: ["DELETE /orgs/{org}/members/{username}"],
-    removeMembershipForUser: ["DELETE /orgs/{org}/memberships/{username}"],
-    removeOutsideCollaborator: [
-      "DELETE /orgs/{org}/outside_collaborators/{username}"
-    ],
-    removePublicMembershipForAuthenticatedUser: [
-      "DELETE /orgs/{org}/public_members/{username}"
-    ],
-    removeSecurityManagerTeam: [
-      "DELETE /orgs/{org}/security-managers/teams/{team_slug}",
-      {},
-      {
-        deprecated: "octokit.rest.orgs.removeSecurityManagerTeam() is deprecated, see https://docs.github.com/rest/orgs/security-managers#remove-a-security-manager-team"
-      }
-    ],
-    reviewPatGrantRequest: [
-      "POST /orgs/{org}/personal-access-token-requests/{pat_request_id}"
-    ],
-    reviewPatGrantRequestsInBulk: [
-      "POST /orgs/{org}/personal-access-token-requests"
-    ],
-    revokeAllOrgRolesTeam: [
-      "DELETE /orgs/{org}/organization-roles/teams/{team_slug}"
-    ],
-    revokeAllOrgRolesUser: [
-      "DELETE /orgs/{org}/organization-roles/users/{username}"
-    ],
-    revokeOrgRoleTeam: [
-      "DELETE /orgs/{org}/organization-roles/teams/{team_slug}/{role_id}"
-    ],
-    revokeOrgRoleUser: [
-      "DELETE /orgs/{org}/organization-roles/users/{username}/{role_id}"
-    ],
-    setMembershipForUser: ["PUT /orgs/{org}/memberships/{username}"],
-    setPublicMembershipForAuthenticatedUser: [
-      "PUT /orgs/{org}/public_members/{username}"
-    ],
-    unblockUser: ["DELETE /orgs/{org}/blocks/{username}"],
-    update: ["PATCH /orgs/{org}"],
-    updateMembershipForAuthenticatedUser: [
-      "PATCH /user/memberships/orgs/{org}"
-    ],
-    updatePatAccess: ["POST /orgs/{org}/personal-access-tokens/{pat_id}"],
-    updatePatAccesses: ["POST /orgs/{org}/personal-access-tokens"],
-    updateWebhook: ["PATCH /orgs/{org}/hooks/{hook_id}"],
-    updateWebhookConfigForOrg: ["PATCH /orgs/{org}/hooks/{hook_id}/config"]
-  },
-  packages: {
-    deletePackageForAuthenticatedUser: [
-      "DELETE /user/packages/{package_type}/{package_name}"
-    ],
-    deletePackageForOrg: [
-      "DELETE /orgs/{org}/packages/{package_type}/{package_name}"
-    ],
-    deletePackageForUser: [
-      "DELETE /users/{username}/packages/{package_type}/{package_name}"
-    ],
-    deletePackageVersionForAuthenticatedUser: [
-      "DELETE /user/packages/{package_type}/{package_name}/versions/{package_version_id}"
-    ],
-    deletePackageVersionForOrg: [
-      "DELETE /orgs/{org}/packages/{package_type}/{package_name}/versions/{package_version_id}"
-    ],
-    deletePackageVersionForUser: [
-      "DELETE /users/{username}/packages/{package_type}/{package_name}/versions/{package_version_id}"
-    ],
-    getAllPackageVersionsForAPackageOwnedByAnOrg: [
-      "GET /orgs/{org}/packages/{package_type}/{package_name}/versions",
-      {},
-      { renamed: ["packages", "getAllPackageVersionsForPackageOwnedByOrg"] }
-    ],
-    getAllPackageVersionsForAPackageOwnedByTheAuthenticatedUser: [
-      "GET /user/packages/{package_type}/{package_name}/versions",
-      {},
-      {
-        renamed: [
-          "packages",
-          "getAllPackageVersionsForPackageOwnedByAuthenticatedUser"
-        ]
-      }
-    ],
-    getAllPackageVersionsForPackageOwnedByAuthenticatedUser: [
-      "GET /user/packages/{package_type}/{package_name}/versions"
-    ],
-    getAllPackageVersionsForPackageOwnedByOrg: [
-      "GET /orgs/{org}/packages/{package_type}/{package_name}/versions"
-    ],
-    getAllPackageVersionsForPackageOwnedByUser: [
-      "GET /users/{username}/packages/{package_type}/{package_name}/versions"
-    ],
-    getPackageForAuthenticatedUser: [
-      "GET /user/packages/{package_type}/{package_name}"
-    ],
-    getPackageForOrganization: [
-      "GET /orgs/{org}/packages/{package_type}/{package_name}"
-    ],
-    getPackageForUser: [
-      "GET /users/{username}/packages/{package_type}/{package_name}"
-    ],
-    getPackageVersionForAuthenticatedUser: [
-      "GET /user/packages/{package_type}/{package_name}/versions/{package_version_id}"
-    ],
-    getPackageVersionForOrganization: [
-      "GET /orgs/{org}/packages/{package_type}/{package_name}/versions/{package_version_id}"
-    ],
-    getPackageVersionForUser: [
-      "GET /users/{username}/packages/{package_type}/{package_name}/versions/{package_version_id}"
-    ],
-    listDockerMigrationConflictingPackagesForAuthenticatedUser: [
-      "GET /user/docker/conflicts"
-    ],
-    listDockerMigrationConflictingPackagesForOrganization: [
-      "GET /orgs/{org}/docker/conflicts"
-    ],
-    listDockerMigrationConflictingPackagesForUser: [
-      "GET /users/{username}/docker/conflicts"
-    ],
-    listPackagesForAuthenticatedUser: ["GET /user/packages"],
-    listPackagesForOrganization: ["GET /orgs/{org}/packages"],
-    listPackagesForUser: ["GET /users/{username}/packages"],
-    restorePackageForAuthenticatedUser: [
-      "POST /user/packages/{package_type}/{package_name}/restore{?token}"
-    ],
-    restorePackageForOrg: [
-      "POST /orgs/{org}/packages/{package_type}/{package_name}/restore{?token}"
-    ],
-    restorePackageForUser: [
-      "POST /users/{username}/packages/{package_type}/{package_name}/restore{?token}"
-    ],
-    restorePackageVersionForAuthenticatedUser: [
-      "POST /user/packages/{package_type}/{package_name}/versions/{package_version_id}/restore"
-    ],
-    restorePackageVersionForOrg: [
-      "POST /orgs/{org}/packages/{package_type}/{package_name}/versions/{package_version_id}/restore"
-    ],
-    restorePackageVersionForUser: [
-      "POST /users/{username}/packages/{package_type}/{package_name}/versions/{package_version_id}/restore"
-    ]
-  },
-  privateRegistries: {
-    createOrgPrivateRegistry: ["POST /orgs/{org}/private-registries"],
-    deleteOrgPrivateRegistry: [
-      "DELETE /orgs/{org}/private-registries/{secret_name}"
-    ],
-    getOrgPrivateRegistry: ["GET /orgs/{org}/private-registries/{secret_name}"],
-    getOrgPublicKey: ["GET /orgs/{org}/private-registries/public-key"],
-    listOrgPrivateRegistries: ["GET /orgs/{org}/private-registries"],
-    updateOrgPrivateRegistry: [
-      "PATCH /orgs/{org}/private-registries/{secret_name}"
-    ]
-  },
-  projects: {
-    addCollaborator: ["PUT /projects/{project_id}/collaborators/{username}"],
-    createCard: ["POST /projects/columns/{column_id}/cards"],
-    createColumn: ["POST /projects/{project_id}/columns"],
-    createForAuthenticatedUser: ["POST /user/projects"],
-    createForOrg: ["POST /orgs/{org}/projects"],
-    createForRepo: ["POST /repos/{owner}/{repo}/projects"],
-    delete: ["DELETE /projects/{project_id}"],
-    deleteCard: ["DELETE /projects/columns/cards/{card_id}"],
-    deleteColumn: ["DELETE /projects/columns/{column_id}"],
-    get: ["GET /projects/{project_id}"],
-    getCard: ["GET /projects/columns/cards/{card_id}"],
-    getColumn: ["GET /projects/columns/{column_id}"],
-    getPermissionForUser: [
-      "GET /projects/{project_id}/collaborators/{username}/permission"
-    ],
-    listCards: ["GET /projects/columns/{column_id}/cards"],
-    listCollaborators: ["GET /projects/{project_id}/collaborators"],
-    listColumns: ["GET /projects/{project_id}/columns"],
-    listForOrg: ["GET /orgs/{org}/projects"],
-    listForRepo: ["GET /repos/{owner}/{repo}/projects"],
-    listForUser: ["GET /users/{username}/projects"],
-    moveCard: ["POST /projects/columns/cards/{card_id}/moves"],
-    moveColumn: ["POST /projects/columns/{column_id}/moves"],
-    removeCollaborator: [
-      "DELETE /projects/{project_id}/collaborators/{username}"
-    ],
-    update: ["PATCH /projects/{project_id}"],
-    updateCard: ["PATCH /projects/columns/cards/{card_id}"],
-    updateColumn: ["PATCH /projects/columns/{column_id}"]
-  },
-  pulls: {
-    checkIfMerged: ["GET /repos/{owner}/{repo}/pulls/{pull_number}/merge"],
-    create: ["POST /repos/{owner}/{repo}/pulls"],
-    createReplyForReviewComment: [
-      "POST /repos/{owner}/{repo}/pulls/{pull_number}/comments/{comment_id}/replies"
-    ],
-    createReview: ["POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews"],
-    createReviewComment: [
-      "POST /repos/{owner}/{repo}/pulls/{pull_number}/comments"
-    ],
-    deletePendingReview: [
-      "DELETE /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}"
-    ],
-    deleteReviewComment: [
-      "DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}"
-    ],
-    dismissReview: [
-      "PUT /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/dismissals"
-    ],
-    get: ["GET /repos/{owner}/{repo}/pulls/{pull_number}"],
-    getReview: [
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}"
-    ],
-    getReviewComment: ["GET /repos/{owner}/{repo}/pulls/comments/{comment_id}"],
-    list: ["GET /repos/{owner}/{repo}/pulls"],
-    listCommentsForReview: [
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/comments"
-    ],
-    listCommits: ["GET /repos/{owner}/{repo}/pulls/{pull_number}/commits"],
-    listFiles: ["GET /repos/{owner}/{repo}/pulls/{pull_number}/files"],
-    listRequestedReviewers: [
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"
-    ],
-    listReviewComments: [
-      "GET /repos/{owner}/{repo}/pulls/{pull_number}/comments"
-    ],
-    listReviewCommentsForRepo: ["GET /repos/{owner}/{repo}/pulls/comments"],
-    listReviews: ["GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews"],
-    merge: ["PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge"],
-    removeRequestedReviewers: [
-      "DELETE /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"
-    ],
-    requestReviewers: [
-      "POST /repos/{owner}/{repo}/pulls/{pull_number}/requested_reviewers"
-    ],
-    submitReview: [
-      "POST /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}/events"
-    ],
-    update: ["PATCH /repos/{owner}/{repo}/pulls/{pull_number}"],
-    updateBranch: [
-      "PUT /repos/{owner}/{repo}/pulls/{pull_number}/update-branch"
-    ],
-    updateReview: [
-      "PUT /repos/{owner}/{repo}/pulls/{pull_number}/reviews/{review_id}"
-    ],
-    updateReviewComment: [
-      "PATCH /repos/{owner}/{repo}/pulls/comments/{comment_id}"
-    ]
-  },
-  rateLimit: { get: ["GET /rate_limit"] },
-  reactions: {
-    createForCommitComment: [
-      "POST /repos/{owner}/{repo}/comments/{comment_id}/reactions"
-    ],
-    createForIssue: [
-      "POST /repos/{owner}/{repo}/issues/{issue_number}/reactions"
-    ],
-    createForIssueComment: [
-      "POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions"
-    ],
-    createForPullRequestReviewComment: [
-      "POST /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions"
-    ],
-    createForRelease: [
-      "POST /repos/{owner}/{repo}/releases/{release_id}/reactions"
-    ],
-    createForTeamDiscussionCommentInOrg: [
-      "POST /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments/{comment_number}/reactions"
-    ],
-    createForTeamDiscussionInOrg: [
-      "POST /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/reactions"
-    ],
-    deleteForCommitComment: [
-      "DELETE /repos/{owner}/{repo}/comments/{comment_id}/reactions/{reaction_id}"
-    ],
-    deleteForIssue: [
-      "DELETE /repos/{owner}/{repo}/issues/{issue_number}/reactions/{reaction_id}"
-    ],
-    deleteForIssueComment: [
-      "DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}"
-    ],
-    deleteForPullRequestComment: [
-      "DELETE /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions/{reaction_id}"
-    ],
-    deleteForRelease: [
-      "DELETE /repos/{owner}/{repo}/releases/{release_id}/reactions/{reaction_id}"
-    ],
-    deleteForTeamDiscussion: [
-      "DELETE /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/reactions/{reaction_id}"
-    ],
-    deleteForTeamDiscussionComment: [
-      "DELETE /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments/{comment_number}/reactions/{reaction_id}"
-    ],
-    listForCommitComment: [
-      "GET /repos/{owner}/{repo}/comments/{comment_id}/reactions"
-    ],
-    listForIssue: ["GET /repos/{owner}/{repo}/issues/{issue_number}/reactions"],
-    listForIssueComment: [
-      "GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions"
-    ],
-    listForPullRequestReviewComment: [
-      "GET /repos/{owner}/{repo}/pulls/comments/{comment_id}/reactions"
-    ],
-    listForRelease: [
-      "GET /repos/{owner}/{repo}/releases/{release_id}/reactions"
-    ],
-    listForTeamDiscussionCommentInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments/{comment_number}/reactions"
-    ],
-    listForTeamDiscussionInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/reactions"
-    ]
-  },
-  repos: {
-    acceptInvitation: [
-      "PATCH /user/repository_invitations/{invitation_id}",
-      {},
-      { renamed: ["repos", "acceptInvitationForAuthenticatedUser"] }
-    ],
-    acceptInvitationForAuthenticatedUser: [
-      "PATCH /user/repository_invitations/{invitation_id}"
-    ],
-    addAppAccessRestrictions: [
-      "POST /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/apps",
-      {},
-      { mapToData: "apps" }
-    ],
-    addCollaborator: ["PUT /repos/{owner}/{repo}/collaborators/{username}"],
-    addStatusCheckContexts: [
-      "POST /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks/contexts",
-      {},
-      { mapToData: "contexts" }
-    ],
-    addTeamAccessRestrictions: [
-      "POST /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/teams",
-      {},
-      { mapToData: "teams" }
-    ],
-    addUserAccessRestrictions: [
-      "POST /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/users",
-      {},
-      { mapToData: "users" }
-    ],
-    cancelPagesDeployment: [
-      "POST /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}/cancel"
-    ],
-    checkAutomatedSecurityFixes: [
-      "GET /repos/{owner}/{repo}/automated-security-fixes"
-    ],
-    checkCollaborator: ["GET /repos/{owner}/{repo}/collaborators/{username}"],
-    checkPrivateVulnerabilityReporting: [
-      "GET /repos/{owner}/{repo}/private-vulnerability-reporting"
-    ],
-    checkVulnerabilityAlerts: [
-      "GET /repos/{owner}/{repo}/vulnerability-alerts"
-    ],
-    codeownersErrors: ["GET /repos/{owner}/{repo}/codeowners/errors"],
-    compareCommits: ["GET /repos/{owner}/{repo}/compare/{base}...{head}"],
-    compareCommitsWithBasehead: [
-      "GET /repos/{owner}/{repo}/compare/{basehead}"
-    ],
-    createAttestation: ["POST /repos/{owner}/{repo}/attestations"],
-    createAutolink: ["POST /repos/{owner}/{repo}/autolinks"],
-    createCommitComment: [
-      "POST /repos/{owner}/{repo}/commits/{commit_sha}/comments"
-    ],
-    createCommitSignatureProtection: [
-      "POST /repos/{owner}/{repo}/branches/{branch}/protection/required_signatures"
-    ],
-    createCommitStatus: ["POST /repos/{owner}/{repo}/statuses/{sha}"],
-    createDeployKey: ["POST /repos/{owner}/{repo}/keys"],
-    createDeployment: ["POST /repos/{owner}/{repo}/deployments"],
-    createDeploymentBranchPolicy: [
-      "POST /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies"
-    ],
-    createDeploymentProtectionRule: [
-      "POST /repos/{owner}/{repo}/environments/{environment_name}/deployment_protection_rules"
-    ],
-    createDeploymentStatus: [
-      "POST /repos/{owner}/{repo}/deployments/{deployment_id}/statuses"
-    ],
-    createDispatchEvent: ["POST /repos/{owner}/{repo}/dispatches"],
-    createForAuthenticatedUser: ["POST /user/repos"],
-    createFork: ["POST /repos/{owner}/{repo}/forks"],
-    createInOrg: ["POST /orgs/{org}/repos"],
-    createOrUpdateCustomPropertiesValues: [
-      "PATCH /repos/{owner}/{repo}/properties/values"
-    ],
-    createOrUpdateEnvironment: [
-      "PUT /repos/{owner}/{repo}/environments/{environment_name}"
-    ],
-    createOrUpdateFileContents: ["PUT /repos/{owner}/{repo}/contents/{path}"],
-    createOrgRuleset: ["POST /orgs/{org}/rulesets"],
-    createPagesDeployment: ["POST /repos/{owner}/{repo}/pages/deployments"],
-    createPagesSite: ["POST /repos/{owner}/{repo}/pages"],
-    createRelease: ["POST /repos/{owner}/{repo}/releases"],
-    createRepoRuleset: ["POST /repos/{owner}/{repo}/rulesets"],
-    createUsingTemplate: [
-      "POST /repos/{template_owner}/{template_repo}/generate"
-    ],
-    createWebhook: ["POST /repos/{owner}/{repo}/hooks"],
-    declineInvitation: [
-      "DELETE /user/repository_invitations/{invitation_id}",
-      {},
-      { renamed: ["repos", "declineInvitationForAuthenticatedUser"] }
-    ],
-    declineInvitationForAuthenticatedUser: [
-      "DELETE /user/repository_invitations/{invitation_id}"
-    ],
-    delete: ["DELETE /repos/{owner}/{repo}"],
-    deleteAccessRestrictions: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/restrictions"
-    ],
-    deleteAdminBranchProtection: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/enforce_admins"
-    ],
-    deleteAnEnvironment: [
-      "DELETE /repos/{owner}/{repo}/environments/{environment_name}"
-    ],
-    deleteAutolink: ["DELETE /repos/{owner}/{repo}/autolinks/{autolink_id}"],
-    deleteBranchProtection: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection"
-    ],
-    deleteCommitComment: ["DELETE /repos/{owner}/{repo}/comments/{comment_id}"],
-    deleteCommitSignatureProtection: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/required_signatures"
-    ],
-    deleteDeployKey: ["DELETE /repos/{owner}/{repo}/keys/{key_id}"],
-    deleteDeployment: [
-      "DELETE /repos/{owner}/{repo}/deployments/{deployment_id}"
-    ],
-    deleteDeploymentBranchPolicy: [
-      "DELETE /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies/{branch_policy_id}"
-    ],
-    deleteFile: ["DELETE /repos/{owner}/{repo}/contents/{path}"],
-    deleteInvitation: [
-      "DELETE /repos/{owner}/{repo}/invitations/{invitation_id}"
-    ],
-    deleteOrgRuleset: ["DELETE /orgs/{org}/rulesets/{ruleset_id}"],
-    deletePagesSite: ["DELETE /repos/{owner}/{repo}/pages"],
-    deletePullRequestReviewProtection: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/required_pull_request_reviews"
-    ],
-    deleteRelease: ["DELETE /repos/{owner}/{repo}/releases/{release_id}"],
-    deleteReleaseAsset: [
-      "DELETE /repos/{owner}/{repo}/releases/assets/{asset_id}"
-    ],
-    deleteRepoRuleset: ["DELETE /repos/{owner}/{repo}/rulesets/{ruleset_id}"],
-    deleteWebhook: ["DELETE /repos/{owner}/{repo}/hooks/{hook_id}"],
-    disableAutomatedSecurityFixes: [
-      "DELETE /repos/{owner}/{repo}/automated-security-fixes"
-    ],
-    disableDeploymentProtectionRule: [
-      "DELETE /repos/{owner}/{repo}/environments/{environment_name}/deployment_protection_rules/{protection_rule_id}"
-    ],
-    disablePrivateVulnerabilityReporting: [
-      "DELETE /repos/{owner}/{repo}/private-vulnerability-reporting"
-    ],
-    disableVulnerabilityAlerts: [
-      "DELETE /repos/{owner}/{repo}/vulnerability-alerts"
-    ],
-    downloadArchive: [
-      "GET /repos/{owner}/{repo}/zipball/{ref}",
-      {},
-      { renamed: ["repos", "downloadZipballArchive"] }
-    ],
-    downloadTarballArchive: ["GET /repos/{owner}/{repo}/tarball/{ref}"],
-    downloadZipballArchive: ["GET /repos/{owner}/{repo}/zipball/{ref}"],
-    enableAutomatedSecurityFixes: [
-      "PUT /repos/{owner}/{repo}/automated-security-fixes"
-    ],
-    enablePrivateVulnerabilityReporting: [
-      "PUT /repos/{owner}/{repo}/private-vulnerability-reporting"
-    ],
-    enableVulnerabilityAlerts: [
-      "PUT /repos/{owner}/{repo}/vulnerability-alerts"
-    ],
-    generateReleaseNotes: [
-      "POST /repos/{owner}/{repo}/releases/generate-notes"
-    ],
-    get: ["GET /repos/{owner}/{repo}"],
-    getAccessRestrictions: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/restrictions"
-    ],
-    getAdminBranchProtection: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/enforce_admins"
-    ],
-    getAllDeploymentProtectionRules: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment_protection_rules"
-    ],
-    getAllEnvironments: ["GET /repos/{owner}/{repo}/environments"],
-    getAllStatusCheckContexts: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks/contexts"
-    ],
-    getAllTopics: ["GET /repos/{owner}/{repo}/topics"],
-    getAppsWithAccessToProtectedBranch: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/apps"
-    ],
-    getAutolink: ["GET /repos/{owner}/{repo}/autolinks/{autolink_id}"],
-    getBranch: ["GET /repos/{owner}/{repo}/branches/{branch}"],
-    getBranchProtection: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection"
-    ],
-    getBranchRules: ["GET /repos/{owner}/{repo}/rules/branches/{branch}"],
-    getClones: ["GET /repos/{owner}/{repo}/traffic/clones"],
-    getCodeFrequencyStats: ["GET /repos/{owner}/{repo}/stats/code_frequency"],
-    getCollaboratorPermissionLevel: [
-      "GET /repos/{owner}/{repo}/collaborators/{username}/permission"
-    ],
-    getCombinedStatusForRef: ["GET /repos/{owner}/{repo}/commits/{ref}/status"],
-    getCommit: ["GET /repos/{owner}/{repo}/commits/{ref}"],
-    getCommitActivityStats: ["GET /repos/{owner}/{repo}/stats/commit_activity"],
-    getCommitComment: ["GET /repos/{owner}/{repo}/comments/{comment_id}"],
-    getCommitSignatureProtection: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_signatures"
-    ],
-    getCommunityProfileMetrics: ["GET /repos/{owner}/{repo}/community/profile"],
-    getContent: ["GET /repos/{owner}/{repo}/contents/{path}"],
-    getContributorsStats: ["GET /repos/{owner}/{repo}/stats/contributors"],
-    getCustomDeploymentProtectionRule: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment_protection_rules/{protection_rule_id}"
-    ],
-    getCustomPropertiesValues: ["GET /repos/{owner}/{repo}/properties/values"],
-    getDeployKey: ["GET /repos/{owner}/{repo}/keys/{key_id}"],
-    getDeployment: ["GET /repos/{owner}/{repo}/deployments/{deployment_id}"],
-    getDeploymentBranchPolicy: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies/{branch_policy_id}"
-    ],
-    getDeploymentStatus: [
-      "GET /repos/{owner}/{repo}/deployments/{deployment_id}/statuses/{status_id}"
-    ],
-    getEnvironment: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}"
-    ],
-    getLatestPagesBuild: ["GET /repos/{owner}/{repo}/pages/builds/latest"],
-    getLatestRelease: ["GET /repos/{owner}/{repo}/releases/latest"],
-    getOrgRuleSuite: ["GET /orgs/{org}/rulesets/rule-suites/{rule_suite_id}"],
-    getOrgRuleSuites: ["GET /orgs/{org}/rulesets/rule-suites"],
-    getOrgRuleset: ["GET /orgs/{org}/rulesets/{ruleset_id}"],
-    getOrgRulesets: ["GET /orgs/{org}/rulesets"],
-    getPages: ["GET /repos/{owner}/{repo}/pages"],
-    getPagesBuild: ["GET /repos/{owner}/{repo}/pages/builds/{build_id}"],
-    getPagesDeployment: [
-      "GET /repos/{owner}/{repo}/pages/deployments/{pages_deployment_id}"
-    ],
-    getPagesHealthCheck: ["GET /repos/{owner}/{repo}/pages/health"],
-    getParticipationStats: ["GET /repos/{owner}/{repo}/stats/participation"],
-    getPullRequestReviewProtection: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_pull_request_reviews"
-    ],
-    getPunchCardStats: ["GET /repos/{owner}/{repo}/stats/punch_card"],
-    getReadme: ["GET /repos/{owner}/{repo}/readme"],
-    getReadmeInDirectory: ["GET /repos/{owner}/{repo}/readme/{dir}"],
-    getRelease: ["GET /repos/{owner}/{repo}/releases/{release_id}"],
-    getReleaseAsset: ["GET /repos/{owner}/{repo}/releases/assets/{asset_id}"],
-    getReleaseByTag: ["GET /repos/{owner}/{repo}/releases/tags/{tag}"],
-    getRepoRuleSuite: [
-      "GET /repos/{owner}/{repo}/rulesets/rule-suites/{rule_suite_id}"
-    ],
-    getRepoRuleSuites: ["GET /repos/{owner}/{repo}/rulesets/rule-suites"],
-    getRepoRuleset: ["GET /repos/{owner}/{repo}/rulesets/{ruleset_id}"],
-    getRepoRulesets: ["GET /repos/{owner}/{repo}/rulesets"],
-    getStatusChecksProtection: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
-    ],
-    getTeamsWithAccessToProtectedBranch: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/teams"
-    ],
-    getTopPaths: ["GET /repos/{owner}/{repo}/traffic/popular/paths"],
-    getTopReferrers: ["GET /repos/{owner}/{repo}/traffic/popular/referrers"],
-    getUsersWithAccessToProtectedBranch: [
-      "GET /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/users"
-    ],
-    getViews: ["GET /repos/{owner}/{repo}/traffic/views"],
-    getWebhook: ["GET /repos/{owner}/{repo}/hooks/{hook_id}"],
-    getWebhookConfigForRepo: [
-      "GET /repos/{owner}/{repo}/hooks/{hook_id}/config"
-    ],
-    getWebhookDelivery: [
-      "GET /repos/{owner}/{repo}/hooks/{hook_id}/deliveries/{delivery_id}"
-    ],
-    listActivities: ["GET /repos/{owner}/{repo}/activity"],
-    listAttestations: [
-      "GET /repos/{owner}/{repo}/attestations/{subject_digest}"
-    ],
-    listAutolinks: ["GET /repos/{owner}/{repo}/autolinks"],
-    listBranches: ["GET /repos/{owner}/{repo}/branches"],
-    listBranchesForHeadCommit: [
-      "GET /repos/{owner}/{repo}/commits/{commit_sha}/branches-where-head"
-    ],
-    listCollaborators: ["GET /repos/{owner}/{repo}/collaborators"],
-    listCommentsForCommit: [
-      "GET /repos/{owner}/{repo}/commits/{commit_sha}/comments"
-    ],
-    listCommitCommentsForRepo: ["GET /repos/{owner}/{repo}/comments"],
-    listCommitStatusesForRef: [
-      "GET /repos/{owner}/{repo}/commits/{ref}/statuses"
-    ],
-    listCommits: ["GET /repos/{owner}/{repo}/commits"],
-    listContributors: ["GET /repos/{owner}/{repo}/contributors"],
-    listCustomDeploymentRuleIntegrations: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment_protection_rules/apps"
-    ],
-    listDeployKeys: ["GET /repos/{owner}/{repo}/keys"],
-    listDeploymentBranchPolicies: [
-      "GET /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies"
-    ],
-    listDeploymentStatuses: [
-      "GET /repos/{owner}/{repo}/deployments/{deployment_id}/statuses"
-    ],
-    listDeployments: ["GET /repos/{owner}/{repo}/deployments"],
-    listForAuthenticatedUser: ["GET /user/repos"],
-    listForOrg: ["GET /orgs/{org}/repos"],
-    listForUser: ["GET /users/{username}/repos"],
-    listForks: ["GET /repos/{owner}/{repo}/forks"],
-    listInvitations: ["GET /repos/{owner}/{repo}/invitations"],
-    listInvitationsForAuthenticatedUser: ["GET /user/repository_invitations"],
-    listLanguages: ["GET /repos/{owner}/{repo}/languages"],
-    listPagesBuilds: ["GET /repos/{owner}/{repo}/pages/builds"],
-    listPublic: ["GET /repositories"],
-    listPullRequestsAssociatedWithCommit: [
-      "GET /repos/{owner}/{repo}/commits/{commit_sha}/pulls"
-    ],
-    listReleaseAssets: [
-      "GET /repos/{owner}/{repo}/releases/{release_id}/assets"
-    ],
-    listReleases: ["GET /repos/{owner}/{repo}/releases"],
-    listTags: ["GET /repos/{owner}/{repo}/tags"],
-    listTeams: ["GET /repos/{owner}/{repo}/teams"],
-    listWebhookDeliveries: [
-      "GET /repos/{owner}/{repo}/hooks/{hook_id}/deliveries"
-    ],
-    listWebhooks: ["GET /repos/{owner}/{repo}/hooks"],
-    merge: ["POST /repos/{owner}/{repo}/merges"],
-    mergeUpstream: ["POST /repos/{owner}/{repo}/merge-upstream"],
-    pingWebhook: ["POST /repos/{owner}/{repo}/hooks/{hook_id}/pings"],
-    redeliverWebhookDelivery: [
-      "POST /repos/{owner}/{repo}/hooks/{hook_id}/deliveries/{delivery_id}/attempts"
-    ],
-    removeAppAccessRestrictions: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/apps",
-      {},
-      { mapToData: "apps" }
-    ],
-    removeCollaborator: [
-      "DELETE /repos/{owner}/{repo}/collaborators/{username}"
-    ],
-    removeStatusCheckContexts: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks/contexts",
-      {},
-      { mapToData: "contexts" }
-    ],
-    removeStatusCheckProtection: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
-    ],
-    removeTeamAccessRestrictions: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/teams",
-      {},
-      { mapToData: "teams" }
-    ],
-    removeUserAccessRestrictions: [
-      "DELETE /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/users",
-      {},
-      { mapToData: "users" }
-    ],
-    renameBranch: ["POST /repos/{owner}/{repo}/branches/{branch}/rename"],
-    replaceAllTopics: ["PUT /repos/{owner}/{repo}/topics"],
-    requestPagesBuild: ["POST /repos/{owner}/{repo}/pages/builds"],
-    setAdminBranchProtection: [
-      "POST /repos/{owner}/{repo}/branches/{branch}/protection/enforce_admins"
-    ],
-    setAppAccessRestrictions: [
-      "PUT /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/apps",
-      {},
-      { mapToData: "apps" }
-    ],
-    setStatusCheckContexts: [
-      "PUT /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks/contexts",
-      {},
-      { mapToData: "contexts" }
-    ],
-    setTeamAccessRestrictions: [
-      "PUT /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/teams",
-      {},
-      { mapToData: "teams" }
-    ],
-    setUserAccessRestrictions: [
-      "PUT /repos/{owner}/{repo}/branches/{branch}/protection/restrictions/users",
-      {},
-      { mapToData: "users" }
-    ],
-    testPushWebhook: ["POST /repos/{owner}/{repo}/hooks/{hook_id}/tests"],
-    transfer: ["POST /repos/{owner}/{repo}/transfer"],
-    update: ["PATCH /repos/{owner}/{repo}"],
-    updateBranchProtection: [
-      "PUT /repos/{owner}/{repo}/branches/{branch}/protection"
-    ],
-    updateCommitComment: ["PATCH /repos/{owner}/{repo}/comments/{comment_id}"],
-    updateDeploymentBranchPolicy: [
-      "PUT /repos/{owner}/{repo}/environments/{environment_name}/deployment-branch-policies/{branch_policy_id}"
-    ],
-    updateInformationAboutPagesSite: ["PUT /repos/{owner}/{repo}/pages"],
-    updateInvitation: [
-      "PATCH /repos/{owner}/{repo}/invitations/{invitation_id}"
-    ],
-    updateOrgRuleset: ["PUT /orgs/{org}/rulesets/{ruleset_id}"],
-    updatePullRequestReviewProtection: [
-      "PATCH /repos/{owner}/{repo}/branches/{branch}/protection/required_pull_request_reviews"
-    ],
-    updateRelease: ["PATCH /repos/{owner}/{repo}/releases/{release_id}"],
-    updateReleaseAsset: [
-      "PATCH /repos/{owner}/{repo}/releases/assets/{asset_id}"
-    ],
-    updateRepoRuleset: ["PUT /repos/{owner}/{repo}/rulesets/{ruleset_id}"],
-    updateStatusCheckPotection: [
-      "PATCH /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks",
-      {},
-      { renamed: ["repos", "updateStatusCheckProtection"] }
-    ],
-    updateStatusCheckProtection: [
-      "PATCH /repos/{owner}/{repo}/branches/{branch}/protection/required_status_checks"
-    ],
-    updateWebhook: ["PATCH /repos/{owner}/{repo}/hooks/{hook_id}"],
-    updateWebhookConfigForRepo: [
-      "PATCH /repos/{owner}/{repo}/hooks/{hook_id}/config"
-    ],
-    uploadReleaseAsset: [
-      "POST /repos/{owner}/{repo}/releases/{release_id}/assets{?name,label}",
-      { baseUrl: "https://uploads.github.com" }
-    ]
-  },
-  search: {
-    code: ["GET /search/code"],
-    commits: ["GET /search/commits"],
-    issuesAndPullRequests: ["GET /search/issues"],
-    labels: ["GET /search/labels"],
-    repos: ["GET /search/repositories"],
-    topics: ["GET /search/topics"],
-    users: ["GET /search/users"]
-  },
-  secretScanning: {
-    createPushProtectionBypass: [
-      "POST /repos/{owner}/{repo}/secret-scanning/push-protection-bypasses"
-    ],
-    getAlert: [
-      "GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}"
-    ],
-    getScanHistory: ["GET /repos/{owner}/{repo}/secret-scanning/scan-history"],
-    listAlertsForEnterprise: [
-      "GET /enterprises/{enterprise}/secret-scanning/alerts"
-    ],
-    listAlertsForOrg: ["GET /orgs/{org}/secret-scanning/alerts"],
-    listAlertsForRepo: ["GET /repos/{owner}/{repo}/secret-scanning/alerts"],
-    listLocationsForAlert: [
-      "GET /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}/locations"
-    ],
-    updateAlert: [
-      "PATCH /repos/{owner}/{repo}/secret-scanning/alerts/{alert_number}"
-    ]
-  },
-  securityAdvisories: {
-    createFork: [
-      "POST /repos/{owner}/{repo}/security-advisories/{ghsa_id}/forks"
-    ],
-    createPrivateVulnerabilityReport: [
-      "POST /repos/{owner}/{repo}/security-advisories/reports"
-    ],
-    createRepositoryAdvisory: [
-      "POST /repos/{owner}/{repo}/security-advisories"
-    ],
-    createRepositoryAdvisoryCveRequest: [
-      "POST /repos/{owner}/{repo}/security-advisories/{ghsa_id}/cve"
-    ],
-    getGlobalAdvisory: ["GET /advisories/{ghsa_id}"],
-    getRepositoryAdvisory: [
-      "GET /repos/{owner}/{repo}/security-advisories/{ghsa_id}"
-    ],
-    listGlobalAdvisories: ["GET /advisories"],
-    listOrgRepositoryAdvisories: ["GET /orgs/{org}/security-advisories"],
-    listRepositoryAdvisories: ["GET /repos/{owner}/{repo}/security-advisories"],
-    updateRepositoryAdvisory: [
-      "PATCH /repos/{owner}/{repo}/security-advisories/{ghsa_id}"
-    ]
-  },
-  teams: {
-    addOrUpdateMembershipForUserInOrg: [
-      "PUT /orgs/{org}/teams/{team_slug}/memberships/{username}"
-    ],
-    addOrUpdateProjectPermissionsInOrg: [
-      "PUT /orgs/{org}/teams/{team_slug}/projects/{project_id}"
-    ],
-    addOrUpdateRepoPermissionsInOrg: [
-      "PUT /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}"
-    ],
-    checkPermissionsForProjectInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/projects/{project_id}"
-    ],
-    checkPermissionsForRepoInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}"
-    ],
-    create: ["POST /orgs/{org}/teams"],
-    createDiscussionCommentInOrg: [
-      "POST /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments"
-    ],
-    createDiscussionInOrg: ["POST /orgs/{org}/teams/{team_slug}/discussions"],
-    deleteDiscussionCommentInOrg: [
-      "DELETE /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments/{comment_number}"
-    ],
-    deleteDiscussionInOrg: [
-      "DELETE /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}"
-    ],
-    deleteInOrg: ["DELETE /orgs/{org}/teams/{team_slug}"],
-    getByName: ["GET /orgs/{org}/teams/{team_slug}"],
-    getDiscussionCommentInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments/{comment_number}"
-    ],
-    getDiscussionInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}"
-    ],
-    getMembershipForUserInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/memberships/{username}"
-    ],
-    list: ["GET /orgs/{org}/teams"],
-    listChildInOrg: ["GET /orgs/{org}/teams/{team_slug}/teams"],
-    listDiscussionCommentsInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments"
-    ],
-    listDiscussionsInOrg: ["GET /orgs/{org}/teams/{team_slug}/discussions"],
-    listForAuthenticatedUser: ["GET /user/teams"],
-    listMembersInOrg: ["GET /orgs/{org}/teams/{team_slug}/members"],
-    listPendingInvitationsInOrg: [
-      "GET /orgs/{org}/teams/{team_slug}/invitations"
-    ],
-    listProjectsInOrg: ["GET /orgs/{org}/teams/{team_slug}/projects"],
-    listReposInOrg: ["GET /orgs/{org}/teams/{team_slug}/repos"],
-    removeMembershipForUserInOrg: [
-      "DELETE /orgs/{org}/teams/{team_slug}/memberships/{username}"
-    ],
-    removeProjectInOrg: [
-      "DELETE /orgs/{org}/teams/{team_slug}/projects/{project_id}"
-    ],
-    removeRepoInOrg: [
-      "DELETE /orgs/{org}/teams/{team_slug}/repos/{owner}/{repo}"
-    ],
-    updateDiscussionCommentInOrg: [
-      "PATCH /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}/comments/{comment_number}"
-    ],
-    updateDiscussionInOrg: [
-      "PATCH /orgs/{org}/teams/{team_slug}/discussions/{discussion_number}"
-    ],
-    updateInOrg: ["PATCH /orgs/{org}/teams/{team_slug}"]
-  },
-  users: {
-    addEmailForAuthenticated: [
-      "POST /user/emails",
-      {},
-      { renamed: ["users", "addEmailForAuthenticatedUser"] }
-    ],
-    addEmailForAuthenticatedUser: ["POST /user/emails"],
-    addSocialAccountForAuthenticatedUser: ["POST /user/social_accounts"],
-    block: ["PUT /user/blocks/{username}"],
-    checkBlocked: ["GET /user/blocks/{username}"],
-    checkFollowingForUser: ["GET /users/{username}/following/{target_user}"],
-    checkPersonIsFollowedByAuthenticated: ["GET /user/following/{username}"],
-    createGpgKeyForAuthenticated: [
-      "POST /user/gpg_keys",
-      {},
-      { renamed: ["users", "createGpgKeyForAuthenticatedUser"] }
-    ],
-    createGpgKeyForAuthenticatedUser: ["POST /user/gpg_keys"],
-    createPublicSshKeyForAuthenticated: [
-      "POST /user/keys",
-      {},
-      { renamed: ["users", "createPublicSshKeyForAuthenticatedUser"] }
-    ],
-    createPublicSshKeyForAuthenticatedUser: ["POST /user/keys"],
-    createSshSigningKeyForAuthenticatedUser: ["POST /user/ssh_signing_keys"],
-    deleteEmailForAuthenticated: [
-      "DELETE /user/emails",
-      {},
-      { renamed: ["users", "deleteEmailForAuthenticatedUser"] }
-    ],
-    deleteEmailForAuthenticatedUser: ["DELETE /user/emails"],
-    deleteGpgKeyForAuthenticated: [
-      "DELETE /user/gpg_keys/{gpg_key_id}",
-      {},
-      { renamed: ["users", "deleteGpgKeyForAuthenticatedUser"] }
-    ],
-    deleteGpgKeyForAuthenticatedUser: ["DELETE /user/gpg_keys/{gpg_key_id}"],
-    deletePublicSshKeyForAuthenticated: [
-      "DELETE /user/keys/{key_id}",
-      {},
-      { renamed: ["users", "deletePublicSshKeyForAuthenticatedUser"] }
-    ],
-    deletePublicSshKeyForAuthenticatedUser: ["DELETE /user/keys/{key_id}"],
-    deleteSocialAccountForAuthenticatedUser: ["DELETE /user/social_accounts"],
-    deleteSshSigningKeyForAuthenticatedUser: [
-      "DELETE /user/ssh_signing_keys/{ssh_signing_key_id}"
-    ],
-    follow: ["PUT /user/following/{username}"],
-    getAuthenticated: ["GET /user"],
-    getById: ["GET /user/{account_id}"],
-    getByUsername: ["GET /users/{username}"],
-    getContextForUser: ["GET /users/{username}/hovercard"],
-    getGpgKeyForAuthenticated: [
-      "GET /user/gpg_keys/{gpg_key_id}",
-      {},
-      { renamed: ["users", "getGpgKeyForAuthenticatedUser"] }
-    ],
-    getGpgKeyForAuthenticatedUser: ["GET /user/gpg_keys/{gpg_key_id}"],
-    getPublicSshKeyForAuthenticated: [
-      "GET /user/keys/{key_id}",
-      {},
-      { renamed: ["users", "getPublicSshKeyForAuthenticatedUser"] }
-    ],
-    getPublicSshKeyForAuthenticatedUser: ["GET /user/keys/{key_id}"],
-    getSshSigningKeyForAuthenticatedUser: [
-      "GET /user/ssh_signing_keys/{ssh_signing_key_id}"
-    ],
-    list: ["GET /users"],
-    listAttestations: ["GET /users/{username}/attestations/{subject_digest}"],
-    listBlockedByAuthenticated: [
-      "GET /user/blocks",
-      {},
-      { renamed: ["users", "listBlockedByAuthenticatedUser"] }
-    ],
-    listBlockedByAuthenticatedUser: ["GET /user/blocks"],
-    listEmailsForAuthenticated: [
-      "GET /user/emails",
-      {},
-      { renamed: ["users", "listEmailsForAuthenticatedUser"] }
-    ],
-    listEmailsForAuthenticatedUser: ["GET /user/emails"],
-    listFollowedByAuthenticated: [
-      "GET /user/following",
-      {},
-      { renamed: ["users", "listFollowedByAuthenticatedUser"] }
-    ],
-    listFollowedByAuthenticatedUser: ["GET /user/following"],
-    listFollowersForAuthenticatedUser: ["GET /user/followers"],
-    listFollowersForUser: ["GET /users/{username}/followers"],
-    listFollowingForUser: ["GET /users/{username}/following"],
-    listGpgKeysForAuthenticated: [
-      "GET /user/gpg_keys",
-      {},
-      { renamed: ["users", "listGpgKeysForAuthenticatedUser"] }
-    ],
-    listGpgKeysForAuthenticatedUser: ["GET /user/gpg_keys"],
-    listGpgKeysForUser: ["GET /users/{username}/gpg_keys"],
-    listPublicEmailsForAuthenticated: [
-      "GET /user/public_emails",
-      {},
-      { renamed: ["users", "listPublicEmailsForAuthenticatedUser"] }
-    ],
-    listPublicEmailsForAuthenticatedUser: ["GET /user/public_emails"],
-    listPublicKeysForUser: ["GET /users/{username}/keys"],
-    listPublicSshKeysForAuthenticated: [
-      "GET /user/keys",
-      {},
-      { renamed: ["users", "listPublicSshKeysForAuthenticatedUser"] }
-    ],
-    listPublicSshKeysForAuthenticatedUser: ["GET /user/keys"],
-    listSocialAccountsForAuthenticatedUser: ["GET /user/social_accounts"],
-    listSocialAccountsForUser: ["GET /users/{username}/social_accounts"],
-    listSshSigningKeysForAuthenticatedUser: ["GET /user/ssh_signing_keys"],
-    listSshSigningKeysForUser: ["GET /users/{username}/ssh_signing_keys"],
-    setPrimaryEmailVisibilityForAuthenticated: [
-      "PATCH /user/email/visibility",
-      {},
-      { renamed: ["users", "setPrimaryEmailVisibilityForAuthenticatedUser"] }
-    ],
-    setPrimaryEmailVisibilityForAuthenticatedUser: [
-      "PATCH /user/email/visibility"
-    ],
-    unblock: ["DELETE /user/blocks/{username}"],
-    unfollow: ["DELETE /user/following/{username}"],
-    updateAuthenticated: ["PATCH /user"]
-  }
-};
-var endpoints_default = Endpoints;
-
-const endpointMethodsMap = /* @__PURE__ */ new Map();
-for (const [scope, endpoints] of Object.entries(endpoints_default)) {
-  for (const [methodName, endpoint] of Object.entries(endpoints)) {
-    const [route, defaults, decorations] = endpoint;
-    const [method, url] = route.split(/ /);
-    const endpointDefaults = Object.assign(
-      {
-        method,
-        url
-      },
-      defaults
-    );
-    if (!endpointMethodsMap.has(scope)) {
-      endpointMethodsMap.set(scope, /* @__PURE__ */ new Map());
-    }
-    endpointMethodsMap.get(scope).set(methodName, {
-      scope,
-      methodName,
-      endpointDefaults,
-      decorations
-    });
-  }
-}
-const handler = {
-  has({ scope }, methodName) {
-    return endpointMethodsMap.get(scope).has(methodName);
-  },
-  getOwnPropertyDescriptor(target, methodName) {
-    return {
-      value: this.get(target, methodName),
-      // ensures method is in the cache
-      configurable: true,
-      writable: true,
-      enumerable: true
-    };
-  },
-  defineProperty(target, methodName, descriptor) {
-    Object.defineProperty(target.cache, methodName, descriptor);
-    return true;
-  },
-  deleteProperty(target, methodName) {
-    delete target.cache[methodName];
-    return true;
-  },
-  ownKeys({ scope }) {
-    return [...endpointMethodsMap.get(scope).keys()];
-  },
-  set(target, methodName, value) {
-    return target.cache[methodName] = value;
-  },
-  get({ octokit, scope, cache }, methodName) {
-    if (cache[methodName]) {
-      return cache[methodName];
-    }
-    const method = endpointMethodsMap.get(scope).get(methodName);
-    if (!method) {
-      return void 0;
-    }
-    const { endpointDefaults, decorations } = method;
-    if (decorations) {
-      cache[methodName] = decorate(
-        octokit,
-        scope,
-        methodName,
-        endpointDefaults,
-        decorations
-      );
-    } else {
-      cache[methodName] = octokit.request.defaults(endpointDefaults);
-    }
-    return cache[methodName];
-  }
-};
-function endpointsToMethods(octokit) {
-  const newMethods = {};
-  for (const scope of endpointMethodsMap.keys()) {
-    newMethods[scope] = new Proxy({ octokit, scope, cache: {} }, handler);
-  }
-  return newMethods;
-}
-function decorate(octokit, scope, methodName, defaults, decorations) {
-  const requestWithDefaults = octokit.request.defaults(defaults);
-  function withDecorations(...args) {
-    let options = requestWithDefaults.endpoint.merge(...args);
-    if (decorations.mapToData) {
-      options = Object.assign({}, options, {
-        data: options[decorations.mapToData],
-        [decorations.mapToData]: void 0
-      });
-      return requestWithDefaults(options);
-    }
-    if (decorations.renamed) {
-      const [newScope, newMethodName] = decorations.renamed;
-      octokit.log.warn(
-        `octokit.${scope}.${methodName}() has been renamed to octokit.${newScope}.${newMethodName}()`
-      );
-    }
-    if (decorations.deprecated) {
-      octokit.log.warn(decorations.deprecated);
-    }
-    if (decorations.renamedParameters) {
-      const options2 = requestWithDefaults.endpoint.merge(...args);
-      for (const [name, alias] of Object.entries(
-        decorations.renamedParameters
-      )) {
-        if (name in options2) {
-          octokit.log.warn(
-            `"${name}" parameter is deprecated for "octokit.${scope}.${methodName}()". Use "${alias}" instead`
-          );
-          if (!(alias in options2)) {
-            options2[alias] = options2[name];
-          }
-          delete options2[name];
-        }
-      }
-      return requestWithDefaults(options2);
-    }
-    return requestWithDefaults(...args);
-  }
-  return Object.assign(withDecorations, requestWithDefaults);
-}
-
-function legacyRestEndpointMethods(octokit) {
-  const api = endpointsToMethods(octokit);
-  return {
-    ...api,
-    rest: api
-  };
-}
-legacyRestEndpointMethods.VERSION = VERSION$1;
-
-// pkg/dist-src/index.js
-
-// pkg/dist-src/version.js
-var VERSION = "20.1.2";
-
-// pkg/dist-src/index.js
-var Octokit = Octokit$1.plugin(
-  requestLog,
-  legacyRestEndpointMethods,
-  paginateRest
-).defaults({
-  userAgent: `octokit-rest.js/${VERSION}`
-});
 
 var xml2js = {};
 
@@ -49257,6 +46585,124 @@ const glob = Object.assign(glob_, {
     unescape,
 });
 glob.glob = glob;
+
+/**
+ * Adds or updates a NuGet package source in the NuGet.config file in the repo.
+ * If NuGet.config does not exist, it will be created.
+ */
+async function addOrUpdateNuGetConfigSource(config) {
+    const cwd = process.cwd();
+    let nugetConfigPath;
+    // Find NuGet.config (root or subfolders)
+    const files = await glob('**/NuGet.config', { cwd, nodir: true });
+    if (files.length > 0) {
+        nugetConfigPath = path$1.join(cwd, files[0]);
+    }
+    else {
+        nugetConfigPath = path$1.join(cwd, 'NuGet.config');
+    }
+    let nugetConfigXml = {
+        configuration: { packageSources: { add: [] } }
+    };
+    let isNew = false;
+    if (fs.existsSync(nugetConfigPath)) {
+        const xmlContent = fs.readFileSync(nugetConfigPath, 'utf8');
+        nugetConfigXml = (await xml2jsExports.parseStringPromise(xmlContent));
+    }
+    else {
+        isNew = true;
+        nugetConfigXml = {
+            configuration: {
+                packageSources: [
+                    {
+                        add: []
+                    }
+                ]
+            }
+        };
+    }
+    // Ensure packageSources exists
+    if (!nugetConfigXml.configuration.packageSources) {
+        nugetConfigXml.configuration.packageSources = [{ add: [] }];
+    }
+    if (!Array.isArray(nugetConfigXml.configuration.packageSources)) {
+        nugetConfigXml.configuration.packageSources = [
+            nugetConfigXml.configuration.packageSources
+        ];
+    }
+    const sources = nugetConfigXml.configuration.packageSources[0].add;
+    // Add or update the source
+    const existingSource = sources.find((s) => s.$.key === config.name);
+    if (existingSource) {
+        existingSource.$.value = config.source;
+    }
+    else {
+        sources.push({
+            $: {
+                key: config.name,
+                value: config.source
+            }
+        });
+    }
+    // Handle credentials
+    if (config.username && config.password) {
+        if (!nugetConfigXml.configuration.packageSourceCredentials) {
+            nugetConfigXml.configuration.packageSourceCredentials = [{}];
+        }
+        if (!Array.isArray(nugetConfigXml.configuration.packageSourceCredentials)) {
+            nugetConfigXml.configuration.packageSourceCredentials = [
+                nugetConfigXml.configuration.packageSourceCredentials
+            ];
+        }
+        const credentialsSection = nugetConfigXml.configuration
+            .packageSourceCredentials[0];
+        if (!credentialsSection[config.name]) {
+            credentialsSection[config.name] = [{ add: [] }];
+        }
+        const credentialsList = credentialsSection[config.name][0].add;
+        // Update or add username
+        const usernameEntry = credentialsList.find((c) => c.$.key === 'Username');
+        if (usernameEntry) {
+            usernameEntry.$.value = config.username;
+        }
+        else {
+            credentialsList.push({
+                $: {
+                    key: 'Username',
+                    value: config.username
+                }
+            });
+        }
+        // Update or add password
+        const passwordEntry = credentialsList.find((c) => c.$.key === 'ClearTextPassword');
+        if (passwordEntry) {
+            passwordEntry.$.value = config.password;
+        }
+        else {
+            credentialsList.push({
+                $: {
+                    key: 'ClearTextPassword',
+                    value: config.password
+                }
+            });
+        }
+    }
+    // Write back the NuGet.config with XML declaration
+    const builder = new xml2jsExports.Builder({
+        headless: false,
+        xmldec: { version: '1.0', encoding: 'utf-8' },
+        renderOpts: { pretty: true }
+    });
+    const newXml = builder.buildObject(nugetConfigXml);
+    fs.writeFileSync(nugetConfigPath, newXml, 'utf8');
+    return {
+        success: true,
+        message: isNew
+            ? `Created new NuGet.config and added source '${config.name}'.`
+            : `Updated NuGet.config and added/updated source '${config.name}'.`,
+        nugetConfigPath
+    };
+}
 
 var utf8 = {};
 
@@ -63979,521 +61425,97 @@ function requireLib () {
 var libExports = requireLib();
 var JSZip = /*@__PURE__*/getDefaultExportFromCjs(libExports);
 
-class UmbracoCloudAPI {
-    baseUrl;
-    projectId;
-    apiKey;
-    constructor(projectId, apiKey, baseUrl = 'https://api.cloud.umbraco.com') {
-        this.baseUrl = baseUrl;
-        this.projectId = projectId;
-        this.apiKey = apiKey;
-    }
-    getHeaders() {
-        return {
-            'Umbraco-Cloud-Api-Key': this.apiKey,
-            'Content-Type': 'application/json'
-        };
-    }
-    async retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, targetEnvironmentAlias, operationName) {
+async function handleAddArtifact(api, inputs) {
+    validateRequiredInputs(inputs, [
+        'filePath'
+    ]);
+    let nugetSourceStatus = '';
+    let modifiedFilePath = inputs.filePath;
+    // Handle NuGet source injection if provided
+    if (inputs.nugetSourceName && inputs.nugetSourceUrl) {
         try {
-            return await originalRequest();
+            modifiedFilePath = await processArtifactWithNugetConfig(inputs.filePath, inputs.nugetSourceName, inputs.nugetSourceUrl, inputs.nugetSourceUsername, inputs.nugetSourcePassword);
+            nugetSourceStatus = 'NuGet.config successfully injected into artifact';
         }
         catch (error) {
-            // Check if this is a case sensitivity issue with environment alias
-            if (error instanceof Error &&
-                (error.message.includes('reason: No environments matches the provided alias') ||
-                    error.message.includes('Unable to resolve target environment by Alias')) &&
-                targetEnvironmentAlias !== targetEnvironmentAlias.toLowerCase()) {
-                coreExports.info(`Environment alias case sensitivity detected in ${operationName}. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`);
-                try {
-                    const result = await retryRequest();
-                    coreExports.debug(`${operationName} succeeded with lowercase retry`);
-                    return result;
-                }
-                catch (retryError) {
-                    coreExports.error(`Error in ${operationName} (retry with lowercase): ${retryError}`);
-                    throw retryError;
-                }
-            }
-            throw error;
+            const errorMessage = `Failed to configure NuGet source: ${error}`;
+            coreExports.warning(errorMessage);
+            nugetSourceStatus = errorMessage;
         }
     }
-    async retryWithRateLimit(request, maxRetries = 3, baseDelay = 1000) {
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                return await request();
-            }
-            catch (error) {
-                if (error instanceof Error &&
-                    error.message.includes('429 Too Many Requests') &&
-                    attempt < maxRetries) {
-                    // Extract retry delay from error message if available
-                    let retryDelay = baseDelay * Math.pow(2, attempt - 1); // Exponential backoff
-                    // Try to parse the retry delay from the error message
-                    const match = error.message.match(/Try again in (\d+) seconds/);
-                    if (match) {
-                        retryDelay = parseInt(match[1], 10) * 1000 + 1000; // Add 1 second buffer
-                    }
-                    coreExports.info(`Rate limit exceeded (attempt ${attempt}/${maxRetries}). Retrying in ${retryDelay}ms...`);
-                    await new Promise((resolve) => setTimeout(resolve, retryDelay));
-                    continue;
-                }
-                throw error;
-            }
-        }
-        throw new Error(`Failed after ${maxRetries} attempts`);
+    else {
+        // Only validate git repository if we didn't process NuGet config
+        await validateArtifactGitRepository(modifiedFilePath);
     }
-    async startDeployment(request) {
-        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments`;
-        coreExports.debug(`Starting deployment at ${url}`);
-        coreExports.debug(`Request body: ${JSON.stringify(request)}`);
-        const originalRequest = async () => {
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: this.getHeaders(),
-                body: JSON.stringify(request)
-            });
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to start deployment: ${response.status} ${response.statusText} - ${errorText}`);
-            }
-            const data = (await response.json());
-            coreExports.debug(`Deployment started successfully: ${JSON.stringify(data)}`);
-            return data.deploymentId;
-        };
-        const retryRequest = async () => {
-            const retryRequestData = {
-                ...request,
-                targetEnvironmentAlias: request.targetEnvironmentAlias.toLowerCase()
-            };
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: this.getHeaders(),
-                body: JSON.stringify(retryRequestData)
-            });
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to start deployment (retry with lowercase): ${response.status} ${response.statusText} - ${errorText}`);
-            }
-            const data = (await response.json());
-            coreExports.debug(`Deployment started successfully (retry with lowercase): ${JSON.stringify(data)}`);
-            return data.deploymentId;
-        };
-        return this.retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, request.targetEnvironmentAlias, 'startDeployment');
+    const artifactId = await api.addDeploymentArtifact(modifiedFilePath, inputs.description, inputs.version);
+    coreExports.info(`Artifact uploaded successfully with ID: ${artifactId}`);
+    coreExports.setOutput('artifactId', artifactId);
+    return {
+        artifactId,
+        nugetSourceStatus
+    };
+}
+async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSourceUrl, nugetSourceUsername, nugetSourcePassword) {
+    coreExports.info('NuGet source configuration provided. Injecting NuGet.config into zip...');
+    // Load the zip file
+    const data = fs.readFileSync(filePath);
+    const zip = await JSZip.loadAsync(data);
+    // Remove all .git/ entries
+    let gitFolderRemoved = false;
+    Object.keys(zip.files).forEach((filename) => {
+        if (filename.startsWith('.git/')) {
+            zip.remove(filename);
+            gitFolderRemoved = true;
+        }
+    });
+    if (gitFolderRemoved) {
+        coreExports.info('.git folder discovered and removed from the zip');
     }
-    async checkDeploymentStatus(deploymentId, targetEnvironmentAlias, timeoutSeconds = 1200) {
-        const baseStatusUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`;
-        const startTime = Date.now();
-        const timeoutMs = timeoutSeconds * 1000;
-        const statusesBeforeCompleted = ['Pending', 'InProgress', 'Queued'];
-        let run = 1;
-        let url = baseStatusUrl;
-        coreExports.debug(`Checking deployment status for: ${deploymentId}`);
-        do {
-            coreExports.debug(`=====> Requesting Status - Run number ${run}`);
-            const originalRequest = async () => {
-                const response = await fetch(url, {
-                    method: 'GET',
-                    headers: this.getHeaders()
-                });
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`Failed to check deployment status: ${response.status} ${response.statusText} - ${errorText}`);
-                }
-                const deploymentResponse = (await response.json());
-                coreExports.debug(`DeploymentStatus: '${deploymentResponse.deploymentState}'`);
-                for (const message of deploymentResponse.deploymentStatusMessages) {
-                    coreExports.debug(`${message.timestampUtc}: ${message.message}`);
-                }
-                // Handle timeout
-                if (Date.now() - startTime > timeoutMs) {
-                    throw new Error('Timeout was reached');
-                }
-                // Don't sleep if deployment was finished
-                if (statusesBeforeCompleted.includes(deploymentResponse.deploymentState)) {
-                    const sleepValue = 25;
-                    coreExports.debug(`=====> Still Deploying - sleeping for ${sleepValue} seconds`);
-                    await new Promise((resolve) => setTimeout(resolve, sleepValue * 1000));
-                    const lastModifiedUtc = new Date(deploymentResponse.modifiedUtc).toISOString();
-                    url = `${baseStatusUrl}?lastModifiedUtc=${lastModifiedUtc}`;
-                }
-                run++;
-                if (!statusesBeforeCompleted.includes(deploymentResponse.deploymentState)) {
-                    return deploymentResponse;
-                }
-                // Continue the loop
-                throw new Error('Continue polling');
-            };
-            const retryRequest = async () => {
-                const retryUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`;
-                const response = await fetch(retryUrl, {
-                    method: 'GET',
-                    headers: this.getHeaders()
-                });
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    throw new Error(`Failed to check deployment status (retry with lowercase): ${response.status} ${response.statusText} - ${errorText}`);
-                }
-                const deploymentResponse = (await response.json());
-                coreExports.debug(`Deployment status retrieved successfully (retry with lowercase): ${JSON.stringify(deploymentResponse)}`);
-                return deploymentResponse;
-            };
-            try {
-                const deploymentResponse = await this.retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, targetEnvironmentAlias, 'checkDeploymentStatus');
-                return deploymentResponse;
-            }
-            catch (error) {
-                if (error instanceof Error && error.message === 'Continue polling') {
-                    continue;
-                }
-                throw error;
-            }
-        } while (true);
+    // Add or update NuGet.config in the root
+    const nugetConfig = {
+        name: nugetSourceName,
+        source: nugetSourceUrl,
+        username: nugetSourceUsername,
+        password: nugetSourcePassword
+    };
+    const result = await addOrUpdateNuGetConfigSource(nugetConfig);
+    coreExports.info(`NuGet.config ${result.message}`);
+    // Read the generated NuGet.config from disk and add to zip
+    const nugetConfigContent = fs.readFileSync('NuGet.config', 'utf8');
+    zip.file('NuGet.config', nugetConfigContent);
+    // Remove the temp NuGet.config file
+    fs.unlinkSync('NuGet.config');
+    // Write the updated zip back to the original file
+    const updatedData = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 }
+    });
+    fs.writeFileSync(filePath, updatedData);
+    coreExports.info(`Zip file size after processing: ${fs.statSync(filePath).size} bytes`);
+    coreExports.info('Successfully injected NuGet.config and removed .git from artifact zip');
+    return filePath;
+}
+async function validateArtifactGitRepository(filePath) {
+    coreExports.info('Validating artifact contains git repository...');
+    // Create temporary directory for validation
+    const validationDir = path$1.join(process.cwd(), 'temp-validation');
+    try {
+        if (!fs.existsSync(validationDir)) {
+            fs.mkdirSync(validationDir, { recursive: true });
+        }
+        // Extract zip to validation directory
+        await execExports.exec('unzip', ['-q', filePath, '-d', validationDir]);
+        // Validate git repository
+        await validateGitRepository(validationDir, 'in artifact');
     }
-    async addDeploymentArtifact(filePath, description, version) {
-        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/artifacts`;
-        // Validate file exists
-        if (!filePath) {
-            throw new Error('FilePath is empty');
+    finally {
+        // Clean up validation directory
+        if (fs.existsSync(validationDir)) {
+            fs.rmSync(validationDir, { recursive: true, force: true });
         }
-        if (!fs.existsSync(filePath)) {
-            throw new Error(`FilePath does not contain a file: ${filePath}`);
-        }
-        coreExports.debug(`Uploading artifact: ${filePath}`);
-        // Retry logic for artifact upload
-        const maxRetries = parseInt(coreExports.getInput('upload-retries') || '3', 10);
-        const baseDelay = parseInt(coreExports.getInput('upload-retry-delay') || '10000', 10); // 10 seconds default
-        const timeoutMs = parseInt(coreExports.getInput('upload-timeout') || '60000', 10); // 1 minute default
-        for (let attempt = 1; attempt <= maxRetries; attempt++) {
-            try {
-                const formData = new FormData();
-                const fileBuffer = fs.readFileSync(filePath);
-                const fileName = path$1.basename(filePath);
-                formData.append('file', new Blob([fileBuffer]), fileName);
-                if (description) {
-                    formData.append('description', description);
-                }
-                if (version) {
-                    formData.append('version', version);
-                }
-                // Create AbortController for timeout
-                const controller = new AbortController();
-                const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-                try {
-                    const response = await fetch(url, {
-                        method: 'POST',
-                        headers: {
-                            'Umbraco-Cloud-Api-Key': this.apiKey
-                        },
-                        body: formData,
-                        signal: controller.signal
-                    });
-                    clearTimeout(timeoutId);
-                    if (!response.ok) {
-                        const errorText = await response.text();
-                        throw new Error(`Failed to upload artifact: ${response.status} ${response.statusText} - ${errorText}`);
-                    }
-                    const data = (await response.json());
-                    coreExports.debug(`Artifact uploaded successfully: ${JSON.stringify(data)}`);
-                    return data.artifactId;
-                }
-                catch (fetchError) {
-                    clearTimeout(timeoutId);
-                    throw fetchError;
-                }
-            }
-            catch (error) {
-                const isLastAttempt = attempt === maxRetries;
-                const isTimeoutError = error instanceof Error &&
-                    (error.name === 'AbortError' ||
-                        error.message.includes('timeout') ||
-                        error.message.includes('Headers Timeout'));
-                if (isLastAttempt) {
-                    coreExports.error(`Error uploading artifact after ${maxRetries} attempts: ${error}`);
-                    throw error;
-                }
-                if (isTimeoutError) {
-                    const delay = baseDelay * attempt;
-                    coreExports.warning(`Upload attempt ${attempt} failed due to timeout. Retrying in ${delay}ms...`);
-                    await new Promise((resolve) => setTimeout(resolve, delay));
-                }
-                else {
-                    // For non-timeout errors, don't retry
-                    coreExports.error(`Error uploading artifact: ${error}`);
-                    throw error;
-                }
-            }
-        }
-        throw new Error('Upload failed after all retry attempts');
-    }
-    async getChangesById(deploymentId, targetEnvironmentAlias) {
-        const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
-        coreExports.debug(`Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`);
-        const originalRequest = async () => {
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: this.getHeaders()
-            });
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to get changes: ${response.status} ${response.statusText} - ${errorText}`);
-            }
-            // The response is a diff/patch file, not JSON
-            const diffText = await response.text();
-            coreExports.debug(`Changes (diff) retrieved successfully, length: ${diffText.length}`);
-            // Return as a string, or wrap in an object for compatibility
-            return { changes: diffText };
-        };
-        const retryRequest = async () => {
-            const retryUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`;
-            const response = await fetch(retryUrl, {
-                method: 'GET',
-                headers: this.getHeaders()
-            });
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to get changes (retry with lowercase): ${response.status} ${response.statusText} - ${errorText}`);
-            }
-            const diffText = await response.text();
-            coreExports.debug(`Changes (diff) retrieved successfully (retry with lowercase), length: ${diffText.length}`);
-            return { changes: diffText };
-        };
-        try {
-            return await this.retryWithRateLimit(originalRequest);
-        }
-        catch (error) {
-            // Check if this is an environment alias resolution error
-            if (error instanceof Error &&
-                (error.message.includes('Unable to resolve target environment by Alias') ||
-                    error.message.includes('No environments matches the provided alias'))) {
-                coreExports.info(`Environment alias case sensitivity detected in getChangesById. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`);
-                try {
-                    return await this.retryWithRateLimit(retryRequest);
-                }
-                catch (retryError) {
-                    coreExports.error(`Error in getChangesById (retry with lowercase): ${retryError}`);
-                    throw retryError;
-                }
-            }
-            throw error;
-        }
-    }
-    async applyPatch(changeId, targetEnvironmentAlias) {
-        const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}/apply`;
-        coreExports.debug(`Applying patch for change ID: ${changeId} to environment: ${targetEnvironmentAlias}`);
-        try {
-            const response = await fetch(url, {
-                method: 'POST',
-                headers: this.getHeaders(),
-                body: JSON.stringify({
-                    targetEnvironmentAlias
-                })
-            });
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to apply patch: ${response.status} ${response.statusText} - ${errorText}`);
-            }
-            coreExports.debug('Patch applied successfully');
-        }
-        catch (error) {
-            const err = error;
-            coreExports.setFailed(`Failed to apply patch: ${err.message}`);
-            throw err;
-        }
-    }
-    async getDeployments(skip = 0, take = 100, includeNullDeployments = true, targetEnvironmentAlias) {
-        let url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments?skip=${skip}&take=${take}&includeNullDeployments=${includeNullDeployments}`;
-        if (targetEnvironmentAlias) {
-            url += `&targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
-        }
-        coreExports.debug(`Getting deployments from: ${url}`);
-        const request = async () => {
-            const response = await fetch(url, {
-                method: 'GET',
-                headers: this.getHeaders()
-            });
-            if (!response.ok) {
-                const errorText = await response.text();
-                throw new Error(`Failed to get deployments: ${response.status} ${response.statusText} - ${errorText}`);
-            }
-            const data = (await response.json());
-            coreExports.debug(`Deployments retrieved successfully: ${JSON.stringify(data)}`);
-            return data;
-        };
-        try {
-            return await this.retryWithRateLimit(request);
-        }
-        catch (error) {
-            coreExports.error(`Error getting deployments: ${error}`);
-            throw error;
-        }
-    }
-    async getLatestCompletedDeployment(targetEnvironmentAlias) {
-        coreExports.debug('Finding latest completed deployment with changes...');
-        let skip = 0;
-        const take = 10;
-        const maxAttempts = 20; // Try up to 200 deployments (20 batches of 10)
-        for (let attempt = 0; attempt < maxAttempts; attempt++) {
-            try {
-                coreExports.debug(`Fetching deployments batch ${attempt + 1} (skip: ${skip}, take: ${take})`);
-                const deployments = await this.getDeployments(skip, take, true, targetEnvironmentAlias);
-                if (deployments.data.length === 0) {
-                    coreExports.debug('No more deployments found');
-                    break;
-                }
-                // Find completed deployments in this batch
-                const completedDeployments = deployments.data.filter((deployment) => deployment.state === 'Completed');
-                if (completedDeployments.length === 0) {
-                    coreExports.debug(`No completed deployments found in batch ${attempt + 1}, trying next batch...`);
-                    skip += take;
-                    continue;
-                }
-                // Try each completed deployment to see if it has changes
-                for (const deployment of completedDeployments) {
-                    try {
-                        coreExports.debug(`Testing deployment ${deployment.id} for changes...`);
-                        await this.getChangesById(deployment.id, targetEnvironmentAlias);
-                        // If we get here without an error, the deployment has changes
-                        coreExports.debug(`Found completed deployment with changes: ${deployment.id} (from batch ${attempt + 1})`);
-                        return deployment.id;
-                    }
-                    catch (error) {
-                        if (error instanceof Error &&
-                            error.message.includes('409 Conflict')) {
-                            coreExports.debug(`Deployment ${deployment.id} has no changes (null deployment), trying next...`);
-                            // Continue to next deployment
-                        }
-                        else {
-                            coreExports.debug(`Error testing deployment ${deployment.id}: ${error}`);
-                            // Continue to next deployment
-                        }
-                    }
-                }
-                // If we get here, none of the completed deployments in this batch had changes
-                coreExports.debug(`No completed deployments with changes found in batch ${attempt + 1}, trying next batch...`);
-                skip += take;
-            }
-            catch (error) {
-                coreExports.error(`Error fetching deployment batch ${attempt + 1}: ${error}`);
-                // Continue to next batch instead of failing completely
-                skip += take;
-            }
-        }
-        coreExports.debug('No completed deployments with changes found after checking all batches');
-        return null;
-    }
-    async getDeploymentErrorDetails(deploymentId, targetEnvironmentAlias) {
-        try {
-            const deploymentStatus = await this.checkDeploymentStatus(deploymentId, targetEnvironmentAlias, 30 // Short timeout since we just want error details
-            );
-            if (deploymentStatus.deploymentState === 'Failed') {
-                return deploymentStatus.deploymentStatusMessages
-                    .filter((msg) => msg.message.toLowerCase().includes('error') ||
-                    msg.message.toLowerCase().includes('fail') ||
-                    msg.message.toLowerCase().includes('exception'))
-                    .map((msg) => msg.message);
-            }
-        }
-        catch (error) {
-            coreExports.debug(`Could not retrieve deployment error details: ${error}`);
-        }
-        return [];
-    }
-    /**
-     * Adds or updates a NuGet package source in the NuGet.config file in the repo.
-     * If NuGet.config does not exist, it will be created.
-     */
-    async addOrUpdateNuGetConfigSource(config) {
-        const cwd = process.cwd();
-        let nugetConfigPath;
-        // Find NuGet.config (root or subfolders)
-        const files = await glob('**/NuGet.config', { cwd, nodir: true });
-        if (files.length > 0) {
-            nugetConfigPath = path$1.join(cwd, files[0]);
-        }
-        else {
-            // Default to root if not found
-            nugetConfigPath = path$1.join(cwd, 'NuGet.config');
-        }
-        let nugetConfigXml = null;
-        let isNew = false;
-        if (fs.existsSync(nugetConfigPath)) {
-            const xml = fs.readFileSync(nugetConfigPath, 'utf8');
-            nugetConfigXml = await xml2jsExports.parseStringPromise(xml);
-        }
-        else {
-            // Create a new NuGet.config structure according to the official docs
-            // https://learn.microsoft.com/en-us/nuget/reference/nuget-config-file
-            nugetConfigXml = {
-                configuration: {
-                    packageSources: [{ add: [] }],
-                    packageSourceCredentials: [{}]
-                }
-            };
-            isNew = true;
-        }
-        // Ensure packageSources exists
-        if (!nugetConfigXml.configuration.packageSources) {
-            nugetConfigXml.configuration.packageSources = [{ add: [] }];
-        }
-        if (!Array.isArray(nugetConfigXml.configuration.packageSources)) {
-            nugetConfigXml.configuration.packageSources = [
-                nugetConfigXml.configuration.packageSources
-            ];
-        }
-        const sources = nugetConfigXml.configuration.packageSources[0].add;
-        // Add or update the source
-        const existingSource = sources.find((s) => s.$.key === config.name);
-        if (existingSource) {
-            existingSource.$.value = config.source;
-        }
-        else {
-            sources.push({ $: { key: config.name, value: config.source } });
-        }
-        // Handle credentials
-        if (config.username && config.password) {
-            if (!nugetConfigXml.configuration.packageSourceCredentials) {
-                nugetConfigXml.configuration.packageSourceCredentials = [{}];
-            }
-            if (!Array.isArray(nugetConfigXml.configuration.packageSourceCredentials)) {
-                nugetConfigXml.configuration.packageSourceCredentials = [
-                    nugetConfigXml.configuration.packageSourceCredentials
-                ];
-            }
-            const creds = nugetConfigXml.configuration.packageSourceCredentials[0];
-            creds[config.name] = [
-                {
-                    add: [
-                        { $: { key: 'Username', value: config.username } },
-                        { $: { key: 'ClearTextPassword', value: config.password } }
-                    ]
-                }
-            ];
-        }
-        // Write back the NuGet.config with XML declaration
-        const builder = new xml2jsExports.Builder({
-            headless: false,
-            xmldec: { version: '1.0', encoding: 'utf-8' },
-            renderOpts: { pretty: true }
-        });
-        const newXml = builder.buildObject(nugetConfigXml);
-        fs.writeFileSync(nugetConfigPath, newXml, 'utf8');
-        return {
-            success: true,
-            message: isNew
-                ? `Created new NuGet.config and added source '${config.name}'.`
-                : `Updated NuGet.config and added/updated source '${config.name}'.`,
-            nugetConfigPath
-        };
-    }
-    getApiKey() {
-        return this.apiKey;
-    }
-    getProjectId() {
-        return this.projectId;
     }
 }
-// Helper function to validate git repository in a directory
 async function validateGitRepository(directoryPath, context) {
     coreExports.info(`Validating git repository ${context}...`);
     try {
@@ -64541,350 +61563,59 @@ async function validateGitRepository(directoryPath, context) {
         throw error;
     }
 }
-async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, latestCompletedDeploymentId) {
-    try {
-        // Create a new branch name using the format: umbcloud/{deploymentId}
-        let newBranchName = `umbcloud/${latestCompletedDeploymentId}`;
-        let guidConflictOccurred = false;
-        coreExports.info(`Creating new branch: ${newBranchName}`);
-        // Initialize Octokit
-        const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-        if (!token) {
-            throw new Error('GitHub token not found. If using a custom token, please ensure GH_TOKEN environment variable is set.');
-        }
-        const octokit = new Octokit({
-            auth: token
-        });
-        const { owner, repo } = githubExports.context.repo;
-        // Get the latest commit SHA from the current workflow branch
-        const { data: baseBranchData } = await octokit.repos.getBranch({
-            owner,
-            repo,
-            branch: baseBranch
-        });
-        const baseSha = baseBranchData.commit.sha;
-        coreExports.info(`Base branch SHA: ${baseSha}`);
-        // Create the new branch using Octokit
-        try {
-            await octokit.git.createRef({
-                owner,
-                repo,
-                ref: `refs/heads/${newBranchName}`,
-                sha: baseSha
-            });
-            coreExports.info(`Branch ${newBranchName} created successfully`);
-        }
-        catch (error) {
-            // Branch might already exist due to GUID conflict, try with a random suffix
-            if (error instanceof Error &&
-                error.message.includes('Reference already exists')) {
-                const randomSuffix = Math.random().toString(36).substring(2, 8);
-                const newBranchNameWithSuffix = `${newBranchName}-${randomSuffix}`;
-                coreExports.warning(`GUID conflict detected! Attempting to create branch with suffix: ${newBranchNameWithSuffix}`);
-                await octokit.git.createRef({
-                    owner,
-                    repo,
-                    ref: `refs/heads/${newBranchNameWithSuffix}`,
-                    sha: baseSha
-                });
-                coreExports.info(`Branch ${newBranchNameWithSuffix} created successfully`);
-                // Update the branch name for the rest of the function
-                newBranchName = newBranchNameWithSuffix;
-                guidConflictOccurred = true;
-            }
-            else {
-                throw error;
-            }
-        }
-        // Create a temporary patch file and apply it using git
-        const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
-        const patchFilePath = path$1.join(process.cwd(), patchFileName);
-        try {
-            // Check if we're in a git repository before attempting git operations
-            try {
-                await execExports.exec('git', ['rev-parse', '--git-dir']);
-                coreExports.info('Git repository detected, proceeding with patch application');
-            }
-            catch (gitCheckError) {
-                throw new Error('Not in a git repository. This action must be run in a GitHub Actions workflow that has checked out the repository.');
-            }
-            // Reset and clean the working directory before applying the patch
-            coreExports.info('Resetting working directory to clean state before applying patch...');
-            await execExports.exec('git', ['reset', '--hard', 'HEAD']);
-            await execExports.exec('git', ['clean', '-fd']);
-            coreExports.info('Working directory reset complete');
-            // Write the patch content to a temporary file
-            fs.writeFileSync(patchFilePath, gitPatch);
-            coreExports.info(`Created patch file: ${patchFilePath}`);
-            // Apply the patch using git apply with theirs option to always accept patch content
-            const gitApplyExitCode = await execExports.exec('git', [
-                'apply',
-                '--index',
-                '--3way',
-                '--theirs',
-                patchFilePath
-            ]);
-            if (gitApplyExitCode === 0) {
-                coreExports.info('Patch applied successfully using git apply with theirs option');
-            }
-            else {
-                coreExports.warning(`Initial patch application failed with exit code: ${gitApplyExitCode}`);
-                // Check for any rejected hunks (.rej files) and try to apply them
-                const rejFiles = fs
-                    .readdirSync(process.cwd())
-                    .filter((file) => file.endsWith('.rej'));
-                if (rejFiles.length > 0) {
-                    coreExports.warning(`Some parts of the patch could not be applied. Rejected files: ${rejFiles.join(', ')}`);
-                    // Try to apply rejected hunks manually
-                    for (const rejFile of rejFiles) {
-                        try {
-                            coreExports.info(`Attempting to apply rejected hunks from ${rejFile}...`);
-                            await execExports.exec('git', ['apply', '--reject', rejFile]);
-                            coreExports.info(`Successfully reapplied rejected hunks from ${rejFile}`);
-                        }
-                        catch (rejError) {
-                            coreExports.warning(`Could not apply rejected hunks from ${rejFile}: ${rejError}`);
-                        }
-                    }
-                }
-                // If we still have issues, throw an error
-                if (gitApplyExitCode !== 0) {
-                    // Check if this might be a build error in Umbraco Cloud
-                    coreExports.warning('Patch could not be applied. This might indicate a build error in Umbraco Cloud.');
-                    coreExports.warning('Please check the Umbraco Cloud portal for detailed error messages.');
-                    coreExports.warning('Common issues include:');
-                    coreExports.warning('- Private NuGet repository access');
-                    coreExports.warning('- Build configuration errors');
-                    coreExports.warning('- Missing dependencies');
-                    coreExports.warning('- Version conflicts');
-                    throw new Error(`Git apply failed with exit code: ${gitApplyExitCode}`);
-                }
-            }
-        }
-        catch (applyError) {
-            coreExports.warning(`Initial patch application failed: ${applyError}`);
-            // Check for any rejected hunks (.rej files) and try to apply them
-            const rejFiles = fs
-                .readdirSync(process.cwd())
-                .filter((file) => file.endsWith('.rej'));
-            if (rejFiles.length > 0) {
-                coreExports.warning(`Some parts of the patch could not be applied. Rejected files: ${rejFiles.join(', ')}`);
-                // Try to apply rejected hunks manually
-                for (const rejFile of rejFiles) {
-                    try {
-                        coreExports.info(`Attempting to apply rejected hunks from ${rejFile}...`);
-                        await execExports.exec('git', ['apply', '--reject', rejFile]);
-                        coreExports.info(`Successfully reapplied rejected hunks from ${rejFile}`);
-                    }
-                    catch (rejError) {
-                        coreExports.warning(`Could not apply rejected hunks from ${rejFile}: ${rejError}`);
-                    }
-                }
-            }
-            // Re-throw the original error if we still can't apply the patch
-            throw applyError;
-        }
-        finally {
-            // Clean up the temporary patch file
-            if (fs.existsSync(patchFilePath)) {
-                fs.unlinkSync(patchFilePath);
-                coreExports.info(`Cleaned up patch file: ${patchFilePath}`);
-            }
-        }
-        // Stage all changes
-        await execExports.exec('git', ['add', '.']);
-        coreExports.info('All changes staged');
-        // Get the list of modified files
-        let modifiedFiles = '';
-        await execExports.exec('git', ['diff', '--cached', '--name-only'], {
-            listeners: {
-                stdout: (data) => {
-                    modifiedFiles = data.toString().trim();
-                }
-            }
-        });
-        if (!modifiedFiles) {
-            coreExports.warning('No files were modified by the patch');
-            coreExports.warning('This might indicate that the changes are already applied or there are no differences.');
-            coreExports.warning('Skipping commit and PR creation to avoid empty commits.');
-            return;
-        }
-        const fileList = modifiedFiles.split('\n').filter((file) => file.trim());
-        coreExports.info(`Modified files: ${fileList.join(', ')}`);
-        // Double-check that we actually have files to commit
-        if (fileList.length === 0) {
-            coreExports.warning('No files were modified by the patch');
-            coreExports.warning('This might indicate that the changes are already applied or there are no differences.');
-            coreExports.warning('Skipping commit and PR creation to avoid empty commits.');
-            return;
-        }
-        // Create blobs for the modified files
-        const treeEntries = [];
-        let hasActualChanges = false;
-        for (const filePath of fileList) {
-            const fileContent = fs.readFileSync(filePath, 'utf8');
-            const { data: blob } = await octokit.git.createBlob({
-                owner,
-                repo,
-                content: fileContent,
-                encoding: 'utf-8'
-            });
-            // Check if this file actually has changes by comparing with base tree
-            try {
-                const { data: baseTree } = await octokit.git.getTree({
-                    owner,
-                    repo,
-                    tree_sha: baseSha,
-                    recursive: 'true'
-                });
-                const baseFile = baseTree.tree.find((item) => item.path === filePath);
-                if (!baseFile || baseFile.sha !== blob.sha) {
-                    hasActualChanges = true;
-                }
-            }
-            catch (error) {
-                // If we can't compare, assume there are changes
-                hasActualChanges = true;
-            }
-            treeEntries.push({
-                path: filePath,
-                mode: '100644',
-                type: 'blob',
-                sha: blob.sha
-            });
-        }
-        // Check if we have any actual changes
-        if (!hasActualChanges) {
-            coreExports.warning('No actual changes detected in the modified files');
-            coreExports.warning('This might indicate that the changes are already applied or there are no differences.');
-            coreExports.warning('Skipping commit and PR creation to avoid empty commits.');
-            return;
-        }
-        // Create a new tree with the modified files
-        const { data: tree } = await octokit.git.createTree({
-            owner,
-            repo,
-            base_tree: baseSha,
-            tree: treeEntries
-        });
-        // Create a new commit using Octokit
-        const { data: commit } = await octokit.git.createCommit({
-            owner,
-            repo,
-            message: `Apply changes from failed deployment\n\n${body}`,
-            tree: tree.sha,
-            parents: [baseSha]
-        });
-        coreExports.info(`Commit created successfully: ${commit.sha}`);
-        // Update the branch reference to point to the new commit using Octokit
-        try {
-            await octokit.git.updateRef({
-                owner,
-                repo,
-                ref: `heads/${newBranchName}`,
-                sha: commit.sha,
-                force: true // Force update in case the reference exists
-            });
-            coreExports.info(`Branch ${newBranchName} updated to commit: ${commit.sha}`);
-        }
-        catch (updateError) {
-            coreExports.warning(`Failed to update branch reference: ${updateError}`);
-            // If update fails, try to create the reference
-            try {
-                await octokit.git.createRef({
-                    owner,
-                    repo,
-                    ref: `refs/heads/${newBranchName}`,
-                    sha: commit.sha
-                });
-                coreExports.info(`Branch ${newBranchName} created with commit: ${commit.sha}`);
-            }
-            catch (createError) {
-                coreExports.error(`Failed to create branch reference: ${createError}`);
-                throw createError;
-            }
-        }
-        // Create pull request using Octokit
-        try {
-            let prBodyWithConflictInfo = body;
-            if (guidConflictOccurred) {
-                prBodyWithConflictInfo = `${body}
 
-**Note:** A GUID conflict occurred during branch creation. The branch name was modified with a random suffix to ensure uniqueness.`;
-            }
-            const { data: pullRequest } = await octokit.pulls.create({
-                owner,
-                repo,
-                title,
-                body: prBodyWithConflictInfo,
-                head: newBranchName,
-                base: baseBranch
-            });
-            coreExports.info(`Pull request created successfully: ${pullRequest.html_url}`);
-            coreExports.setOutput('pull-request-number', pullRequest.number.toString());
-            coreExports.setOutput('pull-request-url', pullRequest.html_url);
-        }
-        catch (prError) {
-            coreExports.error(`Failed to create pull request: ${prError}`);
-            throw prError;
-        }
-    }
-    catch (error) {
-        coreExports.error(`Failed to create pull request: ${error}`);
-        throw error;
-    }
+async function handleGetChanges(api, inputs) {
+    validateRequiredInputs(inputs, [
+        'deploymentId',
+        'targetEnvironmentAlias'
+    ]);
+    const changes = await api.getChangesById(inputs.deploymentId, inputs.targetEnvironmentAlias);
+    coreExports.info(`Changes retrieved successfully for deployment ID: ${inputs.deploymentId}, targetEnvironmentAlias: ${inputs.targetEnvironmentAlias}`);
+    coreExports.setOutput('changes', JSON.stringify(changes));
+    return {
+        changes: JSON.stringify(changes)
+    };
 }
-// Add this helper function near the top-level functions
-async function pollDeploymentStatus(apiKey, projectId, deploymentId, maxDurationMs = 15 * 60 * 1000, intervalMs = 25000) {
-    const start = Date.now();
-    let lastModifiedUtc = undefined;
-    while (Date.now() - start < maxDurationMs) {
-        const url = `https://api.cloud.umbraco.com/v2/projects/${projectId}/deployments/${deploymentId}` +
-            (lastModifiedUtc
-                ? `?lastModifiedUtc=${encodeURIComponent(lastModifiedUtc)}`
-                : '');
-        let response;
-        try {
-            response = await fetch(url, {
-                headers: {
-                    'Umbraco-Cloud-Api-Key': process.env.UMBRACO_CLOUD_API_KEY || apiKey,
-                    'Content-Type': 'application/json'
-                }
-            });
-        }
-        catch (err) {
-            coreExports.warning(`Network error while polling deployment status: ${err}`);
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
-            continue;
-        }
-        if (response.status === 401) {
-            coreExports.warning('Unauthorized: The API key may have expired or lost permissions. Will retry.');
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
-            continue;
-        }
-        if (response.status === 404) {
-            coreExports.warning('Not Found: The project or deployment ID could not be found. Will retry.');
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
-            continue;
-        }
-        if (!response.ok) {
-            coreExports.warning(`Failed to get deployment status: ${response.status} ${response.statusText}. Will retry.`);
-            await new Promise((resolve) => setTimeout(resolve, intervalMs));
-            continue;
-        }
-        const data = (await response.json());
-        coreExports.info(`Deployment status: ${data.deploymentState}`);
-        if (data.deploymentStatusMessages) {
-            data.deploymentStatusMessages.forEach((msg) => coreExports.info(`[${msg.timestampUtc}] ${msg.message}`));
-        }
-        if (data.deploymentState === 'Completed' ||
-            data.deploymentState === 'Failed') {
-            return data;
-        }
-        lastModifiedUtc = data.modifiedUtc;
-        await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-    throw new Error('Deployment did not complete within the expected time.');
+
+async function handleApplyPatch(api, inputs) {
+    validateRequiredInputs(inputs, [
+        'changeId',
+        'targetEnvironmentAlias'
+    ]);
+    await api.applyPatch(inputs.changeId, inputs.targetEnvironmentAlias);
+    coreExports.info(`Patch applied successfully for change ID: ${inputs.changeId}`);
+    return {};
+}
+
+/**
+ * Gets all input values for the action
+ */
+function getActionInputs() {
+    return {
+        projectId: coreExports.getInput('projectId', { required: true }),
+        apiKey: coreExports.getInput('apiKey', { required: true }),
+        action: coreExports.getInput('action', { required: true }),
+        baseUrl: coreExports.getInput('baseUrl') || 'https://api.cloud.umbraco.com',
+        artifactId: coreExports.getInput('artifactId'),
+        targetEnvironmentAlias: coreExports.getInput('targetEnvironmentAlias'),
+        commitMessage: coreExports.getInput('commitMessage') || 'Deployment from GitHub Actions',
+        noBuildAndRestore: coreExports.getBooleanInput('noBuildAndRestore'),
+        skipVersionCheck: coreExports.getBooleanInput('skipVersionCheck'),
+        deploymentId: coreExports.getInput('deploymentId'),
+        timeoutSeconds: parseInt(coreExports.getInput('timeoutSeconds') || '1200', 10),
+        filePath: coreExports.getInput('filePath'),
+        description: coreExports.getInput('description'),
+        version: coreExports.getInput('version'),
+        changeId: coreExports.getInput('changeId'),
+        baseBranch: coreExports.getInput('baseBranch'),
+        uploadRetries: parseInt(coreExports.getInput('upload-retries') || '3', 10),
+        uploadRetryDelay: parseInt(coreExports.getInput('upload-retry-delay') || '10000', 10),
+        uploadTimeout: parseInt(coreExports.getInput('upload-timeout') || '60000', 10),
+        nugetSourceName: coreExports.getInput('nuget-source-name'),
+        nugetSourceUrl: coreExports.getInput('nuget-source-url'),
+        nugetSourceUsername: coreExports.getInput('nuget-source-username'),
+        nugetSourcePassword: coreExports.getInput('nuget-source-password')
+    };
 }
 /**
  * The main function for the action.
@@ -64893,293 +61624,38 @@ async function pollDeploymentStatus(apiKey, projectId, deploymentId, maxDuration
  */
 async function run() {
     try {
-        // Get inputs
-        const projectId = coreExports.getInput('projectId', { required: true });
-        const apiKey = coreExports.getInput('apiKey', { required: true });
-        const action = coreExports.getInput('action', { required: true });
-        const baseUrl = coreExports.getInput('baseUrl') || 'https://api.cloud.umbraco.com';
+        const inputs = getActionInputs();
         // Initialize API client
-        const api = new UmbracoCloudAPI(projectId, apiKey, baseUrl);
-        coreExports.debug(`Executing action: ${action}`);
-        switch (action) {
-            case 'start-deployment': {
-                const artifactId = coreExports.getInput('artifactId', { required: true });
-                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
-                    required: true
-                });
-                const commitMessage = coreExports.getInput('commitMessage') || 'Deployment from GitHub Actions';
-                const noBuildAndRestore = coreExports.getBooleanInput('noBuildAndRestore');
-                const skipVersionCheck = coreExports.getBooleanInput('skipVersionCheck');
-                const deploymentId = await api.startDeployment({
-                    targetEnvironmentAlias,
-                    artifactId,
-                    commitMessage,
-                    noBuildAndRestore,
-                    skipVersionCheck
-                });
-                coreExports.setOutput('deploymentId', deploymentId);
-                coreExports.info(`Deployment started successfully with ID: ${deploymentId}`);
-                await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), deploymentId);
+        const api = new UmbracoCloudAPI(inputs.projectId, inputs.apiKey, inputs.baseUrl);
+        coreExports.debug(`Executing action: ${inputs.action}`);
+        switch (inputs.action) {
+            case 'start-deployment':
+                await handleStartDeployment(api, inputs);
                 break;
-            }
-            case 'check-status': {
-                const deploymentId = coreExports.getInput('deploymentId', { required: true });
-                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
-                    required: true
-                });
-                coreExports.info(`Checking status for deployment ID: ${deploymentId}, environment: ${targetEnvironmentAlias}`);
-                // Poll until completed/failed, then use the result for the rest of the logic
-                const deploymentStatus = await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), deploymentId);
-                coreExports.setOutput('deploymentState', deploymentStatus.deploymentState);
-                coreExports.setOutput('deploymentStatus', JSON.stringify(deploymentStatus));
-                if (deploymentStatus.deploymentState === 'Completed') {
-                    coreExports.info('Deployment completed successfully');
-                    // Get changes (diff) for completed deployment
-                    try {
-                        const changes = await api.getChangesById(deploymentId, targetEnvironmentAlias);
-                        coreExports.info('Deployment completed. Here is the diff/patch:');
-                        coreExports.info(changes.changes);
-                        coreExports.setOutput('changes', JSON.stringify(changes));
-                    }
-                    catch (diffError) {
-                        if (diffError instanceof Error &&
-                            diffError.message.includes('409 Conflict') &&
-                            diffError.message.includes('CloudNullDeployment')) {
-                            coreExports.info('Deployment completed successfully, but there were no changes to apply to the cloud repository.');
-                        }
-                        else {
-                            coreExports.warning(`Could not retrieve changes for completed deployment: ${diffError}`);
-                        }
-                    }
-                }
-                else if (deploymentStatus.deploymentState === 'Failed') {
-                    coreExports.setFailed('Deployment failed');
-                    coreExports.warning('Cannot retrieve changes for failed deployments - only completed deployments can be used to get git patches');
-                    // Get detailed error information from Umbraco Cloud
-                    try {
-                        const errorDetails = await api.getDeploymentErrorDetails(deploymentId, targetEnvironmentAlias);
-                        if (errorDetails.length > 0) {
-                            coreExports.warning('Deployment failed with the following errors:');
-                            errorDetails.forEach((error) => {
-                                coreExports.warning(`- ${error}`);
-                            });
-                        }
-                        coreExports.warning('Please check the Umbraco Cloud portal for more detailed error information.');
-                        coreExports.warning('Common issues include:');
-                        coreExports.warning('- Private NuGet repository access');
-                        coreExports.warning('- Build configuration errors');
-                        coreExports.warning('- Missing dependencies');
-                        coreExports.warning('- Version conflicts');
-                        // Check if this is a NuGet-related failure
-                        const isNuGetFailure = errorDetails.some((error) => error.toLowerCase().includes('error restoring packages') ||
-                            error.toLowerCase().includes('nu1301') ||
-                            error.toLowerCase().includes('nu1302'));
-                        if (isNuGetFailure) {
-                            coreExports.warning('NuGet-related failure detected. Skipping PR creation as this is likely a credential or configuration issue.');
-                            return;
-                        }
-                    }
-                    catch (errorDetailsError) {
-                        coreExports.warning(`Could not retrieve detailed error information: ${errorDetailsError}`);
-                    }
-                    // Try to get the latest completed deployment and create a PR
-                    try {
-                        coreExports.info('Attempting to get latest completed deployment with changes and create PR...');
-                        const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(targetEnvironmentAlias);
-                        if (latestCompletedDeploymentId) {
-                            coreExports.info(`Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`);
-                            // Get the changes from the latest completed deployment
-                            const changes = await api.getChangesById(latestCompletedDeploymentId, targetEnvironmentAlias);
-                            coreExports.info('Retrieved changes from latest completed deployment');
-                            coreExports.setOutput('latest-completed-deployment-id', latestCompletedDeploymentId);
-                            coreExports.setOutput('changes', JSON.stringify(changes));
-                            // Create GitHub PR with the changes
-                            const prTitle = `Fix: Apply changes from failed deployment ${deploymentId}`;
-                            const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${deploymentId}).
-
-**Failed Deployment ID:** ${deploymentId}
-**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
-**Target Environment:** ${targetEnvironmentAlias}
-
-The changes in this PR are based on the git patch from the latest successful deployment.`;
-                            const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
-                            const prWorkspace = path$1.join(process.env.GITHUB_WORKSPACE || process.cwd(), `pr-workspace-${runId}`);
-                            try {
-                                // Create the subfolder
-                                fs.mkdirSync(prWorkspace, { recursive: true });
-                                // Clone the current repo and checkout the current branch into the subfolder
-                                const repoUrl = `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${githubExports.context.repo.owner}/${githubExports.context.repo.repo}.git`;
-                                const currentBranch = githubExports.context.ref.replace('refs/heads/', '');
-                                await execExports.exec('git', [
-                                    'clone',
-                                    '--branch',
-                                    currentBranch,
-                                    '--single-branch',
-                                    repoUrl,
-                                    prWorkspace
-                                ]);
-                                // Change working directory to the subfolder for all git/PR operations
-                                const originalCwd = process.cwd();
-                                process.chdir(prWorkspace);
-                                // Ensure working directory is clean before proceeding
-                                let gitStatusOutput = '';
-                                await execExports.exec('git', ['status', '--porcelain'], {
-                                    listeners: {
-                                        stdout: (data) => {
-                                            gitStatusOutput += data.toString();
-                                        }
-                                    }
-                                });
-                                if (gitStatusOutput.trim() !== '') {
-                                    coreExports.info('Working directory is not clean. Resetting...');
-                                    await execExports.exec('git', ['reset', '--hard', 'HEAD']);
-                                    await execExports.exec('git', ['clean', '-fd']);
-                                    coreExports.info('Working directory reset complete');
-                                }
-                                else {
-                                    coreExports.info('Working directory is already clean');
-                                }
-                                // Run the PR creation logic (patch application, branch creation, etc.)
-                                await createPullRequestWithPatch(changes.changes, currentBranch, prTitle, prBody, latestCompletedDeploymentId);
-                                // Restore original working directory
-                                process.chdir(originalCwd);
-                            }
-                            finally {
-                                // Clean up the subfolder after PR creation
-                                fs.rmSync(prWorkspace, { recursive: true, force: true });
-                            }
-                        }
-                        else {
-                            coreExports.warning('No completed deployments found to create PR from');
-                        }
-                    }
-                    catch (error) {
-                        coreExports.warning(`Failed to get latest completed deployment or create PR: ${error}`);
-                        if (error instanceof Error &&
-                            error.message.includes('Not in a git repository')) {
-                            coreExports.warning('PR creation failed because the action is not running in a git repository context.');
-                            coreExports.warning('This typically happens when the action is not properly configured in the GitHub Actions workflow.');
-                            coreExports.warning('Please ensure the workflow includes: actions/checkout@v4');
-                        }
-                    }
-                }
-                else {
-                    coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
-                }
+            case 'check-status':
+                await handleCheckStatus(api, inputs);
                 break;
-            }
-            case 'add-artifact': {
-                const filePath = coreExports.getInput('filePath', { required: true });
-                const description = coreExports.getInput('description');
-                const version = coreExports.getInput('version');
-                // Check if NuGet source configuration is provided
-                const nugetSourceName = coreExports.getInput('nuget-source-name');
-                const nugetSourceUrl = coreExports.getInput('nuget-source-url');
-                const nugetSourceUsername = coreExports.getInput('nuget-source-username');
-                const nugetSourcePassword = coreExports.getInput('nuget-source-password');
-                let modifiedFilePath = filePath;
-                // If NuGet source configuration is provided, inject NuGet.config into the zip
-                if (nugetSourceName && nugetSourceUrl) {
-                    coreExports.info('NuGet source configuration provided. Injecting NuGet.config into zip...');
-                    try {
-                        // Load the zip file
-                        const data = fs.readFileSync(filePath);
-                        const zip = await JSZip.loadAsync(data);
-                        // Remove all .git/ entries
-                        let gitFolderRemoved = false;
-                        Object.keys(zip.files).forEach((filename) => {
-                            if (filename.startsWith('.git/')) {
-                                zip.remove(filename);
-                                gitFolderRemoved = true;
-                            }
-                        });
-                        gitFolderRemoved &&
-                            coreExports.info('.git folder discovered and removed from the zip');
-                        // Add or update NuGet.config in the root
-                        // Generate the NuGet.config content using the existing logic
-                        const nugetConfig = {
-                            name: nugetSourceName,
-                            source: nugetSourceUrl,
-                            username: nugetSourceUsername,
-                            password: nugetSourcePassword
-                        };
-                        const result = await api.addOrUpdateNuGetConfigSource(nugetConfig);
-                        coreExports.info(`NuGet.config ${result.message}`);
-                        // Read the generated NuGet.config from disk and add to zip
-                        const nugetConfigContent = fs.readFileSync('NuGet.config', 'utf8');
-                        zip.file('NuGet.config', nugetConfigContent);
-                        // Optionally remove the temp NuGet.config file
-                        fs.unlinkSync('NuGet.config');
-                        // Write the updated zip back to the original file
-                        const updatedData = await zip.generateAsync({
-                            type: 'nodebuffer',
-                            compression: 'DEFLATE',
-                            compressionOptions: { level: 9 }
-                        });
-                        fs.writeFileSync(filePath, updatedData);
-                        coreExports.info(`Zip file size after JSZip: ${fs.statSync(filePath).size} bytes`);
-                        coreExports.info('Successfully injected NuGet.config and removed .git from artifact zip');
-                    }
-                    catch (error) {
-                        coreExports.warning(`Failed to inject NuGet.config into zip: ${error}`);
-                        coreExports.warning('Proceeding with original artifact upload...');
-                    }
-                }
-                // Only validate git repository if we didn't already validate during NuGet injection
-                if (!nugetSourceName || !nugetSourceUrl) {
-                    coreExports.info('Validating artifact contains git repository...');
-                    try {
-                        // Create temporary directory for validation
-                        const validationDir = path$1.join(process.cwd(), 'temp-validation');
-                        if (!fs.existsSync(validationDir)) {
-                            fs.mkdirSync(validationDir, { recursive: true });
-                        }
-                        // Extract zip to validation directory
-                        await execExports.exec('unzip', [
-                            '-q',
-                            modifiedFilePath,
-                            '-d',
-                            validationDir
-                        ]);
-                        // Validate git repository
-                        await validateGitRepository(validationDir, 'in artifact');
-                        // Clean up validation directory
-                        fs.rmSync(validationDir, { recursive: true, force: true });
-                    }
-                    catch (error) {
-                        coreExports.setFailed(`Failed to validate git repository in artifact: ${error}`);
-                        throw error;
-                    }
-                }
-                const artifactId = await api.addDeploymentArtifact(modifiedFilePath, description, version);
-                coreExports.setOutput('artifactId', artifactId);
-                coreExports.info(`Artifact uploaded successfully with ID: ${artifactId}`);
+            case 'add-artifact':
+                await handleAddArtifact(api, inputs);
                 break;
-            }
-            case 'get-changes': {
-                const deploymentId = coreExports.getInput('deploymentId', { required: true });
-                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
-                    required: true
-                });
-                const changes = await api.getChangesById(deploymentId, targetEnvironmentAlias);
-                coreExports.setOutput('changes', JSON.stringify(changes));
-                coreExports.info(`Changes retrieved successfully for deployment ID: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`);
+            case 'get-changes':
+                await handleGetChanges(api, inputs);
                 break;
-            }
-            case 'apply-patch': {
-                const changeId = coreExports.getInput('changeId', { required: true });
-                const targetEnvironmentAlias = coreExports.getInput('targetEnvironmentAlias', {
-                    required: true
-                });
-                await api.applyPatch(changeId, targetEnvironmentAlias);
-                coreExports.info(`Patch applied successfully for change ID: ${changeId}`);
+            case 'apply-patch':
+                await handleApplyPatch(api, inputs);
                 break;
-            }
+            default:
+                coreExports.setFailed(`Unknown action: ${inputs.action}. Supported actions: start-deployment, check-status, add-artifact, get-changes, apply-patch`);
         }
     }
     catch (error) {
         coreExports.error(`Error running the action: ${error}`);
-        throw error;
+        if (error instanceof Error) {
+            coreExports.setFailed(error.message);
+        }
+        else {
+            coreExports.setFailed('An unknown error occurred');
+        }
     }
 }
 
