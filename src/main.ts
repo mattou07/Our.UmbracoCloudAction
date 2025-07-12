@@ -10,7 +10,7 @@ import { ActionInputs } from './types/index.js'
 /**
  * Gets all input values for the action
  */
-function getActionInputs(): ActionInputs {
+export function getActionInputs(): ActionInputs {
   return {
     projectId: core.getInput('projectId', { required: true }),
     apiKey: core.getInput('apiKey', { required: true }),

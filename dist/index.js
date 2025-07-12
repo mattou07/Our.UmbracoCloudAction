@@ -31719,31 +31719,19 @@ async function handleCheckStatus(api, inputs) {
     const deploymentStatus = await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), inputs.deploymentId);
     coreExports.setOutput('deploymentState', deploymentStatus.deploymentState);
     coreExports.setOutput('deploymentStatus', JSON.stringify(deploymentStatus));
-    // Type guard to check if a DeploymentResponse is a DeploymentStatus
-    function isDeploymentStatus(obj) {
-        return (typeof obj.id === 'string' &&
-            typeof obj.projectId === 'string' &&
-            typeof obj.targetEnvironmentAlias === 'string' &&
-            typeof obj.state === 'string' &&
-            typeof obj.createdUtc === 'string');
+    // Handle deployment based on state
+    if (deploymentStatus.deploymentState === 'Completed') {
+        return await handleCompletedDeployment(api, inputs, deploymentStatus);
     }
-    if (isDeploymentStatus(deploymentStatus)) {
-        if (deploymentStatus.deploymentState === 'Completed') {
-            return await handleCompletedDeployment(api, inputs, deploymentStatus);
-        }
-        else if (deploymentStatus.deploymentState === 'Failed') {
-            return await handleFailedDeployment(api, inputs, deploymentStatus);
-        }
-        else {
-            coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
-            return {
-                deploymentState: deploymentStatus.deploymentState,
-                deploymentStatus: JSON.stringify(deploymentStatus)
-            };
-        }
+    else if (deploymentStatus.deploymentState === 'Failed') {
+        return await handleFailedDeployment(api, inputs, deploymentStatus);
     }
     else {
-        throw new Error('DeploymentStatus is not valid');
+        coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
+        return {
+            deploymentState: deploymentStatus.deploymentState,
+            deploymentStatus: JSON.stringify(deploymentStatus)
+        };
     }
 }
 async function handleCompletedDeployment(api, inputs, deploymentStatus) {
@@ -31777,10 +31765,10 @@ async function handleCompletedDeployment(api, inputs, deploymentStatus) {
 }
 async function handleFailedDeployment(api, inputs, deploymentStatus) {
     coreExports.setFailed('Deployment failed');
-    coreExports.warning('Cannot retrieve changes for failed deployments - only completed deployments can be used to get git patches');
+    coreExports.warning('Deployment failed - attempting to retrieve git patch to fix the issue');
     // Get detailed error information from Umbraco Cloud
     const errorDetails = await getErrorDetails(api, inputs);
-    // Check if this is a NuGet-related failure
+    // Check if this is a NuGet-related failure first (exit early, no PR creation)
     const isNuGetFailure = errorDetails.some((error) => error.toLowerCase().includes('error restoring packages') ||
         error.toLowerCase().includes('nu1301') ||
         error.toLowerCase().includes('nu1302'));
@@ -31790,6 +31778,43 @@ async function handleFailedDeployment(api, inputs, deploymentStatus) {
             deploymentState: deploymentStatus.deploymentState,
             deploymentStatus: JSON.stringify(deploymentStatus)
         };
+    }
+    // Check if this is a version-related failure that can be fixed with a patch
+    const isVersionFailure = errorDetails.some((error) => error.toLowerCase().includes('downgraded') ||
+        error.toLowerCase().includes('version') ||
+        error.toLowerCase().includes('package'));
+    if (isVersionFailure) {
+        coreExports.info('Version-related deployment failure detected. Attempting to get git patch to synchronise versions...');
+        try {
+            // Try to get the git patch from the failed deployment
+            const changes = await api.getChangesById(inputs.deploymentId, inputs.targetEnvironmentAlias);
+            coreExports.info('Successfully retrieved git patch from failed deployment');
+            coreExports.setOutput('changes', JSON.stringify(changes));
+            // Create GitHub PR with the patch
+            const prTitle = `Fix: Update package versions for deployment ${inputs.deploymentId}`;
+            const prBody = `This PR applies the git patch from Umbraco Cloud to fix package version issues in deployment ${inputs.deploymentId}.
+
+**Failed Deployment ID:** ${inputs.deploymentId}
+**Target Environment:** ${inputs.targetEnvironmentAlias}
+**Issue:** Package version downgrade detected
+
+**Errors:**
+${errorDetails.map((error) => `- ${error}`).join('\n')}
+
+The changes in this PR contain the necessary package version updates from Umbraco Cloud.`;
+            await createPullRequestInWorkspace(changes.changes, prTitle, prBody, inputs.deploymentId);
+            return {
+                deploymentState: deploymentStatus.deploymentState,
+                deploymentStatus: JSON.stringify(deploymentStatus),
+                changes: JSON.stringify(changes)
+            };
+        }
+        catch (patchError) {
+            coreExports.warning(`Could not retrieve git patch from failed deployment: ${patchError}`);
+            coreExports.info('Falling back to latest completed deployment approach...');
+            // Fall back to the original approach
+            return await attemptPullRequestCreation(api, inputs, deploymentStatus);
+        }
     }
     // Try to get the latest completed deployment and create a PR
     return await attemptPullRequestCreation(api, inputs, deploymentStatus);
@@ -31864,7 +31889,7 @@ The changes in this PR are based on the git patch from the latest successful dep
         };
     }
 }
-async function createPullRequestInWorkspace(changes, prTitle, prBody, latestCompletedDeploymentId) {
+async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDeploymentId) {
     const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
     const prWorkspace = path$1.join(process.env.GITHUB_WORKSPACE || process.cwd(), `pr-workspace-${runId}`);
     try {
@@ -31887,7 +31912,7 @@ async function createPullRequestInWorkspace(changes, prTitle, prBody, latestComp
         // Ensure working directory is clean before proceeding
         await ensureCleanWorkingDirectory();
         // Run the PR creation logic (patch application, branch creation, etc.)
-        await createPullRequestWithPatch(changes, currentBranch, prTitle, prBody, latestCompletedDeploymentId);
+        await createPullRequestWithPatch(changes, currentBranch, prTitle, prBody, sourceDeploymentId);
         // Restore original working directory
         process.chdir(originalCwd);
     }
@@ -31918,9 +31943,9 @@ async function ensureCleanWorkingDirectory() {
     }
 }
 // Stub for createPullRequestWithPatch if not imported
-async function createPullRequestWithPatch(_changes, _currentBranch, _prTitle, _prBody, _latestCompletedDeploymentId) {
+async function createPullRequestWithPatch(...args) {
     // Implement or mock as needed
-    coreExports.info('createPullRequestWithPatch called (stub)');
+    coreExports.info(`createPullRequestWithPatch called (stub) with ${args.length} arguments`);
 }
 
 var xml2js = {};

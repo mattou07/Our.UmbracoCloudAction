@@ -3,7 +3,6 @@ import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
 import {
   ActionInputs,
   ActionOutputs,
-  DeploymentStatus,
   DeploymentResponse
 } from '../types/index.js'
 import { validateRequiredInputs } from '../utils/helpers.js'
@@ -36,42 +35,26 @@ export async function handleCheckStatus(
   core.setOutput('deploymentState', deploymentStatus.deploymentState)
   core.setOutput('deploymentStatus', JSON.stringify(deploymentStatus))
 
-  // Type guard to check if a DeploymentResponse is a DeploymentStatus
-  function isDeploymentStatus(
-    obj: DeploymentResponse
-  ): obj is DeploymentStatus {
-    return (
-      typeof obj.id === 'string' &&
-      typeof obj.projectId === 'string' &&
-      typeof obj.targetEnvironmentAlias === 'string' &&
-      typeof obj.state === 'string' &&
-      typeof obj.createdUtc === 'string'
-    )
-  }
-
-  if (isDeploymentStatus(deploymentStatus)) {
-    if (deploymentStatus.deploymentState === 'Completed') {
-      return await handleCompletedDeployment(api, inputs, deploymentStatus)
-    } else if (deploymentStatus.deploymentState === 'Failed') {
-      return await handleFailedDeployment(api, inputs, deploymentStatus)
-    } else {
-      core.setFailed(
-        `Unexpected deployment status: ${deploymentStatus.deploymentState}`
-      )
-      return {
-        deploymentState: deploymentStatus.deploymentState,
-        deploymentStatus: JSON.stringify(deploymentStatus)
-      }
-    }
+  // Handle deployment based on state
+  if (deploymentStatus.deploymentState === 'Completed') {
+    return await handleCompletedDeployment(api, inputs, deploymentStatus)
+  } else if (deploymentStatus.deploymentState === 'Failed') {
+    return await handleFailedDeployment(api, inputs, deploymentStatus)
   } else {
-    throw new Error('DeploymentStatus is not valid')
+    core.setFailed(
+      `Unexpected deployment status: ${deploymentStatus.deploymentState}`
+    )
+    return {
+      deploymentState: deploymentStatus.deploymentState,
+      deploymentStatus: JSON.stringify(deploymentStatus)
+    }
   }
 }
 
 async function handleCompletedDeployment(
   api: UmbracoCloudAPI,
   inputs: ActionInputs,
-  deploymentStatus: DeploymentStatus
+  deploymentStatus: DeploymentResponse
 ): Promise<ActionOutputs> {
   core.info('Deployment completed successfully')
 
@@ -115,17 +98,17 @@ async function handleCompletedDeployment(
 async function handleFailedDeployment(
   api: UmbracoCloudAPI,
   inputs: ActionInputs,
-  deploymentStatus: DeploymentStatus
+  deploymentStatus: DeploymentResponse
 ): Promise<ActionOutputs> {
   core.setFailed('Deployment failed')
   core.warning(
-    'Cannot retrieve changes for failed deployments - only completed deployments can be used to get git patches'
+    'Deployment failed - attempting to retrieve git patch to fix the issue'
   )
 
   // Get detailed error information from Umbraco Cloud
   const errorDetails = await getErrorDetails(api, inputs)
 
-  // Check if this is a NuGet-related failure
+  // Check if this is a NuGet-related failure first (exit early, no PR creation)
   const isNuGetFailure = errorDetails.some(
     (error) =>
       error.toLowerCase().includes('error restoring packages') ||
@@ -140,6 +123,65 @@ async function handleFailedDeployment(
     return {
       deploymentState: deploymentStatus.deploymentState,
       deploymentStatus: JSON.stringify(deploymentStatus)
+    }
+  }
+
+  // Check if this is a version-related failure that can be fixed with a patch
+  const isVersionFailure = errorDetails.some(
+    (error) =>
+      error.toLowerCase().includes('downgraded') ||
+      error.toLowerCase().includes('version') ||
+      error.toLowerCase().includes('package')
+  )
+
+  if (isVersionFailure) {
+    core.info(
+      'Version-related deployment failure detected. Attempting to get git patch to synchronise versions...'
+    )
+
+    try {
+      // Try to get the git patch from the failed deployment
+      const changes = await api.getChangesById(
+        inputs.deploymentId!,
+        inputs.targetEnvironmentAlias!
+      )
+
+      core.info('Successfully retrieved git patch from failed deployment')
+      core.setOutput('changes', JSON.stringify(changes))
+
+      // Create GitHub PR with the patch
+      const prTitle = `Fix: Update package versions for deployment ${inputs.deploymentId}`
+      const prBody = `This PR applies the git patch from Umbraco Cloud to fix package version issues in deployment ${inputs.deploymentId}.
+
+**Failed Deployment ID:** ${inputs.deploymentId}
+**Target Environment:** ${inputs.targetEnvironmentAlias}
+**Issue:** Package version downgrade detected
+
+**Errors:**
+${errorDetails.map((error) => `- ${error}`).join('\n')}
+
+The changes in this PR contain the necessary package version updates from Umbraco Cloud.`
+
+      await createPullRequestInWorkspace(
+        changes.changes,
+        prTitle,
+        prBody,
+        inputs.deploymentId!
+      )
+
+      return {
+        deploymentState: deploymentStatus.deploymentState,
+        deploymentStatus: JSON.stringify(deploymentStatus),
+        changes: JSON.stringify(changes)
+      }
+    } catch (patchError) {
+      core.warning(
+        `Could not retrieve git patch from failed deployment: ${patchError}`
+      )
+      core.info('Falling back to latest completed deployment approach...')
+
+      // Fall back to the original approach
+      return await attemptPullRequestCreation(api, inputs, deploymentStatus)
     }
   }
 
@@ -272,7 +314,7 @@ async function createPullRequestInWorkspace(
   changes: string,
   prTitle: string,
   prBody: string,
-  latestCompletedDeploymentId: string
+  sourceDeploymentId: string
 ): Promise<void> {
   const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
   const prWorkspace = path.join(
@@ -310,7 +352,7 @@ async function createPullRequestInWorkspace(
       currentBranch,
       prTitle,
       prBody,
-      latestCompletedDeploymentId
+      sourceDeploymentId
     )
 
     // Restore original working directory
@@ -344,13 +386,9 @@ async function ensureCleanWorkingDirectory(): Promise<void> {
 }
 
 // Stub for createPullRequestWithPatch if not imported
-async function createPullRequestWithPatch(
-  _changes: unknown,
-  _currentBranch: unknown,
-  _prTitle: unknown,
-  _prBody: unknown,
-  _latestCompletedDeploymentId: unknown
-): Promise<void> {
+async function createPullRequestWithPatch(...args: unknown[]): Promise<void> {
   // Implement or mock as needed
-  core.info('createPullRequestWithPatch called (stub)')
+  core.info(
+    `createPullRequestWithPatch called (stub) with ${args.length} arguments`
+  )
 }
