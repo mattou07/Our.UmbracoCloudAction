@@ -350,7 +350,6 @@ async function createPullRequestInWorkspace(
       'clone',
       '--branch',
       currentBranch,
-      '--single-branch',
       repoUrl,
       prWorkspace
     ])

@@ -35389,7 +35389,6 @@ async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDepl
             'clone',
             '--branch',
             currentBranch,
-            '--single-branch',
             repoUrl,
             prWorkspace
         ]);
