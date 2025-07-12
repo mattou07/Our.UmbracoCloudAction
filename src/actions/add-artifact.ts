@@ -27,7 +27,8 @@ export async function handleAddArtifact(
         inputs.nugetSourceName,
         inputs.nugetSourceUrl,
         inputs.nugetSourceUsername,
-        inputs.nugetSourcePassword
+        inputs.nugetSourcePassword,
+        inputs.gitignoreReplacementPath
       )
       nugetSourceStatus = 'NuGet.config successfully injected into artifact'
     } catch (error) {
@@ -36,7 +37,20 @@ export async function handleAddArtifact(
       nugetSourceStatus = errorMessage
     }
   } else {
-    // Only validate git repository if we didn't process NuGet config
+    // Process gitignore replacement if path provided, even without NuGet config
+    if (inputs.gitignoreReplacementPath) {
+      try {
+        modifiedFilePath = await processGitignoreReplacement(
+          inputs.filePath!,
+          inputs.gitignoreReplacementPath
+        )
+        core.info('Successfully replaced .gitignore with custom file')
+      } catch (error) {
+        core.warning(`Failed to replace .gitignore: ${error}`)
+      }
+    }
+
+    // Only validate git repository if we didn't process the artifact
     await validateArtifactGitRepository(modifiedFilePath)
   }
 
@@ -60,7 +74,8 @@ async function processArtifactWithNugetConfig(
   nugetSourceName: string,
   nugetSourceUrl: string,
   nugetSourceUsername?: string,
-  nugetSourcePassword?: string
+  nugetSourcePassword?: string,
+  gitignoreReplacementPath?: string
 ): Promise<string> {
   core.info(
     'NuGet source configuration provided. Injecting NuGet.config into zip...'
@@ -100,6 +115,11 @@ async function processArtifactWithNugetConfig(
 
   // Remove the temp NuGet.config file
   fs.unlinkSync('NuGet.config')
+
+  // Process gitignore replacement if path provided
+  if (gitignoreReplacementPath) {
+    await processGitignoreReplacementInZip(zip, gitignoreReplacementPath)
+  }
 
   // Write the updated zip back to the original file
   const updatedData = await zip.generateAsync({
@@ -199,5 +219,74 @@ async function validateGitRepository(
   } catch (error) {
     core.setFailed(`Failed to validate git repository ${context}: ${error}`)
     throw error
+  }
+}
+
+async function processGitignoreReplacement(
+  filePath: string,
+  gitignoreReplacementPath: string
+): Promise<string> {
+  core.info(
+    `Replacing .gitignore with custom file: ${gitignoreReplacementPath}`
+  )
+
+  // Validate the replacement file exists
+  if (!fs.existsSync(gitignoreReplacementPath)) {
+    throw new Error(
+      `Gitignore replacement file not found: ${gitignoreReplacementPath}`
+    )
+  }
+
+  // Load the zip file
+  const data = fs.readFileSync(filePath)
+  const zip = await JSZip.loadAsync(data)
+
+  // Process gitignore replacement
+  await processGitignoreReplacementInZip(zip, gitignoreReplacementPath)
+
+  // Write the updated zip back to the original file
+  const updatedData = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 }
+  })
+
+  fs.writeFileSync(filePath, updatedData)
+  core.info('Successfully replaced .gitignore with custom file')
+
+  return filePath
+}
+
+async function processGitignoreReplacementInZip(
+  zip: JSZip,
+  gitignoreReplacementPath: string
+): Promise<void> {
+  // Read the replacement gitignore content
+  const replacementContent = fs.readFileSync(gitignoreReplacementPath, 'utf8')
+
+  // Look for .gitignore files in the zip
+  const gitignoreFiles = Object.keys(zip.files).filter(
+    (filename) =>
+      filename.endsWith('.gitignore') || filename.endsWith('/.gitignore')
+  )
+
+  if (gitignoreFiles.length === 0) {
+    core.info('No .gitignore files found in artifact to replace')
+    return
+  }
+
+  for (const gitignoreFile of gitignoreFiles) {
+    const file = zip.files[gitignoreFile]
+    if (file && !file.dir) {
+      try {
+        // Replace the entire content with the replacement file
+        zip.file(gitignoreFile, replacementContent)
+        core.info(
+          `Replaced ${gitignoreFile} with content from ${gitignoreReplacementPath}`
+        )
+      } catch (error) {
+        core.warning(`Failed to replace ${gitignoreFile}: ${error}`)
+      }
+    }
   }
 }

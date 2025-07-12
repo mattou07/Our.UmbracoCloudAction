@@ -64965,7 +64965,7 @@ async function handleAddArtifact(api, inputs) {
     // Handle NuGet source injection if provided
     if (inputs.nugetSourceName && inputs.nugetSourceUrl) {
         try {
-            modifiedFilePath = await processArtifactWithNugetConfig(inputs.filePath, inputs.nugetSourceName, inputs.nugetSourceUrl, inputs.nugetSourceUsername, inputs.nugetSourcePassword);
+            modifiedFilePath = await processArtifactWithNugetConfig(inputs.filePath, inputs.nugetSourceName, inputs.nugetSourceUrl, inputs.nugetSourceUsername, inputs.nugetSourcePassword, inputs.gitignoreReplacementPath);
             nugetSourceStatus = 'NuGet.config successfully injected into artifact';
         }
         catch (error) {
@@ -64975,7 +64975,17 @@ async function handleAddArtifact(api, inputs) {
         }
     }
     else {
-        // Only validate git repository if we didn't process NuGet config
+        // Process gitignore replacement if path provided, even without NuGet config
+        if (inputs.gitignoreReplacementPath) {
+            try {
+                modifiedFilePath = await processGitignoreReplacement(inputs.filePath, inputs.gitignoreReplacementPath);
+                coreExports.info('Successfully replaced .gitignore with custom file');
+            }
+            catch (error) {
+                coreExports.warning(`Failed to replace .gitignore: ${error}`);
+            }
+        }
+        // Only validate git repository if we didn't process the artifact
         await validateArtifactGitRepository(modifiedFilePath);
     }
     const artifactId = await api.addDeploymentArtifact(modifiedFilePath, inputs.description, inputs.version);
@@ -64986,7 +64996,7 @@ async function handleAddArtifact(api, inputs) {
         nugetSourceStatus
     };
 }
-async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSourceUrl, nugetSourceUsername, nugetSourcePassword) {
+async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSourceUrl, nugetSourceUsername, nugetSourcePassword, gitignoreReplacementPath) {
     coreExports.info('NuGet source configuration provided. Injecting NuGet.config into zip...');
     // Load the zip file
     const data = fs.readFileSync(filePath);
@@ -65016,6 +65026,10 @@ async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSo
     zip.file('NuGet.config', nugetConfigContent);
     // Remove the temp NuGet.config file
     fs.unlinkSync('NuGet.config');
+    // Process gitignore replacement if path provided
+    if (gitignoreReplacementPath) {
+        await processGitignoreReplacementInZip(zip, gitignoreReplacementPath);
+    }
     // Write the updated zip back to the original file
     const updatedData = await zip.generateAsync({
         type: 'nodebuffer',
@@ -65094,6 +65108,50 @@ async function validateGitRepository(directoryPath, context) {
         throw error;
     }
 }
+async function processGitignoreReplacement(filePath, gitignoreReplacementPath) {
+    coreExports.info(`Replacing .gitignore with custom file: ${gitignoreReplacementPath}`);
+    // Validate the replacement file exists
+    if (!fs.existsSync(gitignoreReplacementPath)) {
+        throw new Error(`Gitignore replacement file not found: ${gitignoreReplacementPath}`);
+    }
+    // Load the zip file
+    const data = fs.readFileSync(filePath);
+    const zip = await JSZip.loadAsync(data);
+    // Process gitignore replacement
+    await processGitignoreReplacementInZip(zip, gitignoreReplacementPath);
+    // Write the updated zip back to the original file
+    const updatedData = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 }
+    });
+    fs.writeFileSync(filePath, updatedData);
+    coreExports.info('Successfully replaced .gitignore with custom file');
+    return filePath;
+}
+async function processGitignoreReplacementInZip(zip, gitignoreReplacementPath) {
+    // Read the replacement gitignore content
+    const replacementContent = fs.readFileSync(gitignoreReplacementPath, 'utf8');
+    // Look for .gitignore files in the zip
+    const gitignoreFiles = Object.keys(zip.files).filter((filename) => filename.endsWith('.gitignore') || filename.endsWith('/.gitignore'));
+    if (gitignoreFiles.length === 0) {
+        coreExports.info('No .gitignore files found in artifact to replace');
+        return;
+    }
+    for (const gitignoreFile of gitignoreFiles) {
+        const file = zip.files[gitignoreFile];
+        if (file && !file.dir) {
+            try {
+                // Replace the entire content with the replacement file
+                zip.file(gitignoreFile, replacementContent);
+                coreExports.info(`Replaced ${gitignoreFile} with content from ${gitignoreReplacementPath}`);
+            }
+            catch (error) {
+                coreExports.warning(`Failed to replace ${gitignoreFile}: ${error}`);
+            }
+        }
+    }
+}
 
 async function handleGetChanges(api, inputs) {
     validateRequiredInputs(inputs, [
@@ -65145,7 +65203,8 @@ function getActionInputs() {
         nugetSourceName: coreExports.getInput('nuget-source-name'),
         nugetSourceUrl: coreExports.getInput('nuget-source-url'),
         nugetSourceUsername: coreExports.getInput('nuget-source-username'),
-        nugetSourcePassword: coreExports.getInput('nuget-source-password')
+        nugetSourcePassword: coreExports.getInput('nuget-source-password'),
+        gitignoreReplacementPath: coreExports.getInput('gitignore-replacement-path')
     };
 }
 /**
