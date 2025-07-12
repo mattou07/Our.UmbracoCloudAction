@@ -1,4 +1,5 @@
 import * as core from '@actions/core'
+import * as exec from '@actions/exec'
 import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
 import {
   ActionInputs,
@@ -10,7 +11,6 @@ import { pollDeploymentStatus } from '../utils/deployment-polling.js'
 import { createPullRequestWithPatch } from '../github/pull-request.js'
 import * as fs from 'fs'
 import * as path from 'path'
-import * as exec from '@actions/exec'
 import * as github from '@actions/github'
 
 export async function handleCheckStatus(
@@ -324,10 +324,12 @@ async function createPullRequestInWorkspace(
   )
 
   try {
-    // Check if GitHub token is available
-    const githubToken = process.env.GITHUB_TOKEN
+    // The GITHUB_TOKEN is automatically available in GitHub Actions environment
+    const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
     if (!githubToken) {
-      throw new Error('GITHUB_TOKEN environment variable is not set')
+      throw new Error(
+        'GITHUB_TOKEN or GH_TOKEN environment variable is not available. Ensure the workflow has proper permissions.'
+      )
     }
 
     // Create the subfolder
@@ -339,7 +341,9 @@ async function createPullRequestInWorkspace(
     const currentBranch = github.context.ref.replace('refs/heads/', '')
 
     core.info(`Cloning repository to: ${prWorkspace}`)
-    core.info(`Repository URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`)
+    core.info(
+      `Repository URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+    )
     core.info(`Branch: ${currentBranch}`)
 
     await exec.exec('git', [
@@ -371,20 +375,30 @@ async function createPullRequestInWorkspace(
     process.chdir(originalCwd)
   } catch (error) {
     core.error(`Failed to create PR workspace or clone repository: ${error}`)
-    
+
     if (error instanceof Error) {
-      if (error.message.includes('Authentication failed') || error.message.includes('fatal: Authentication failed')) {
-        core.error('Git authentication failed. This suggests an issue with the GITHUB_TOKEN.')
+      if (
+        error.message.includes('Authentication failed') ||
+        error.message.includes('fatal: Authentication failed')
+      ) {
+        core.error(
+          'Git authentication failed. This suggests an issue with the GITHUB_TOKEN.'
+        )
         core.error('Ensure that:')
         core.error('1. The workflow has appropriate permissions')
         core.error('2. The GITHUB_TOKEN is properly set')
         core.error('3. The repository is accessible with the provided token')
-      } else if (error.message.includes('Repository not found') || error.message.includes('fatal: repository')) {
+      } else if (
+        error.message.includes('Repository not found') ||
+        error.message.includes('fatal: repository')
+      ) {
         core.error('Repository not found or not accessible.')
-        core.error('Check that the repository exists and the token has the necessary permissions.')
+        core.error(
+          'Check that the repository exists and the token has the necessary permissions.'
+        )
       }
     }
-    
+
     throw error
   } finally {
     // Clean up the subfolder after PR creation

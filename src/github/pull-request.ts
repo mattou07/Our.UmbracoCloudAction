@@ -21,7 +21,7 @@ export async function createPullRequestWithPatch(
     let guidConflictOccurred = false
     core.info(`Creating new branch: ${newBranchName}`)
 
-    // Initialize Octokit
+    // Initialize Octokit with the GitHub token from environment
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
     if (!token) {
       throw new Error(

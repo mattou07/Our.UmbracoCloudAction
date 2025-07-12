@@ -35075,7 +35075,7 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         let newBranchName = `umbcloud/${latestCompletedDeploymentId}`;
         let guidConflictOccurred = false;
         coreExports.info(`Creating new branch: ${newBranchName}`);
-        // Initialize Octokit
+        // Initialize Octokit with the GitHub token from environment
         const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
         if (!token) {
             throw new Error('GitHub token not found. Please set GITHUB_TOKEN or GH_TOKEN environment variable.');
@@ -35369,10 +35369,10 @@ async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDepl
     const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
     const prWorkspace = path$1.join(process.env.GITHUB_WORKSPACE || process.cwd(), `pr-workspace-${runId}`);
     try {
-        // Check if GitHub token is available
-        const githubToken = process.env.GITHUB_TOKEN;
+        // The GITHUB_TOKEN is automatically available in GitHub Actions environment
+        const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
         if (!githubToken) {
-            throw new Error('GITHUB_TOKEN environment variable is not set');
+            throw new Error('GITHUB_TOKEN or GH_TOKEN environment variable is not available. Ensure the workflow has proper permissions.');
         }
         // Create the subfolder
         fs.mkdirSync(prWorkspace, { recursive: true });
