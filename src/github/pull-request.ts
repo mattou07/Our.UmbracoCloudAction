@@ -83,11 +83,13 @@ export async function createPullRequestWithPatch(
     const patchFilePath = `./${patchFileName}`
 
     try {
+      // Create and checkout the branch locally
+      core.info(`Fetching and checking out remote branch: ${newBranchName}`)
+      await exec.exec('git', ['fetch', 'origin'])
+      await exec.exec('git', ['checkout', newBranchName])
+
       core.info('Writing patch file...')
       fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
-
-      core.info('Checking out new branch...')
-      await exec.exec('git', ['checkout', newBranchName])
 
       core.info('Applying git patch...')
       const applyExitCode = await exec.exec('git', ['apply', patchFilePath], {
