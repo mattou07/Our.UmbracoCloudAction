@@ -7,6 +7,7 @@ import {
 } from '../types/index.js'
 import { validateRequiredInputs } from '../utils/helpers.js'
 import { pollDeploymentStatus } from '../utils/deployment-polling.js'
+import { createPullRequestWithPatch } from '../github/pull-request.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as exec from '@actions/exec'
@@ -323,12 +324,23 @@ async function createPullRequestInWorkspace(
   )
 
   try {
+    // Check if GitHub token is available
+    const githubToken = process.env.GITHUB_TOKEN
+    if (!githubToken) {
+      throw new Error('GITHUB_TOKEN environment variable is not set')
+    }
+
     // Create the subfolder
     fs.mkdirSync(prWorkspace, { recursive: true })
 
     // Clone the current repo and checkout the current branch into the subfolder
-    const repoUrl = `https://x-access-token:${process.env.GITHUB_TOKEN}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+    // Use the token in the URL for authentication
+    const repoUrl = `https://x-access-token:${githubToken}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
     const currentBranch = github.context.ref.replace('refs/heads/', '')
+
+    core.info(`Cloning repository to: ${prWorkspace}`)
+    core.info(`Repository URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`)
+    core.info(`Branch: ${currentBranch}`)
 
     await exec.exec('git', [
       'clone',
@@ -357,10 +369,32 @@ async function createPullRequestInWorkspace(
 
     // Restore original working directory
     process.chdir(originalCwd)
+  } catch (error) {
+    core.error(`Failed to create PR workspace or clone repository: ${error}`)
+    
+    if (error instanceof Error) {
+      if (error.message.includes('Authentication failed') || error.message.includes('fatal: Authentication failed')) {
+        core.error('Git authentication failed. This suggests an issue with the GITHUB_TOKEN.')
+        core.error('Ensure that:')
+        core.error('1. The workflow has appropriate permissions')
+        core.error('2. The GITHUB_TOKEN is properly set')
+        core.error('3. The repository is accessible with the provided token')
+      } else if (error.message.includes('Repository not found') || error.message.includes('fatal: repository')) {
+        core.error('Repository not found or not accessible.')
+        core.error('Check that the repository exists and the token has the necessary permissions.')
+      }
+    }
+    
+    throw error
   } finally {
     // Clean up the subfolder after PR creation
     if (fs.existsSync(prWorkspace)) {
-      fs.rmSync(prWorkspace, { recursive: true, force: true })
+      try {
+        fs.rmSync(prWorkspace, { recursive: true, force: true })
+        core.info(`Cleaned up workspace: ${prWorkspace}`)
+      } catch (cleanupError) {
+        core.warning(`Failed to clean up workspace: ${cleanupError}`)
+      }
     }
   }
 }
@@ -383,12 +417,4 @@ async function ensureCleanWorkingDirectory(): Promise<void> {
   } else {
     core.info('Working directory is already clean')
   }
-}
-
-// Stub for createPullRequestWithPatch if not imported
-async function createPullRequestWithPatch(...args: unknown[]): Promise<void> {
-  // Implement or mock as needed
-  core.info(
-    `createPullRequestWithPatch called (stub) with ${args.length} arguments`
-  )
 }
