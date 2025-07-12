@@ -27,8 +27,7 @@ export async function handleAddArtifact(
         inputs.nugetSourceName,
         inputs.nugetSourceUrl,
         inputs.nugetSourceUsername,
-        inputs.nugetSourcePassword,
-        inputs.gitignoreReplacementPath
+        inputs.nugetSourcePassword
       )
       nugetSourceStatus = 'NuGet.config successfully injected into artifact'
     } catch (error) {
@@ -37,17 +36,12 @@ export async function handleAddArtifact(
       nugetSourceStatus = errorMessage
     }
   } else {
-    // Process gitignore replacement if path provided, even without NuGet config
-    if (inputs.gitignoreReplacementPath) {
-      try {
-        modifiedFilePath = await processGitignoreReplacement(
-          inputs.filePath!,
-          inputs.gitignoreReplacementPath
-        )
-        core.info('Successfully replaced .gitignore with custom file')
-      } catch (error) {
-        core.warning(`Failed to replace .gitignore: ${error}`)
-      }
+    // Process .cloud_gitignore replacement if present, even without NuGet config
+    try {
+      modifiedFilePath = await processCloudGitignore(inputs.filePath!)
+      core.info('Successfully processed .cloud_gitignore')
+    } catch (error) {
+      core.warning(`Failed to process .cloud_gitignore: ${error}`)
     }
 
     // Only validate git repository if we didn't process the artifact
@@ -74,8 +68,7 @@ async function processArtifactWithNugetConfig(
   nugetSourceName: string,
   nugetSourceUrl: string,
   nugetSourceUsername?: string,
-  nugetSourcePassword?: string,
-  gitignoreReplacementPath?: string
+  nugetSourcePassword?: string
 ): Promise<string> {
   core.info(
     'NuGet source configuration provided. Injecting NuGet.config into zip...'
@@ -116,10 +109,8 @@ async function processArtifactWithNugetConfig(
   // Remove the temp NuGet.config file
   fs.unlinkSync('NuGet.config')
 
-  // Process gitignore replacement if path provided
-  if (gitignoreReplacementPath) {
-    await processGitignoreReplacementInZip(zip, gitignoreReplacementPath)
-  }
+  // Process .cloud_gitignore replacement if present
+  await processCloudGitignoreInZip(zip)
 
   // Write the updated zip back to the original file
   const updatedData = await zip.generateAsync({
@@ -222,71 +213,83 @@ async function validateGitRepository(
   }
 }
 
-async function processGitignoreReplacement(
-  filePath: string,
-  gitignoreReplacementPath: string
-): Promise<string> {
-  core.info(
-    `Replacing .gitignore with custom file: ${gitignoreReplacementPath}`
-  )
-
-  // Validate the replacement file exists
-  if (!fs.existsSync(gitignoreReplacementPath)) {
-    throw new Error(
-      `Gitignore replacement file not found: ${gitignoreReplacementPath}`
-    )
-  }
+async function processCloudGitignore(filePath: string): Promise<string> {
+  core.info('Checking for .cloud_gitignore file to replace .gitignore...')
 
   // Load the zip file
   const data = fs.readFileSync(filePath)
   const zip = await JSZip.loadAsync(data)
 
-  // Process gitignore replacement
-  await processGitignoreReplacementInZip(zip, gitignoreReplacementPath)
+  // Process .cloud_gitignore replacement
+  const wasProcessed = await processCloudGitignoreInZip(zip)
 
-  // Write the updated zip back to the original file
-  const updatedData = await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 9 }
-  })
+  if (wasProcessed) {
+    // Write the updated zip back to the original file
+    const updatedData = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 }
+    })
 
-  fs.writeFileSync(filePath, updatedData)
-  core.info('Successfully replaced .gitignore with custom file')
+    fs.writeFileSync(filePath, updatedData)
+    core.info('Successfully replaced .gitignore with .cloud_gitignore content')
+  }
 
   return filePath
 }
 
-async function processGitignoreReplacementInZip(
-  zip: JSZip,
-  gitignoreReplacementPath: string
-): Promise<void> {
-  // Read the replacement gitignore content
-  const replacementContent = fs.readFileSync(gitignoreReplacementPath, 'utf8')
-
-  // Look for .gitignore files in the zip
-  const gitignoreFiles = Object.keys(zip.files).filter(
+async function processCloudGitignoreInZip(zip: JSZip): Promise<boolean> {
+  // Look for .cloud_gitignore file in the zip
+  const cloudGitignoreFile = Object.keys(zip.files).find(
     (filename) =>
-      filename.endsWith('.gitignore') || filename.endsWith('/.gitignore')
+      filename === '.cloud_gitignore' || filename.endsWith('/.cloud_gitignore')
   )
 
-  if (gitignoreFiles.length === 0) {
-    core.info('No .gitignore files found in artifact to replace')
-    return
+  if (!cloudGitignoreFile) {
+    core.info(
+      '.cloud_gitignore file not found - .gitignore file will not be modified'
+    )
+    return false
   }
 
-  for (const gitignoreFile of gitignoreFiles) {
-    const file = zip.files[gitignoreFile]
-    if (file && !file.dir) {
-      try {
-        // Replace the entire content with the replacement file
-        zip.file(gitignoreFile, replacementContent)
+  const cloudGitignoreZipFile = zip.files[cloudGitignoreFile]
+  if (!cloudGitignoreZipFile || cloudGitignoreZipFile.dir) {
+    core.info(
+      '.cloud_gitignore found but is not a valid file - .gitignore file will not be modified'
+    )
+    return false
+  }
+
+  try {
+    // Read the .cloud_gitignore content
+    const cloudGitignoreContent = await cloudGitignoreZipFile.async('string')
+
+    // Look for .gitignore files in the zip
+    const gitignoreFiles = Object.keys(zip.files).filter(
+      (filename) =>
+        filename.endsWith('.gitignore') &&
+        !filename.endsWith('.cloud_gitignore')
+    )
+
+    if (gitignoreFiles.length === 0) {
+      core.info('No .gitignore files found in artifact to replace')
+      return true
+    }
+
+    // Replace all .gitignore files with .cloud_gitignore content
+    for (const gitignoreFile of gitignoreFiles) {
+      const file = zip.files[gitignoreFile]
+      if (file && !file.dir) {
+        zip.file(gitignoreFile, cloudGitignoreContent)
         core.info(
-          `Replaced ${gitignoreFile} with content from ${gitignoreReplacementPath}`
+          `Replaced ${gitignoreFile} with content from ${cloudGitignoreFile}`
         )
-      } catch (error) {
-        core.warning(`Failed to replace ${gitignoreFile}: ${error}`)
       }
     }
+
+    return true
+  } catch (error) {
+    core.warning(`Failed to process .cloud_gitignore: ${error}`)
+    return false
   }
 }

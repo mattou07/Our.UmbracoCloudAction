@@ -96,11 +96,6 @@ inputs:
       'Password for NuGet package source authentication (optional for
       add-artifact)'
     required: false
-  gitignore-replacement-path:
-    description:
-      'Path to a custom .gitignore file to replace the existing .gitignore in
-      the artifact'
-    required: false
 
 # Define your outputs here.
 outputs:

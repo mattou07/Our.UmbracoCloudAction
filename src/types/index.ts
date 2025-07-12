@@ -104,7 +104,6 @@ export interface ActionInputs {
   nugetSourceUrl?: string
   nugetSourceUsername?: string
   nugetSourcePassword?: string
-  gitignoreReplacementPath?: string
 }
 
 export interface ActionOutputs {
