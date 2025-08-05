@@ -92,21 +92,15 @@ export async function createPullRequestWithPatch(
       const authorId = process.env.GITHUB_ACTOR_ID || '41898282'
       const authorEmail = `${authorId}+${authorName}@users.noreply.github.com`
       
-      // Committer: GitHub Actions bot (standard for automated actions)
-      const committerName = 'github-actions[bot]'
-      const committerEmail = '41898282+github-actions[bot]@users.noreply.github.com'
+      // Debug: Output the values we're about to use
+      core.info(`Debug - GITHUB_ACTOR: ${process.env.GITHUB_ACTOR}`)
+      core.info(`Debug - GITHUB_ACTOR_ID: ${process.env.GITHUB_ACTOR_ID}`)
+      core.info(`Debug - Computed author: ${authorName} <${authorEmail}>`)
       
-      await exec.exec('git', ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 
-                              '-c', `committer.name=${committerName}`, '-c', `committer.email=${committerEmail}`,
-                              'config', '--local', 'user.name', authorName])
-      await exec.exec('git', ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 
-                              '-c', `committer.name=${committerName}`, '-c', `committer.email=${committerEmail}`,
-                              'config', '--local', 'user.email', authorEmail])
+      // Configure git user identity using Peter Evans approach with -c flags
+      core.info('Setting git identity using -c flags approach...')
       
-      core.info(`Configured git author as '${authorName} <${authorEmail}>'`)
-      core.info(`Configured git committer as '${committerName} <${committerEmail}>'`)
-
-      // Create and checkout the branch locally
+      // Create and checkout the branch locally first
       core.info(`Fetching and checking out remote branch: ${newBranchName}`)
       await exec.exec('git', ['fetch', 'origin'])
       await exec.exec('git', ['checkout', newBranchName])
@@ -128,6 +122,10 @@ export async function createPullRequestWithPatch(
 
       core.info('Committing changes...')
       await exec.exec('git', [
+        '-c',
+        `user.name=${authorName}`,
+        '-c',
+        `user.email=${authorEmail}`,
         'commit',
         '-m',
         `Apply Umbraco Cloud changes from deployment ${latestCompletedDeploymentId}`
