@@ -35304,12 +35304,12 @@ async function handleFailedDeployment(api, inputs, deploymentStatus) {
         coreExports.error('This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.');
         coreExports.error('');
         coreExports.error('Resolution using KUDU:');
-        coreExports.error('1. Access KUDU on the source environment (the one you are deploying from)');
+        coreExports.error('1. Access KUDU on the target environment via the Umbraco Cloud portal');
         coreExports.error('2. Navigate to site > locks folder');
         coreExports.error('3. Remove files named: upgrading, upgrade-failed, or failed-upgrade');
         coreExports.error('4. Repeat the operation on the target environment');
         coreExports.error('');
-        coreExports.error('For detailed steps with screenshots, see:');
+        coreExports.error('For detailed steps see:');
         coreExports.error('https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed');
         return {
             deploymentState: deploymentStatus.deploymentState,

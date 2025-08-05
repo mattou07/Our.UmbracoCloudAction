@@ -143,7 +143,7 @@ async function handleFailedDeployment(
     core.error('')
     core.error('Resolution using KUDU:')
     core.error(
-      '1. Access KUDU on the source environment (the one you are deploying from)'
+      '1. Access KUDU on the target environment via the Umbraco Cloud portal'
     )
     core.error('2. Navigate to site > locks folder')
     core.error(
@@ -151,7 +151,7 @@ async function handleFailedDeployment(
     )
     core.error('4. Repeat the operation on the target environment')
     core.error('')
-    core.error('For detailed steps with screenshots, see:')
+    core.error('For detailed steps see:')
     core.error(
       'https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed'
     )
