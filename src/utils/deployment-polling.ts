@@ -59,10 +59,40 @@ export async function pollDeploymentStatus(
 
     const data = (await response.json()) as DeploymentResponse
     core.info(`Deployment status: ${data.deploymentState}`)
+
+    // Check for deployment status messages
     if (data.deploymentStatusMessages) {
       data.deploymentStatusMessages.forEach((msg) =>
         core.info(`[${msg.timestampUtc}] ${msg.message}`)
       )
+
+      // Check for the specific "updating" marker blocking error
+      const hasUpdatingMarkerError = data.deploymentStatusMessages.some(
+        (msg) =>
+          msg.message.includes(
+            "The site can't be upgraded as it's blocked with the following markers: updating"
+          ) ||
+          msg.message.includes('CheckBlockingMarkers') ||
+          msg.message.includes('blocked with the following markers: updating')
+      )
+
+      if (hasUpdatingMarkerError) {
+        core.warning('⚠️  Deployment is blocked by leftover upgrade markers!')
+        core.warning(
+          'This error is caused by leftover upgrade markers interfering with the Deploy process.'
+        )
+        core.warning(
+          'This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.'
+        )
+        core.warning('')
+        core.warning(
+          'Resolution: Use KUDU to remove leftover marker files from site/locks folder'
+        )
+        core.warning(
+          'For detailed steps, see: https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed'
+        )
+        core.info('Continuing to poll for status changes...')
+      }
     }
 
     if (

@@ -42,14 +42,43 @@ export async function handleCheckStatus(
   } else if (deploymentStatus.deploymentState === 'Failed') {
     return await handleFailedDeployment(api, inputs, deploymentStatus)
   } else {
-    core.setFailed(
-      `Unexpected deployment status: ${deploymentStatus.deploymentState}`
-    )
+    // Check if the deployment failed due to updating markers
+    const hasUpdatingMarkerError = checkForUpdatingMarkerError(deploymentStatus)
+    if (hasUpdatingMarkerError) {
+      core.setFailed(
+        `Deployment failed due to updating marker: The site is currently being updated and cannot be upgraded. Please wait for the update to complete and retry the deployment.`
+      )
+    } else {
+      core.setFailed(
+        `Unexpected deployment status: ${deploymentStatus.deploymentState}`
+      )
+    }
+
     return {
       deploymentState: deploymentStatus.deploymentState,
       deploymentStatus: JSON.stringify(deploymentStatus)
     }
   }
+}
+
+/**
+ * Check if the deployment failed due to updating marker blocking
+ */
+function checkForUpdatingMarkerError(
+  deploymentStatus: DeploymentResponse
+): boolean {
+  if (!deploymentStatus.deploymentStatusMessages) {
+    return false
+  }
+
+  return deploymentStatus.deploymentStatusMessages.some(
+    (msg) =>
+      msg.message.includes(
+        "The site can't be upgraded as it's blocked with the following markers: updating"
+      ) ||
+      msg.message.includes('CheckBlockingMarkers') ||
+      msg.message.includes('blocked with the following markers: updating')
+  )
 }
 
 async function handleCompletedDeployment(
@@ -101,6 +130,38 @@ async function handleFailedDeployment(
   inputs: ActionInputs,
   deploymentStatus: DeploymentResponse
 ): Promise<ActionOutputs> {
+  // Check for specific updating marker error first
+  const hasUpdatingMarkerError = checkForUpdatingMarkerError(deploymentStatus)
+  if (hasUpdatingMarkerError) {
+    core.setFailed('Deployment failed due to leftover upgrade markers')
+    core.error(
+      '❌ Deployment is blocked by leftover upgrade markers interfering with the Deploy process.'
+    )
+    core.error(
+      'This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.'
+    )
+    core.error('')
+    core.error('Resolution using KUDU:')
+    core.error(
+      '1. Access KUDU on the source environment (the one you are deploying from)'
+    )
+    core.error('2. Navigate to site > locks folder')
+    core.error(
+      '3. Remove files named: upgrading, upgrade-failed, or failed-upgrade'
+    )
+    core.error('4. Repeat the operation on the target environment')
+    core.error('')
+    core.error('For detailed steps with screenshots, see:')
+    core.error(
+      'https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed'
+    )
+
+    return {
+      deploymentState: deploymentStatus.deploymentState,
+      deploymentStatus: JSON.stringify(deploymentStatus)
+    }
+  }
+
   core.setFailed('Deployment failed')
   core.warning(
     'Deployment failed - attempting to retrieve git patch to fix the issue'

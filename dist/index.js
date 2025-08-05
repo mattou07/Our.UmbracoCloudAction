@@ -27721,8 +27721,22 @@ async function pollDeploymentStatus(apiKey, projectId, deploymentId, maxDuration
         }
         const data = (await response.json());
         coreExports.info(`Deployment status: ${data.deploymentState}`);
+        // Check for deployment status messages
         if (data.deploymentStatusMessages) {
             data.deploymentStatusMessages.forEach((msg) => coreExports.info(`[${msg.timestampUtc}] ${msg.message}`));
+            // Check for the specific "updating" marker blocking error
+            const hasUpdatingMarkerError = data.deploymentStatusMessages.some((msg) => msg.message.includes("The site can't be upgraded as it's blocked with the following markers: updating") ||
+                msg.message.includes('CheckBlockingMarkers') ||
+                msg.message.includes('blocked with the following markers: updating'));
+            if (hasUpdatingMarkerError) {
+                coreExports.warning('⚠️  Deployment is blocked by leftover upgrade markers!');
+                coreExports.warning('This error is caused by leftover upgrade markers interfering with the Deploy process.');
+                coreExports.warning('This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.');
+                coreExports.warning('');
+                coreExports.warning('Resolution: Use KUDU to remove leftover marker files from site/locks folder');
+                coreExports.warning('For detailed steps, see: https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed');
+                coreExports.info('Continuing to poll for status changes...');
+            }
         }
         if (data.deploymentState === 'Completed' ||
             data.deploymentState === 'Failed') {
@@ -35227,12 +35241,30 @@ async function handleCheckStatus(api, inputs) {
         return await handleFailedDeployment(api, inputs, deploymentStatus);
     }
     else {
-        coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
+        // Check if the deployment failed due to updating markers
+        const hasUpdatingMarkerError = checkForUpdatingMarkerError(deploymentStatus);
+        if (hasUpdatingMarkerError) {
+            coreExports.setFailed(`Deployment failed due to updating marker: The site is currently being updated and cannot be upgraded. Please wait for the update to complete and retry the deployment.`);
+        }
+        else {
+            coreExports.setFailed(`Unexpected deployment status: ${deploymentStatus.deploymentState}`);
+        }
         return {
             deploymentState: deploymentStatus.deploymentState,
             deploymentStatus: JSON.stringify(deploymentStatus)
         };
     }
+}
+/**
+ * Check if the deployment failed due to updating marker blocking
+ */
+function checkForUpdatingMarkerError(deploymentStatus) {
+    if (!deploymentStatus.deploymentStatusMessages) {
+        return false;
+    }
+    return deploymentStatus.deploymentStatusMessages.some((msg) => msg.message.includes("The site can't be upgraded as it's blocked with the following markers: updating") ||
+        msg.message.includes('CheckBlockingMarkers') ||
+        msg.message.includes('blocked with the following markers: updating'));
 }
 async function handleCompletedDeployment(api, inputs, deploymentStatus) {
     coreExports.info('Deployment completed successfully');
@@ -35264,6 +35296,26 @@ async function handleCompletedDeployment(api, inputs, deploymentStatus) {
     }
 }
 async function handleFailedDeployment(api, inputs, deploymentStatus) {
+    // Check for specific updating marker error first
+    const hasUpdatingMarkerError = checkForUpdatingMarkerError(deploymentStatus);
+    if (hasUpdatingMarkerError) {
+        coreExports.setFailed('Deployment failed due to leftover upgrade markers');
+        coreExports.error('❌ Deployment is blocked by leftover upgrade markers interfering with the Deploy process.');
+        coreExports.error('This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.');
+        coreExports.error('');
+        coreExports.error('Resolution using KUDU:');
+        coreExports.error('1. Access KUDU on the source environment (the one you are deploying from)');
+        coreExports.error('2. Navigate to site > locks folder');
+        coreExports.error('3. Remove files named: upgrading, upgrade-failed, or failed-upgrade');
+        coreExports.error('4. Repeat the operation on the target environment');
+        coreExports.error('');
+        coreExports.error('For detailed steps with screenshots, see:');
+        coreExports.error('https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed');
+        return {
+            deploymentState: deploymentStatus.deploymentState,
+            deploymentStatus: JSON.stringify(deploymentStatus)
+        };
+    }
     coreExports.setFailed('Deployment failed');
     coreExports.warning('Deployment failed - attempting to retrieve git patch to fix the issue');
     // Get detailed error information from Umbraco Cloud
