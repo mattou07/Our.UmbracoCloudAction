@@ -85,21 +85,21 @@ export async function createPullRequestWithPatch(
     try {
       // Configure git user identity for commits - following Peter Evans create-pull-request approach
       core.info('Configuring git user identity...')
-      
+
       // Set author and committer using GitHub context values
-      // Author: The user who triggered the workflow  
+      // Author: The user who triggered the workflow
       const authorName = process.env.GITHUB_ACTOR || 'github-actions[bot]'
       const authorId = process.env.GITHUB_ACTOR_ID || '41898282'
       const authorEmail = `${authorId}+${authorName}@users.noreply.github.com`
-      
+
       // Debug: Output the values we're about to use
       core.info(`Debug - GITHUB_ACTOR: ${process.env.GITHUB_ACTOR}`)
       core.info(`Debug - GITHUB_ACTOR_ID: ${process.env.GITHUB_ACTOR_ID}`)
       core.info(`Debug - Computed author: ${authorName} <${authorEmail}>`)
-      
+
       // Configure git user identity using Peter Evans approach with -c flags
       core.info('Setting git identity using -c flags approach...')
-      
+
       // Create and checkout the branch locally first
       core.info(`Fetching and checking out remote branch: ${newBranchName}`)
       await exec.exec('git', ['fetch', 'origin'])

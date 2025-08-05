@@ -35126,7 +35126,20 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
         const patchFilePath = `./${patchFileName}`;
         try {
-            // Create and checkout the branch locally
+            // Configure git user identity for commits - following Peter Evans create-pull-request approach
+            coreExports.info('Configuring git user identity...');
+            // Set author and committer using GitHub context values
+            // Author: The user who triggered the workflow
+            const authorName = process.env.GITHUB_ACTOR || 'github-actions[bot]';
+            const authorId = process.env.GITHUB_ACTOR_ID || '41898282';
+            const authorEmail = `${authorId}+${authorName}@users.noreply.github.com`;
+            // Debug: Output the values we're about to use
+            coreExports.info(`Debug - GITHUB_ACTOR: ${process.env.GITHUB_ACTOR}`);
+            coreExports.info(`Debug - GITHUB_ACTOR_ID: ${process.env.GITHUB_ACTOR_ID}`);
+            coreExports.info(`Debug - Computed author: ${authorName} <${authorEmail}>`);
+            // Configure git user identity using Peter Evans approach with -c flags
+            coreExports.info('Setting git identity using -c flags approach...');
+            // Create and checkout the branch locally first
             coreExports.info(`Fetching and checking out remote branch: ${newBranchName}`);
             await execExports.exec('git', ['fetch', 'origin']);
             await execExports.exec('git', ['checkout', newBranchName]);
@@ -35143,6 +35156,10 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             await execExports.exec('git', ['add', '.']);
             coreExports.info('Committing changes...');
             await execExports.exec('git', [
+                '-c',
+                `user.name=${authorName}`,
+                '-c',
+                `user.email=${authorEmail}`,
                 'commit',
                 '-m',
                 `Apply Umbraco Cloud changes from deployment ${latestCompletedDeploymentId}`
