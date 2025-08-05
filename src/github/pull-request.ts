@@ -83,6 +83,29 @@ export async function createPullRequestWithPatch(
     const patchFilePath = `./${patchFileName}`
 
     try {
+      // Configure git user identity for commits - following Peter Evans create-pull-request approach
+      core.info('Configuring git user identity...')
+      
+      // Set author and committer using GitHub context values
+      // Author: The user who triggered the workflow  
+      const authorName = process.env.GITHUB_ACTOR || 'github-actions[bot]'
+      const authorId = process.env.GITHUB_ACTOR_ID || '41898282'
+      const authorEmail = `${authorId}+${authorName}@users.noreply.github.com`
+      
+      // Committer: GitHub Actions bot (standard for automated actions)
+      const committerName = 'github-actions[bot]'
+      const committerEmail = '41898282+github-actions[bot]@users.noreply.github.com'
+      
+      await exec.exec('git', ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 
+                              '-c', `committer.name=${committerName}`, '-c', `committer.email=${committerEmail}`,
+                              'config', '--local', 'user.name', authorName])
+      await exec.exec('git', ['-c', `user.name=${authorName}`, '-c', `user.email=${authorEmail}`, 
+                              '-c', `committer.name=${committerName}`, '-c', `committer.email=${committerEmail}`,
+                              'config', '--local', 'user.email', authorEmail])
+      
+      core.info(`Configured git author as '${authorName} <${authorEmail}>'`)
+      core.info(`Configured git committer as '${committerName} <${committerEmail}>'`)
+
       // Create and checkout the branch locally
       core.info(`Fetching and checking out remote branch: ${newBranchName}`)
       await exec.exec('git', ['fetch', 'origin'])
