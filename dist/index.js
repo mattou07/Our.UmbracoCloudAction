@@ -35152,6 +35152,11 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             if (applyExitCode !== 0) {
                 throw new Error('Failed to apply git patch');
             }
+            // Clean up patch file before adding changes to git
+            coreExports.info('Removing patch file...');
+            if (fs.existsSync(patchFilePath)) {
+                fs.unlinkSync(patchFilePath);
+            }
             coreExports.info('Adding changes to git...');
             await execExports.exec('git', ['add', '.']);
             coreExports.info('Committing changes...');

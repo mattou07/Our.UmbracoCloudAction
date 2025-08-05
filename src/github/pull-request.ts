@@ -117,6 +117,12 @@ export async function createPullRequestWithPatch(
         throw new Error('Failed to apply git patch')
       }
 
+      // Clean up patch file before adding changes to git
+      core.info('Removing patch file...')
+      if (fs.existsSync(patchFilePath)) {
+        fs.unlinkSync(patchFilePath)
+      }
+
       core.info('Adding changes to git...')
       await exec.exec('git', ['add', '.'])
 
