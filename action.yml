@@ -1,23 +1,123 @@
-name: The name of your action here
-description: Provide a description here
-author: Your name or organization here
+name: Umbraco Cloud Deployment Action
+description: Deploy to Umbraco Cloud with comprehensive deployment management
+author: Matthew Hart
 
 # Add your action's branding here. This will appear on the GitHub Marketplace.
 branding:
-  icon: heart
-  color: red
+  icon: cloud
+  color: blue
 
 # Define your inputs here.
 inputs:
-  milliseconds:
-    description: Your input description here
+  projectId:
+    description: 'The Umbraco Cloud project ID'
     required: true
-    default: '1000'
+  apiKey:
+    description: 'The Umbraco Cloud API key'
+    required: true
+  action:
+    description:
+      'The action to perform (start-deployment, check-status, add-artifact,
+      get-changes, get-latest-changes, apply-patch)'
+    required: true
+    default: 'start-deployment'
+  artifactId:
+    description:
+      'The artifact ID for deployment (required for start-deployment)'
+    required: false
+  targetEnvironmentAlias:
+    description:
+      'The target environment alias to deploy to (required for start-deployment,
+      get-changes, get-latest-changes, apply-patch)'
+    required: false
+  commitMessage:
+    description: 'Commit message for the deployment'
+    required: false
+    default: 'Deployment from GitHub Actions'
+  noBuildAndRestore:
+    description: 'Skip build and restore steps'
+    required: false
+    default: 'false'
+  skipVersionCheck:
+    description: 'Skip version check'
+    required: false
+    default: 'false'
+  deploymentId:
+    description: 'The deployment ID (required for check-status, get-changes)'
+    required: false
+  timeoutSeconds:
+    description: 'Timeout in seconds for status checks'
+    required: false
+    default: '1200'
+  filePath:
+    description:
+      'Path to the file to upload as artifact (required for add-artifact)'
+    required: false
+  description:
+    description: 'Description for the artifact'
+    required: false
+  version:
+    description: 'Version for the artifact'
+    required: false
+  baseUrl:
+    description: 'Base URL for Umbraco Cloud API'
+    required: false
+    default: 'https://api.cloud.umbraco.com'
+  base-branch:
+    description: 'Base branch for pull request creation (defaults to main)'
+    required: false
+    default: 'main'
+  upload-retries:
+    description: 'Number of retry attempts for artifact upload (default: 3)'
+    required: false
+    default: '3'
+  upload-retry-delay:
+    description:
+      'Base delay in milliseconds between upload retries (default: 10000)'
+    required: false
+    default: '10000'
+  upload-timeout:
+    description: 'Timeout in milliseconds for artifact upload (default: 60000)'
+    required: false
+    default: '60000'
+  nuget-source-name:
+    description: 'Name for the NuGet package source (optional for add-artifact)'
+    required: false
+  nuget-source-url:
+    description: 'URL for the NuGet package source (optional for add-artifact)'
+    required: false
+  nuget-source-username:
+    description:
+      'Username for NuGet package source authentication (optional for
+      add-artifact)'
+    required: false
+  nuget-source-password:
+    description:
+      'Password for NuGet package source authentication (optional for
+      add-artifact)'
+    required: false
 
 # Define your outputs here.
 outputs:
-  time:
-    description: Your output description here
+  deploymentId:
+    description: 'The deployment ID returned from start-deployment'
+  artifactId:
+    description: 'The artifact ID returned from add-artifact'
+  deploymentState:
+    description: 'The current deployment state'
+  deploymentStatus:
+    description: 'The deployment status response'
+  changes:
+    description: 'The changes (diff/patch) returned from get-changes'
+  latest-completed-deployment-id:
+    description: 'The latest completed deployment ID (when deployment fails)'
+  pr-url:
+    description: 'The URL of the created pull request (when deployment fails)'
+  pr-number:
+    description:
+      'The number of the created pull request (when deployment fails)'
+  nuget-source-status:
+    description: 'Status of NuGet package source injection into artifact'
 
 runs:
   using: node20

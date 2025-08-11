@@ -1,306 +1,460 @@
-# Create a GitHub Action Using TypeScript
+# Our Umbraco Cloud Action
 
-[![GitHub Super-Linter](https://github.com/actions/typescript-action/actions/workflows/linter.yml/badge.svg)](https://github.com/super-linter/super-linter)
-![CI](https://github.com/actions/typescript-action/actions/workflows/ci.yml/badge.svg)
-[![Check dist/](https://github.com/actions/typescript-action/actions/workflows/check-dist.yml/badge.svg)](https://github.com/actions/typescript-action/actions/workflows/check-dist.yml)
-[![CodeQL](https://github.com/actions/typescript-action/actions/workflows/codeql-analysis.yml/badge.svg)](https://github.com/actions/typescript-action/actions/workflows/codeql-analysis.yml)
-[![Coverage](./badges/coverage.svg)](./badges/coverage.svg)
+:warning: This action is in Testing phase and not ready for Production websites. :warning:
 
-Use this template to bootstrap the creation of a TypeScript action. :rocket:
 
-This template includes compilation support, tests, a validation workflow,
-publishing, and versioning guidance.
+This aims to be a comprehensive GitHub Action for deploying to Umbraco Cloud with full deployment management capabilities. Based on the [documentation](https://docs.umbraco.com/umbraco-cloud/build-and-customize-your-solution/handle-deployments-and-environments/umbraco-cicd/umbracocloudapi).
 
-If you are new, there's also a simpler introduction in the
-[Hello world JavaScript action repository](https://github.com/actions/hello-world-javascript-action).
+This action is currently in testing phase with bugs being worked out as I go.
 
-## Create Your Own Action
+## Feature set
 
-To create your own action, you can use this repository as a template! Just
-follow the below instructions:
+- **Upload Artifacts**: Upload deployment artifacts to Umbraco Cloud
+- **Start Deployments**: Initiate deployments to any Umbraco Cloud environments
+- **Monitor Deployment Status**: Monitor the logs of the deployment process in your workflow
+- **Automatic PR creation**: Retrieve and apply changes between environments with pull requests
+- **Built in Git ignore replacement**: Action will automatically look for .cloud_gitignore and replace all .gitignore files in the artifact sent to cloud
 
-1. Click the **Use this template** button at the top of the repository
-1. Select **Create a new repository**
-1. Select an owner and name for your new repository
-1. Click **Create repository**
-1. Clone your new repository
 
-> [!IMPORTANT]
->
-> Make sure to remove or update the [`CODEOWNERS`](./CODEOWNERS) file! For
-> details on how to use this file, see
-> [About code owners](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners).
+## Small features
+- **Environment casing retry**: If the Environment Alias is accidentally defined with casing and fails. The action will retry with lowercase (Live => live)
 
-## Initial Setup
+## Error Handling
 
-After you've cloned the repository to your local machine or codespace, you'll
-need to perform some initial setup steps before you can develop your action.
+The action provides comprehensive error handling:
 
-> [!NOTE]
->
-> You'll need to have a reasonably modern version of
-> [Node.js](https://nodejs.org) handy (20.x or later should work!). If you are
-> using a version manager like [`nodenv`](https://github.com/nodenv/nodenv) or
-> [`fnm`](https://github.com/Schniz/fnm), this template has a `.node-version`
-> file at the root of the repository that can be used to automatically switch to
-> the correct version when you `cd` into the repository. Additionally, this
-> `.node-version` file is used by GitHub Actions in any `actions/setup-node`
-> actions.
+- **API Errors**: Detailed error messages from Umbraco Cloud API
+- **Timeout Handling**: Configurable timeouts for long-running operations
+- **File Validation**: Checks for file existence before upload
+- **Status Validation**: Validates deployment states and fails appropriately
 
-1. :hammer_and_wrench: Install the dependencies
+## Inputs
 
-   ```bash
-   npm install
-   ```
+| Input                    | Description                                                                 | Required | Default                          |
+|--------------------------|-----------------------------------------------------------------------------|----------|-----------------------------------|
+| `projectId`              | The Umbraco Cloud project ID                                                | Yes      | -                                 |
+| `apiKey`                 | The Umbraco Cloud API key                                                   | Yes      | -                                 |
+| `action`                 | The action to perform (`start-deployment`, `check-status`, `add-artifact`, `get-changes`, `get-latest-changes`, `apply-patch`) | Yes      | `start-deployment`                |
+| `artifactId`             | The artifact ID for deployment (required for `start-deployment`)            | No       | -                                 |
+| `targetEnvironmentAlias` | The target environment alias (required for several actions)                 | No       | -                                 |
+| `commitMessage`          | Custom commit message for the deployment                                    | No       | `Deployment from GitHub Actions`  |
+| `noBuildAndRestore`      | Skip build and restore steps                                                | No       | `false`                           |
+| `skipVersionCheck`       | Skip version check                                                          | No       | `false`                           |
+| `deploymentId`           | The deployment ID (required for some actions)                               | No       | -                                 |
+| `timeoutSeconds`         | Timeout in seconds for status checks                                        | No       | `1200`                            |
+| `filePath`               | Path to the file to upload as artifact (required for `add-artifact`)        | Yes/No   | -                                 |
+| `description`            | Description for the artifact                                                | No       | -                                 |
+| `version`                | Version for the artifact                                                    | No       | -                                 |
+| `baseUrl`                | Base URL for Umbraco Cloud API                                              | No       | `https://api.cloud.umbraco.com`   |
+| `base-branch`            | Base branch for pull request creation (defaults to main)                    | No       | `*main`                            |
+| `upload-retries`         | Number of retry attempts for artifact upload                                | No       | `3`                               |
+| `upload-retry-delay`     | Base delay in milliseconds between upload retries                           | No       | `10000`                           |
+| `upload-timeout`         | Timeout in milliseconds for artifact upload                                 | No       | `60000`                           |
+| `nuget-source-name`      | Name for the NuGet package source (optional for `add-artifact`)             | No       | -                                 |
+| `nuget-source-url`       | URL for the NuGet package source (optional for `add-artifact`)              | No       | -                                 |
+| `nuget-source-username`  | Username for NuGet package source authentication (optional for `add-artifact`)| No      | -                                 |
+| `nuget-source-password`  | Password for NuGet package source authentication (optional for `add-artifact`)| No      | -                                 |
 
-1. :building_construction: Package the TypeScript for distribution
+\*Required for specific actions
 
-   ```bash
-   npm run bundle
-   ```
+## Outputs
 
-1. :white_check_mark: Run the tests
+| Output             | Description                                      |
+| ------------------ | ------------------------------------------------ |
+| `deploymentId`     | The deployment ID returned from start-deployment |
+| `artifactId`       | The artifact ID returned from add-artifact       |
+| `deploymentState`  | The current deployment state                     |
+| `deploymentStatus` | The deployment status response                   |
+| `changes`          | The changes returned from get-changes            |
 
-   ```bash
-   $ npm test
+## Actions
 
-   PASS  ./index.test.js
-     ✓ throws invalid number (3ms)
-     ✓ wait 500 ms (504ms)
-     ✓ test runs (95ms)
+### 1. Upload Artifact (`add-artifact`)
 
-   ...
-   ```
-
-## Update the Action Metadata
-
-The [`action.yml`](action.yml) file defines metadata about your action, such as
-input(s) and output(s). For details about this file, see
-[Metadata syntax for GitHub Actions](https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions).
-
-When you copy this repository, update `action.yml` with the name, description,
-inputs, and outputs for your action.
-
-## Update the Action Code
-
-The [`src/`](./src/) directory is the heart of your action! This contains the
-source code that will be run when your action is invoked. You can replace the
-contents of this directory with your own code.
-
-There are a few things to keep in mind when writing your action code:
-
-- Most GitHub Actions toolkit and CI/CD operations are processed asynchronously.
-  In `main.ts`, you will see that the action is run in an `async` function.
-
-  ```javascript
-  import * as core from '@actions/core'
-  //...
-
-  async function run() {
-    try {
-      //...
-    } catch (error) {
-      core.setFailed(error.message)
-    }
-  }
-  ```
-
-  For more information about the GitHub Actions toolkit, see the
-  [documentation](https://github.com/actions/toolkit/blob/master/README.md).
-
-So, what are you waiting for? Go ahead and start customizing your action!
-
-1. Create a new branch
-
-   ```bash
-   git checkout -b releases/v1
-   ```
-
-1. Replace the contents of `src/` with your action code
-1. Add tests to `__tests__/` for your source code
-1. Format, test, and build the action
-
-   ```bash
-   npm run all
-   ```
-
-   > This step is important! It will run [`rollup`](https://rollupjs.org/) to
-   > build the final JavaScript action code with all dependencies included. If
-   > you do not run this step, your action will not work correctly when it is
-   > used in a workflow.
-
-1. (Optional) Test your action locally
-
-   The [`@github/local-action`](https://github.com/github/local-action) utility
-   can be used to test your action locally. It is a simple command-line tool
-   that "stubs" (or simulates) the GitHub Actions Toolkit. This way, you can run
-   your TypeScript action locally without having to commit and push your changes
-   to a repository.
-
-   The `local-action` utility can be run in the following ways:
-
-   - Visual Studio Code Debugger
-
-     Make sure to review and, if needed, update
-     [`.vscode/launch.json`](./.vscode/launch.json)
-
-   - Terminal/Command Prompt
-
-     ```bash
-     # npx @github/local action <action-yaml-path> <entrypoint> <dotenv-file>
-     npx @github/local-action . src/main.ts .env
-     ```
-
-   You can provide a `.env` file to the `local-action` CLI to set environment
-   variables used by the GitHub Actions Toolkit. For example, setting inputs and
-   event payload data used by your action. For more information, see the example
-   file, [`.env.example`](./.env.example), and the
-   [GitHub Actions Documentation](https://docs.github.com/en/actions/learn-github-actions/variables#default-environment-variables).
-
-1. Commit your changes
-
-   ```bash
-   git add .
-   git commit -m "My first action is ready!"
-   ```
-
-1. Push them to your repository
-
-   ```bash
-   git push -u origin releases/v1
-   ```
-
-1. Create a pull request and get feedback on your action
-1. Merge the pull request into the `main` branch
-
-Your action is now published! :rocket:
-
-For information about versioning your action, see
-[Versioning](https://github.com/actions/toolkit/blob/master/docs/action-versioning.md)
-in the GitHub Actions toolkit.
-
-## Validate the Action
-
-You can now validate the action by referencing it in a workflow file. For
-example, [`ci.yml`](./.github/workflows/ci.yml) demonstrates how to reference an
-action in the same repository.
+Uploads a file as a deployment artifact to Umbraco Cloud.
 
 ```yaml
-steps:
-  - name: Checkout
-    id: checkout
-    uses: actions/checkout@v4
+    - name: Download artifact
+      uses: actions/download-artifact@v4
+      with:
+        name: your-cloud-artifact-${{ github.run_number }}
 
-  - name: Test Local Action
-    id: test-action
-    uses: ./
-    with:
-      milliseconds: 1000
-
-  - name: Print Output
-    id: output
-    run: echo "${{ steps.test-action.outputs.time }}"
+    - name: Upload Deployment Artifact
+      id: upload-artifact
+      uses: mattou07/Our.UmbracoCloudAction@main
+      with:
+        projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+        apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+        action: add-artifact
+        filePath: './cloudsite.zip' #Expects a zip of the full solution
+        description: 'Website deployment package' #Description for this artifact
+        version: '1.0.0'
+        nuget-source-name: 'github' #Name of the nuget source for the NuGet.config fule
+        nuget-source-url: ${{ vars.CRUMPLED_PACKAGE_FEED_URL }} #Url for private nuget feed
+        nuget-source-username: ${{ secrets.NUGET_USERNAME_GITHUB }} #Credentials
+        nuget-source-password: '%Cloud_Secret_PACKAGE_VIEW_TOKEN%' # Use '%YourSecretInCloudName% to reference a secret in Umbraco Cloud to avoid having passwords in artifacts
 ```
 
-For example workflow runs, check out the
-[Actions tab](https://github.com/actions/typescript-action/actions)! :rocket:
+### 2. Start Deployment (`start-deployment`)
 
-## Usage
-
-After testing, you can create version tag(s) that developers can use to
-reference different stable versions of your action. For more information, see
-[Versioning](https://github.com/actions/toolkit/blob/master/docs/action-versioning.md)
-in the GitHub Actions toolkit.
-
-To include the action in a workflow in another repository, you can use the
-`uses` syntax with the `@` symbol to reference a specific branch, tag, or commit
-hash.
+Initiates a new deployment to Umbraco Cloud until completion or timeout.
 
 ```yaml
-steps:
-  - name: Checkout
-    id: checkout
-    uses: actions/checkout@v4
-
-  - name: Test Local Action
-    id: test-action
-    uses: actions/typescript-action@v1 # Commit with the `v1` tag
-    with:
-      milliseconds: 1000
-
-  - name: Print Output
-    id: output
-    run: echo "${{ steps.test-action.outputs.time }}"
+    - name: Start Umbraco Cloud Deployment
+      id: start-deployment
+      uses: mattou07/Our.UmbracoCloudAction@main
+      with:
+        projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+        apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+        action: start-deployment
+        artifactId: ${{ steps.upload-artifact.outputs.artifactId }} #The artifact Id from step 1. Ensure the id step one matches here
+        noBuildAndRestore: false #Speeds up the deployment by telling Umbraco to not rebuild everything
+        skipVersionCheck: false
+        targetEnvironmentAlias: 'development' #Or live if you are feeling brave or have starter
 ```
 
-## Publishing a New Release
+### 3. Check Deployment Status (`check-status`)
 
-This project includes a helper script, [`script/release`](./script/release)
-designed to streamline the process of tagging and pushing new releases for
-GitHub Actions.
+Obtains the status of the deployment.
 
-GitHub Actions allows users to select a specific version of the action to use,
-based on release tags. This script simplifies this process by performing the
-following steps:
+```yaml
+    - name: Check Deployment Status
+      uses: mattou07/Our.UmbracoCloudAction@refactor-into-modules
+      with:
+        projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+        apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+        action: check-status
+        deploymentId: ${{ steps.start-deployment.outputs.deploymentId }}
+        timeoutSeconds: 1800
+        targetEnvironmentAlias: 'live'
+```
 
-1. **Retrieving the latest release tag:** The script starts by fetching the most
-   recent SemVer release tag of the current branch, by looking at the local data
-   available in your repository.
-1. **Prompting for a new release tag:** The user is then prompted to enter a new
-   release tag. To assist with this, the script displays the tag retrieved in
-   the previous step, and validates the format of the inputted tag (vX.X.X). The
-   user is also reminded to update the version field in package.json.
-1. **Tagging the new release:** The script then tags a new release and syncs the
-   separate major tag (e.g. v1, v2) with the new release tag (e.g. v1.0.0,
-   v2.1.2). When the user is creating a new major release, the script
-   auto-detects this and creates a `releases/v#` branch for the previous major
-   version.
-1. **Pushing changes to remote:** Finally, the script pushes the necessary
-   commits, tags and branches to the remote repository. From here, you will need
-   to create a new release in GitHub so users can easily reference the new tags
-   in their workflows.
 
-## Dependency License Management
 
-This template includes a GitHub Actions workflow,
-[`licensed.yml`](./.github/workflows/licensed.yml), that uses
-[Licensed](https://github.com/licensee/licensed) to check for dependencies with
-missing or non-compliant licenses. This workflow is initially disabled. To
-enable the workflow, follow the below steps.
+### 4. Get Changes (`get-changes`)
 
-1. Open [`licensed.yml`](./.github/workflows/licensed.yml)
-1. Uncomment the following lines:
+Retrieves changes for a specific change ID.
 
-   ```yaml
-   # pull_request:
-   #   branches:
-   #     - main
-   # push:
-   #   branches:
-   #     - main
-   ```
+```yaml
+- name: Get Changes
+  uses: your-org/umbraco-cloud-deployment-action@v1
+  with:
+    projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+    apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+    action: get-changes
+    changeId: 'your-change-id'
+```
 
-1. Save and commit the changes
+### 5. Apply Patch (`apply-patch`)
 
-Once complete, this workflow will run any time a pull request is created or
-changes pushed directly to `main`. If the workflow detects any dependencies with
-missing or non-compliant licenses, it will fail the workflow and provide details
-on the issue(s) found.
+Applies a patch to a target environment.
 
-### Updating Licenses
+```yaml
+- name: Apply Patch
+  uses: your-org/umbraco-cloud-deployment-action@v1
+  with:
+    projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+    apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+    action: apply-patch
+    changeId: 'your-change-id'
+    targetEnvironmentAlias: 'production'
+```
 
-Whenever you install or update dependencies, you can use the Licensed CLI to
-update the licenses database. To install Licensed, see the project's
-[Readme](https://github.com/licensee/licensed?tab=readme-ov-file#installation).
+## Complete Workflow Example
 
-To update the cached licenses, run the following command:
+Here's a complete workflow that demonstrates a typical deployment process:
+
+```yaml
+name: Deploy to Umbraco Cloud
+
+name: Build and deploy to Umbraco Cloud
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    
+env:
+  PATH_TO_FRONTEND: ${{ vars.PATH_TO_FRONTEND }}
+  PACKAGE_FEED_URL: ${{ vars.PACKAGE_FEED_URL }}
+      
+jobs:
+  setup:
+    name: Setup
+    runs-on: ubuntu-latest
+    outputs:
+      artifact-prefix: ${{ steps.set-artifact-prefix.outputs.ARTIFACT_PREFIX }}
+      dotnet-base-path: ${{ steps.get-base-path.outputs.PATH_TO_BASE }}
+      cloudsource-artifact: ${{ steps.set-artifact-prefix.outputs.ARTIFACT_PREFIX }}.cloudsource-${{ github.run_number }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set Artifact Key Prefix
+        id: set-artifact-prefix
+        env:
+          REPO_NAME: ${{ github.event.repository.name }}
+        run: |
+          typeset -l output
+          output=${REPO_NAME// /_}
+          echo "$output"
+          echo "ARTIFACT_PREFIX=$output" >> "$GITHUB_OUTPUT"
+
+      - name: Determine Commit Timestamp
+        id: committimestamp
+        shell: bash
+        run: |
+            timestamp=$(git log -1 --format=%cd --date=format:%Y%m%dh%H%M%S)
+            echo "COMMIT_TIMESTAMP=$timestamp" >> $GITHUB_OUTPUT
+
+      - name: Get DotNet Base Project Path
+        id: get-base-path
+        shell: bash
+        run: |
+          pathToBase=$(grep -oP 'base = "\K[^"]+' ${{ github.workspace }}/.umbraco)
+          echo "PATH_TO_BASE=$pathToBase" >> $GITHUB_OUTPUT
+
+  build-fe:
+    name: Build front end
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js environment
+        uses: actions/setup-node@v4
+        with:
+            node-version: 20.9.0
+            cache: 'npm'
+            cache-dependency-path: '${{env.PATH_TO_FRONTEND}}/package-lock.json'
+
+      - name: Install dependencies
+        working-directory: ./${{env.PATH_TO_FRONTEND}}
+        run: npm ci
+
+      - name: Run WebPack
+        working-directory: ./${{env.PATH_TO_FRONTEND}}
+        run: npm run build:prod
+
+      - name: Zip artifact for deployment
+        working-directory: ${{ needs.setup.outputs.dotnet-base-path }}
+        shell: bash
+        run: |
+          mkdir output
+          cp -r ./wwwroot ./output
+          cp -r ./Webpack ./output
+          cd output
+          zip ./frontend.zip ./ -r
+
+      - name: Create artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ needs.setup.outputs.artifact-prefix }}.frontend-${{ github.run_number }}
+          path: ${{ needs.setup.outputs.dotnet-base-path }}/output/frontend.zip
+          retention-days: 5
+
+  build-be:
+    name: Build and test back end
+    needs: setup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add GitHub Package Registry
+        run: dotnet nuget add source --username USERNAME --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github ${{env.PACKAGE_FEED_URL}}
+
+      - name: Cache NuGet
+        id: nuget-packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-cache-${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj*') }}
+          restore-keys: |
+            nuget-cache-${{ runner.os }}-nuget-
+
+      - name: Setup .Net
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+                
+      - name: Build
+        run: dotnet build ${{ needs.setup.outputs.dotnet-base-path }} --configuration Release
+
+      - name: Wait for Frontend
+        uses: yogeshlonkar/wait-for-jobs@v0
+        with:
+          jobs: 'Build front end'
+
+      - name: Download Website artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.setup.outputs.artifact-prefix }}.frontend-${{ github.run_number }}
+          path: ${{ github.workspace }}/built_frontend
+
+      - name: Combine files
+        shell: bash
+        run: |
+          unzip -o -d ${{ needs.setup.outputs.dotnet-base-path }} ${{ github.workspace }}/built_frontend/frontend.zip
+          rm ${{ github.workspace }}/built_frontend/frontend.zip
+
+      - name: Zip solution for deployment
+        working-directory: ${{ github.workspace }}/
+        run: zip ${{ github.workspace }}/cloudsite.zip ./ -r
+
+      - name: Upload Cloud Source Artifact
+        id: upload-solution
+        uses: actions/upload-artifact@v4
+        with:
+          name: final-cloudsource-${{ github.run_number }}
+          path: ${{ github.workspace }}/cloudsite.zip
+          retention-days: 1
+
+  publish:
+    name: Publish to Umbraco Cloud
+    needs: [setup,build-be]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Download artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: final-cloudsource-${{ github.run_number }}
+
+      - name: Upload Deployment Artifact
+        id: upload-artifact
+        uses: mattou07/Our.UmbracoCloudAction@main
+        with:
+          projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+          apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+          action: add-artifact
+          filePath: './cloudsite.zip'
+          description: 'Website deployment package'
+          version: '1.0.0'
+          nuget-source-name: 'github'
+          nuget-source-url: ${{ vars.CRUMPLED_PACKAGE_FEED_URL }}
+          nuget-source-username: ${{ secrets.NUGET_USERNAME_GITHUB }}
+          nuget-source-password: '%CRUMPLED_PACKAGE_VIEW_TOKEN%'
+
+      # Optional debugging
+      # - name: Debug artifactId output
+      #   run: echo "artifactId is ${{ steps.upload-artifact.outputs.artifactId }}"
+
+      # - name: Debug Cloud Source Artifact
+      #   id: upload-solution-debug
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: final-cloudsource-debug-${{ github.run_number }}
+      #     path: ${{ github.workspace }}/cloudsite.zip
+      #     retention-days: 1
+
+      - name: Start Umbraco Cloud Deployment
+        id: start-deployment
+        uses: mattou07/Our.UmbracoCloudAction@main
+        with:
+          projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+          apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+          action: start-deployment
+          artifactId: ${{ steps.upload-artifact.outputs.artifactId }}
+          noBuildAndRestore: false
+          skipVersionCheck: false
+          targetEnvironmentAlias: 'live' #Example is for a site on Starter. Change this otherwise!!
+
+      - name: Check Deployment Status
+        uses: mattou07/Our.UmbracoCloudAction@main
+        with:
+          projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+          apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+          action: check-status
+          deploymentId: ${{ steps.start-deployment.outputs.deploymentId }}
+          timeoutSeconds: 1800
+          targetEnvironmentAlias: 'live' #Example is for a site on Starter. Change this otherwise!!
+```
+
+## Advanced Usage
+
+### Conditional Deployments
+
+```yaml
+- name: Deploy to production (manual approval)
+  if:
+    github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+  uses: mattou07/Our.UmbracoCloudAction@main
+  with:
+    projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+    apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+    action: start-deployment
+    artifactId: ${{ steps.upload-artifact.outputs.artifactId }}
+    targetEnvironmentAlias: 'production'
+    commitMessage: 'Production deployment - ${{ github.run_number }}'
+```
+
+### Multi-Environment Deployment
+
+```yaml
+- name: Deploy to multiple environments
+  strategy:
+    matrix:
+      environment: [development,staging]
+  uses: mattou07/Our.UmbracoCloudAction@main
+  with:
+    projectId: ${{ secrets.UMBRACO_CLOUD_PROJECT_ID }}
+    apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
+    action: start-deployment
+    artifactId: ${{ steps.upload-artifact.outputs.artifactId }}
+    targetEnvironmentAlias: ${{ matrix.environment }}
+    commitMessage:
+      'Deploy to ${{ matrix.environment }} - ${{ github.run_number }}'
+```
+
+
+
+## Development
+
+This project is based on the Typescript template from [Github](https://github.com/actions/typescript-action). More details on how to use the template are in their README.
+
+### Building
+
+Install the dependencies
+```bash
+npm install
+```
+
+Build the bundle
+```bash
+npm run bundle
+```
+
+### Testing
+
 
 ```bash
-licensed cache
+npm test
 ```
 
-To check the status of cached licenses, run the following command:
+### Local Development
 
 ```bash
-licensed status
+npm run local-action
 ```
+
+## Contributing
+
+1. Create an issue first! Depending on your circumstance your contribution might only be ideal for your usecase only. 
+2. Fork the repository
+3. Create a feature branch
+4. Make your changes
+5. Add tests
+6. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details. Feel free to fork and use it for your usecases.
+
+## Support
+
+For issues and questions about this Action, please use the [GitHub Issues](https://github.com/mattou07/Our.UmbracoCloudAction/issues) page.
+
+Use at your own risk, avoid deploying to `live` environments directly to avoid outages. Please use [Umbraco Cloud support](https://umbraco.com/products/support/) if you have issues with your site.
