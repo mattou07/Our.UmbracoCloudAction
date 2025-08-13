@@ -65167,7 +65167,7 @@ async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSo
     });
     fs.writeFileSync(filePath, updatedData);
     coreExports.info(`Zip file size after processing: ${fs.statSync(filePath).size} bytes`);
-    coreExports.info('Successfully injected NuGet.config and removed .git from artifact zip');
+    coreExports.info('Successfully injected NuGet.config and processed excluded paths in artifact zip');
     return filePath;
 }
 async function validateArtifactGitRepository(filePath) {

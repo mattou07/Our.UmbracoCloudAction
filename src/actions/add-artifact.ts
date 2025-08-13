@@ -212,7 +212,7 @@ async function processArtifactWithNugetConfig(
     `Zip file size after processing: ${fs.statSync(filePath).size} bytes`
   )
   core.info(
-    'Successfully injected NuGet.config and removed .git from artifact zip'
+    'Successfully injected NuGet.config and processed excluded paths in artifact zip'
   )
 
   return filePath
