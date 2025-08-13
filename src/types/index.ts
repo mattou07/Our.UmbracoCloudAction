@@ -104,6 +104,7 @@ export interface ActionInputs {
   nugetSourceUrl?: string
   nugetSourceUsername?: string
   nugetSourcePassword?: string
+  excludedPaths?: string
 }
 
 export interface ActionOutputs {
