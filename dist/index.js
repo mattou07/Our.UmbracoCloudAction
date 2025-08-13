@@ -65031,35 +65031,71 @@ var libExports = requireLib();
 var JSZip = /*@__PURE__*/getDefaultExportFromCjs(libExports);
 
 /**
- * Removes excluded paths from a zip file based on comma-separated path list
+ * Removes excluded paths from a zip file based on path list
+ * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
  */
 function removeExcludedPaths(zip, excludedPaths) {
     if (!excludedPaths.trim()) {
         return;
     }
+    // Validate format: single path or comma-separated paths (no space-separated paths)
+    // Valid: "mypath/test", "mypath\\hello", ".git/,mypath/test", ".git/, .github/"
+    // Invalid: "path1 path2" (space-separated), "mypath\\//hello" (mixed separators)
+    const pathPattern = /^[^\s,]+(\s*,\s*[^\s,]+)*$/;
+    if (!pathPattern.test(excludedPaths)) {
+        throw new Error(`Invalid excluded-paths format: "${excludedPaths}". Use single path (e.g., ".git/") or comma-separated paths (e.g., ".git/,.github/,node_modules/")`);
+    }
+    // Additional validation: reject mixed path separators
+    const paths = excludedPaths.split(',').map((p) => p.trim());
+    for (const path of paths) {
+        if (path.includes('/') && path.includes('\\')) {
+            throw new Error(`Invalid path "${path}" contains mixed separators. Use either forward slashes (/) or backslashes (\\), not both.`);
+        }
+    }
     const pathsToExclude = excludedPaths
         .split(',')
         .map((path) => path.trim())
         .filter((path) => path.length > 0);
+    // This should never happen after our validation as we have defaults
     if (pathsToExclude.length === 0) {
-        return;
+        throw new Error('No valid paths found after validation.');
     }
+    // Validate individual paths
+    for (const path of pathsToExclude) {
+        if (path.includes('..') || path.startsWith('/')) {
+            throw new Error(`Invalid path "${path}" in excluded-paths. Paths should be relative to your repository and not contain ".." or not start with "/" for safety reasons`);
+        }
+    }
+    coreExports.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`);
     let removedCount = 0;
-    const removedPaths = [];
+    const foundPaths = [];
+    const notFoundPaths = [...pathsToExclude];
     Object.keys(zip.files).forEach((filename) => {
         for (const excludePath of pathsToExclude) {
             if (filename.startsWith(excludePath)) {
                 zip.remove(filename);
                 removedCount++;
-                if (!removedPaths.includes(excludePath)) {
-                    removedPaths.push(excludePath);
+                if (!foundPaths.includes(excludePath)) {
+                    foundPaths.push(excludePath);
+                    // Remove from not found list
+                    const notFoundIndex = notFoundPaths.indexOf(excludePath);
+                    if (notFoundIndex > -1) {
+                        notFoundPaths.splice(notFoundIndex, 1);
+                    }
                 }
                 break; // Move to next filename once a match is found
             }
         }
     });
     if (removedCount > 0) {
-        coreExports.info(`Removed ${removedCount} file(s) matching excluded paths: ${removedPaths.join(', ')}`);
+        coreExports.info(`Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`);
+    }
+    // Error if any paths weren't found - stop the action
+    if (notFoundPaths.length > 0) {
+        throw new Error(`The following excluded paths were not found in the artifact: ${notFoundPaths.join(', ')}. Verify that the paths exist in your artifact.`);
+    }
+    if (removedCount === 0 && pathsToExclude.length > 0) {
+        throw new Error('No files were removed. Verify that the excluded paths match the structure of your artifact.');
     }
 }
 async function handleAddArtifact(api, inputs) {

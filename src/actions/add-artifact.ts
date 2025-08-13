@@ -21,7 +21,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
   // Valid: "mypath/test", "mypath\\hello", ".git/,mypath/test", ".git/, .github/"
   // Invalid: "path1 path2" (space-separated), "mypath\\//hello" (mixed separators)
   const pathPattern = /^[^\s,]+(\s*,\s*[^\s,]+)*$/
-  
+
   if (!pathPattern.test(excludedPaths)) {
     throw new Error(
       `Invalid excluded-paths format: "${excludedPaths}". Use single path (e.g., ".git/") or comma-separated paths (e.g., ".git/,.github/,node_modules/")`
@@ -29,7 +29,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
   }
 
   // Additional validation: reject mixed path separators
-  const paths = excludedPaths.split(',').map(p => p.trim())
+  const paths = excludedPaths.split(',').map((p) => p.trim())
   for (const path of paths) {
     if (path.includes('/') && path.includes('\\')) {
       throw new Error(
@@ -45,9 +45,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
 
   // This should never happen after our validation as we have defaults
   if (pathsToExclude.length === 0) {
-    throw new Error(
-      'No valid paths found after validation.'
-    )
+    throw new Error('No valid paths found after validation.')
   }
 
   // Validate individual paths
