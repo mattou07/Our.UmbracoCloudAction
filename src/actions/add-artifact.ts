@@ -9,6 +9,16 @@ import * as exec from '@actions/exec'
 import JSZip from 'jszip'
 
 /**
+ * Custom error class for excluded paths validation failures
+ */
+class ExcludedPathsValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ExcludedPathsValidationError'
+  }
+}
+
+/**
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
  */
@@ -89,13 +99,13 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
 
   // Error if any paths weren't found - stop the action
   if (notFoundPaths.length > 0) {
-    throw new Error(
+    throw new ExcludedPathsValidationError(
       `The following excluded paths were not found in the artifact: ${notFoundPaths.join(', ')}. Verify that the paths exist in your artifact.`
     )
   }
 
   if (removedCount === 0 && pathsToExclude.length > 0) {
-    throw new Error(
+    throw new ExcludedPathsValidationError(
       'No files were removed. Verify that the excluded paths match the structure of your artifact.'
     )
   }
@@ -125,6 +135,11 @@ export async function handleAddArtifact(
       )
       nugetSourceStatus = 'NuGet.config successfully injected into artifact'
     } catch (error) {
+      // Re-throw excluded paths validation errors as they should stop the action
+      if (error instanceof ExcludedPathsValidationError) {
+        throw error
+      }
+
       const errorMessage = `Failed to configure NuGet source: ${error}`
       core.warning(errorMessage)
       nugetSourceStatus = errorMessage
@@ -138,6 +153,11 @@ export async function handleAddArtifact(
       )
       core.info('Successfully processed .cloud_gitignore')
     } catch (error) {
+      // Re-throw excluded paths validation errors as they should stop the action
+      if (error instanceof ExcludedPathsValidationError) {
+        throw error
+      }
+
       core.warning(`Failed to process .cloud_gitignore: ${error}`)
     }
 

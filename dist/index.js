@@ -65031,6 +65031,15 @@ var libExports = requireLib();
 var JSZip = /*@__PURE__*/getDefaultExportFromCjs(libExports);
 
 /**
+ * Custom error class for excluded paths validation failures
+ */
+class ExcludedPathsValidationError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'ExcludedPathsValidationError';
+    }
+}
+/**
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
  */
@@ -65092,10 +65101,10 @@ function removeExcludedPaths(zip, excludedPaths) {
     }
     // Error if any paths weren't found - stop the action
     if (notFoundPaths.length > 0) {
-        throw new Error(`The following excluded paths were not found in the artifact: ${notFoundPaths.join(', ')}. Verify that the paths exist in your artifact.`);
+        throw new ExcludedPathsValidationError(`The following excluded paths were not found in the artifact: ${notFoundPaths.join(', ')}. Verify that the paths exist in your artifact.`);
     }
     if (removedCount === 0 && pathsToExclude.length > 0) {
-        throw new Error('No files were removed. Verify that the excluded paths match the structure of your artifact.');
+        throw new ExcludedPathsValidationError('No files were removed. Verify that the excluded paths match the structure of your artifact.');
     }
 }
 async function handleAddArtifact(api, inputs) {
@@ -65111,6 +65120,10 @@ async function handleAddArtifact(api, inputs) {
             nugetSourceStatus = 'NuGet.config successfully injected into artifact';
         }
         catch (error) {
+            // Re-throw excluded paths validation errors as they should stop the action
+            if (error instanceof ExcludedPathsValidationError) {
+                throw error;
+            }
             const errorMessage = `Failed to configure NuGet source: ${error}`;
             coreExports.warning(errorMessage);
             nugetSourceStatus = errorMessage;
@@ -65123,6 +65136,10 @@ async function handleAddArtifact(api, inputs) {
             coreExports.info('Successfully processed .cloud_gitignore');
         }
         catch (error) {
+            // Re-throw excluded paths validation errors as they should stop the action
+            if (error instanceof ExcludedPathsValidationError) {
+                throw error;
+            }
             coreExports.warning(`Failed to process .cloud_gitignore: ${error}`);
         }
         // Only validate git repository if we didn't process the artifact
