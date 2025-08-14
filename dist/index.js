@@ -65140,11 +65140,18 @@ function removeExcludedPaths(zip, excludedPaths) {
     }
     coreExports.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`);
     let removedCount = 0;
+    let totalSavedBytes = 0;
     const foundPaths = [];
     const notFoundPaths = [...pathsToExclude];
     Object.keys(zip.files).forEach((filename) => {
         for (const excludePath of pathsToExclude) {
             if (filename.startsWith(excludePath)) {
+                const fileEntry = zip.files[filename];
+                if (fileEntry && !fileEntry.dir) {
+                    // Get the uncompressed size of the file from internal data
+                    const fileSize = fileEntry._data?.uncompressedSize || 0;
+                    totalSavedBytes += fileSize;
+                }
                 zip.remove(filename);
                 removedCount++;
                 if (!foundPaths.includes(excludePath)) {
@@ -65160,7 +65167,31 @@ function removeExcludedPaths(zip, excludedPaths) {
         }
     });
     if (removedCount > 0) {
+        const savedMB = (totalSavedBytes / (1024 * 1024)).toFixed(2);
         coreExports.info(`Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`);
+        coreExports.info(`Space saved: ${savedMB} MB (${totalSavedBytes.toLocaleString()} bytes)`);
+        // Environmental impact message based on space saved
+        const savedMBNum = parseFloat(savedMB);
+        let carbonMessage = '';
+        if (savedMBNum >= 100) {
+            carbonMessage = `🌍 Significant Efficiency Achieved — You've saved ${savedMB} MB, representing a substantial reduction in transfer data and associated carbon emissions.`;
+        }
+        else if (savedMBNum >= 50) {
+            carbonMessage = `🌿 High Efficiency — ${savedMB} MB saved means a notable decrease in bandwidth usage, helping to reduce server energy consumption.`;
+        }
+        else if (savedMBNum >= 20) {
+            carbonMessage = `📦 Efficient Deployment — ${savedMB} MB saved results in a meaningful reduction in network load and environmental impact.`;
+        }
+        else if (savedMBNum >= 5) {
+            carbonMessage = `⚡ Optimized Transfer — ${savedMB} MB saved helps lower both operational costs and energy usage.`;
+        }
+        else if (savedMBNum >= 1) {
+            carbonMessage = `📉 Compact & Efficient — ${savedMB} MB saved conserves resources during transfer and deployment.`;
+        }
+        else {
+            carbonMessage = `💾 Minimal Transfer Footprint — ${savedMB} MB saved reduces energy use and supports sustainable operations.`;
+        }
+        coreExports.info(carbonMessage);
     }
     // Error if any paths weren't found - stop the action
     if (notFoundPaths.length > 0) {
