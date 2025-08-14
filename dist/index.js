@@ -65030,6 +65030,83 @@ function requireLib () {
 var libExports = requireLib();
 var JSZip = /*@__PURE__*/getDefaultExportFromCjs(libExports);
 
+/**
+ * Custom error class for excluded paths validation failures
+ */
+class ExcludedPathsValidationError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'ExcludedPathsValidationError';
+    }
+}
+/**
+ * Removes excluded paths from a zip file based on path list
+ * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
+ */
+function removeExcludedPaths(zip, excludedPaths) {
+    if (!excludedPaths.trim()) {
+        return;
+    }
+    // Validate format: single path or comma-separated paths (no space-separated paths)
+    // Valid: "mypath/test", "mypath\\hello", ".git/,mypath/test", ".git/, .github/"
+    // Invalid: "path1 path2" (space-separated), "mypath\\//hello" (mixed separators)
+    const pathPattern = /^[^\s,]+(\s*,\s*[^\s,]+)*$/;
+    if (!pathPattern.test(excludedPaths)) {
+        throw new Error(`Invalid excluded-paths format: "${excludedPaths}". Use single path (e.g., ".git/") or comma-separated paths (e.g., ".git/,.github/,node_modules/")`);
+    }
+    // Additional validation: reject mixed path separators
+    const paths = excludedPaths.split(',').map((p) => p.trim());
+    for (const path of paths) {
+        if (path.includes('/') && path.includes('\\')) {
+            throw new Error(`Invalid path "${path}" contains mixed separators. Use either forward slashes (/) or backslashes (\\), not both.`);
+        }
+    }
+    const pathsToExclude = excludedPaths
+        .split(',')
+        .map((path) => path.trim())
+        .filter((path) => path.length > 0);
+    // This should never happen after our validation as we have defaults
+    if (pathsToExclude.length === 0) {
+        throw new Error('No valid paths found after validation.');
+    }
+    // Validate individual paths
+    for (const path of pathsToExclude) {
+        if (path.includes('..') || path.startsWith('/')) {
+            throw new Error(`Invalid path "${path}" in excluded-paths. Paths should be relative to your repository and not contain ".." or not start with "/" for safety reasons`);
+        }
+    }
+    coreExports.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`);
+    let removedCount = 0;
+    const foundPaths = [];
+    const notFoundPaths = [...pathsToExclude];
+    Object.keys(zip.files).forEach((filename) => {
+        for (const excludePath of pathsToExclude) {
+            if (filename.startsWith(excludePath)) {
+                zip.remove(filename);
+                removedCount++;
+                if (!foundPaths.includes(excludePath)) {
+                    foundPaths.push(excludePath);
+                    // Remove from not found list
+                    const notFoundIndex = notFoundPaths.indexOf(excludePath);
+                    if (notFoundIndex > -1) {
+                        notFoundPaths.splice(notFoundIndex, 1);
+                    }
+                }
+                break; // Move to next filename once a match is found
+            }
+        }
+    });
+    if (removedCount > 0) {
+        coreExports.info(`Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`);
+    }
+    // Error if any paths weren't found - stop the action
+    if (notFoundPaths.length > 0) {
+        throw new ExcludedPathsValidationError(`The following excluded paths were not found in the artifact: ${notFoundPaths.join(', ')}. Verify that the paths exist in your artifact.`);
+    }
+    if (removedCount === 0 && pathsToExclude.length > 0) {
+        throw new ExcludedPathsValidationError('No files were removed. Verify that the excluded paths match the structure of your artifact.');
+    }
+}
 async function handleAddArtifact(api, inputs) {
     validateRequiredInputs(inputs, [
         'filePath'
@@ -65039,10 +65116,14 @@ async function handleAddArtifact(api, inputs) {
     // Handle NuGet source injection if provided
     if (inputs.nugetSourceName && inputs.nugetSourceUrl) {
         try {
-            modifiedFilePath = await processArtifactWithNugetConfig(inputs.filePath, inputs.nugetSourceName, inputs.nugetSourceUrl, inputs.nugetSourceUsername, inputs.nugetSourcePassword);
+            modifiedFilePath = await processArtifactWithNugetConfig(inputs.filePath, inputs.nugetSourceName, inputs.nugetSourceUrl, inputs.nugetSourceUsername, inputs.nugetSourcePassword, inputs.excludedPaths);
             nugetSourceStatus = 'NuGet.config successfully injected into artifact';
         }
         catch (error) {
+            // Re-throw excluded paths validation errors as they should stop the action
+            if (error instanceof ExcludedPathsValidationError) {
+                throw error;
+            }
             const errorMessage = `Failed to configure NuGet source: ${error}`;
             coreExports.warning(errorMessage);
             nugetSourceStatus = errorMessage;
@@ -65051,10 +65132,14 @@ async function handleAddArtifact(api, inputs) {
     else {
         // Process .cloud_gitignore replacement if present, even without NuGet config
         try {
-            modifiedFilePath = await processCloudGitignore(inputs.filePath);
+            modifiedFilePath = await processCloudGitignore(inputs.filePath, inputs.excludedPaths);
             coreExports.info('Successfully processed .cloud_gitignore');
         }
         catch (error) {
+            // Re-throw excluded paths validation errors as they should stop the action
+            if (error instanceof ExcludedPathsValidationError) {
+                throw error;
+            }
             coreExports.warning(`Failed to process .cloud_gitignore: ${error}`);
         }
         // Only validate git repository if we didn't process the artifact
@@ -65068,22 +65153,13 @@ async function handleAddArtifact(api, inputs) {
         nugetSourceStatus
     };
 }
-async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSourceUrl, nugetSourceUsername, nugetSourcePassword) {
+async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSourceUrl, nugetSourceUsername, nugetSourcePassword, excludedPaths) {
     coreExports.info('NuGet source configuration provided. Injecting NuGet.config into zip...');
     // Load the zip file
     const data = fs.readFileSync(filePath);
     const zip = await JSZip.loadAsync(data);
-    // Remove all .git/ entries
-    let gitFolderRemoved = false;
-    Object.keys(zip.files).forEach((filename) => {
-        if (filename.startsWith('.git/')) {
-            zip.remove(filename);
-            gitFolderRemoved = true;
-        }
-    });
-    if (gitFolderRemoved) {
-        coreExports.info('.git folder discovered and removed from the zip');
-    }
+    // Remove excluded paths
+    removeExcludedPaths(zip, excludedPaths || '.git/,.github/');
     // Add or update NuGet.config in the root
     const nugetConfig = {
         name: nugetSourceName,
@@ -65108,7 +65184,7 @@ async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSo
     });
     fs.writeFileSync(filePath, updatedData);
     coreExports.info(`Zip file size after processing: ${fs.statSync(filePath).size} bytes`);
-    coreExports.info('Successfully injected NuGet.config and removed .git from artifact zip');
+    coreExports.info('Successfully injected NuGet.config and processed excluded paths in artifact zip');
     return filePath;
 }
 async function validateArtifactGitRepository(filePath) {
@@ -65178,11 +65254,13 @@ async function validateGitRepository(directoryPath, context) {
         throw error;
     }
 }
-async function processCloudGitignore(filePath) {
+async function processCloudGitignore(filePath, excludedPaths) {
     coreExports.info('Checking for .cloud_gitignore file to replace .gitignore...');
     // Load the zip file
     const data = fs.readFileSync(filePath);
     const zip = await JSZip.loadAsync(data);
+    // Remove excluded paths first
+    removeExcludedPaths(zip, excludedPaths || '.git/,.github/');
     // Process .cloud_gitignore replacement
     const wasProcessed = await processCloudGitignoreInZip(zip);
     if (wasProcessed) {
@@ -65285,7 +65363,8 @@ function getActionInputs() {
         nugetSourceName: coreExports.getInput('nuget-source-name'),
         nugetSourceUrl: coreExports.getInput('nuget-source-url'),
         nugetSourceUsername: coreExports.getInput('nuget-source-username'),
-        nugetSourcePassword: coreExports.getInput('nuget-source-password')
+        nugetSourcePassword: coreExports.getInput('nuget-source-password'),
+        excludedPaths: coreExports.getInput('excluded-paths') || '.git/,.github/'
     };
 }
 /**

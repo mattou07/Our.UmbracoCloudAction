@@ -96,6 +96,13 @@ inputs:
       'Password for NuGet package source authentication (optional for
       add-artifact)'
     required: false
+  excluded-paths:
+    description:
+      'Comma-separated list of paths to exclude from artifacts. Paths are
+      matched as prefixes (e.g., ".git/,.github/"). Use relative paths of the
+      repository only, no ".." or absolute paths are allowed.'
+    required: false
+    default: '.git/,.github/'
 
 # Define your outputs here.
 outputs:

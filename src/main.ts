@@ -38,7 +38,8 @@ export function getActionInputs(): ActionInputs {
     nugetSourceName: core.getInput('nuget-source-name'),
     nugetSourceUrl: core.getInput('nuget-source-url'),
     nugetSourceUsername: core.getInput('nuget-source-username'),
-    nugetSourcePassword: core.getInput('nuget-source-password')
+    nugetSourcePassword: core.getInput('nuget-source-password'),
+    excludedPaths: core.getInput('excluded-paths') || '.git/,.github/'
   }
 }
 
