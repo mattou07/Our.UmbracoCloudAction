@@ -22,7 +22,10 @@ class ExcludedPathsValidationError extends Error {
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
  */
-function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
+async function removeExcludedPaths(
+  zip: JSZip,
+  excludedPaths: string
+): Promise<void> {
   if (!excludedPaths.trim()) {
     return
   }
@@ -74,14 +77,39 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
   const foundPaths: string[] = []
   const notFoundPaths: string[] = [...pathsToExclude]
 
-  Object.keys(zip.files).forEach((filename) => {
+  const allFilenames = Object.keys(zip.files)
+  for (const filename of allFilenames) {
     for (const excludePath of pathsToExclude) {
       if (filename.startsWith(excludePath)) {
         const fileEntry = zip.files[filename]
         if (fileEntry && !fileEntry.dir) {
-          // Get the uncompressed size of the file from internal data
-          const fileSize = (fileEntry as any)._data?.uncompressedSize || 0
+          // Get the file size - try multiple approaches to ensure we get a valid size
+          let fileSize = 0
+
+          // Method 1: Try to get from internal data
+          if ((fileEntry as any)._data?.uncompressedSize) {
+            fileSize = (fileEntry as any)._data.uncompressedSize
+          }
+          // Method 2: Try to get file content to determine actual size
+          else {
+            try {
+              const buffer = await fileEntry.async('nodebuffer')
+              fileSize = buffer.length
+            } catch (e) {
+              // Method 3: Use compressed size if available as fallback
+              if ((fileEntry as any)._data?.compressedSize) {
+                fileSize = (fileEntry as any)._data.compressedSize
+                core.debug(
+                  `Using compressed size for ${filename}: ${fileSize} bytes`
+                )
+              } else {
+                core.debug(`Could not determine size for ${filename}`)
+              }
+            }
+          }
+
           totalSavedBytes += fileSize
+          core.debug(`File ${filename}: ${fileSize} bytes`)
         }
 
         zip.remove(filename)
@@ -97,7 +125,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
         break // Move to next filename once a match is found
       }
     }
-  })
+  }
 
   if (removedCount > 0) {
     const savedMB = (totalSavedBytes / (1024 * 1024)).toFixed(2)
@@ -229,7 +257,7 @@ async function processArtifactWithNugetConfig(
   const zip = await JSZip.loadAsync(data)
 
   // Remove excluded paths
-  removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
+  await removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
 
   // Add or update NuGet.config in the root
   const nugetConfig = {
@@ -364,7 +392,7 @@ async function processCloudGitignore(
   const zip = await JSZip.loadAsync(data)
 
   // Remove excluded paths first
-  removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
+  await removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
 
   // Process .cloud_gitignore replacement
   const wasProcessed = await processCloudGitignoreInZip(zip)
