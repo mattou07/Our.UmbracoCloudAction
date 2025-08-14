@@ -495,6 +495,71 @@ export class UmbracoCloudAPI {
     }
   }
 
+  /**
+   * Helper method to check if a deployment has changes (returns 200 vs 204)
+   * without throwing errors, and handles environment alias case sensitivity
+   */
+  private async tryGetChangesWithResponse(
+    deploymentId: string,
+    targetEnvironmentAlias: string
+  ): Promise<{ hasChanges: boolean; changes?: string }> {
+    const originalRequest = async (): Promise<{
+      hasChanges: boolean
+      changes?: string
+    }> => {
+      const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getHeaders()
+      })
+
+      if (response.status === 200) {
+        const changes = await response.text()
+        return { hasChanges: !!(changes && changes.trim().length > 0), changes }
+      } else if (response.status === 204) {
+        return { hasChanges: false }
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+    }
+
+    const retryRequest = async (): Promise<{
+      hasChanges: boolean
+      changes?: string
+    }> => {
+      const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getHeaders()
+      })
+
+      if (response.status === 200) {
+        const changes = await response.text()
+        return { hasChanges: !!(changes && changes.trim().length > 0), changes }
+      } else if (response.status === 204) {
+        return { hasChanges: false }
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+    }
+
+    try {
+      return await this.retryWithLowercaseEnvironmentAlias(
+        originalRequest,
+        retryRequest,
+        targetEnvironmentAlias,
+        'tryGetChangesWithResponse'
+      )
+    } catch (error) {
+      core.debug(
+        `Error checking changes for deployment ${deploymentId}: ${error}`
+      )
+      return { hasChanges: false }
+    }
+  }
+
   async getLatestCompletedDeployment(
     targetEnvironmentAlias: string
   ): Promise<string | null> {
@@ -518,16 +583,38 @@ export class UmbracoCloudAPI {
         `Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`
       )
 
-      // Find the first completed deployment
-      const completedDeployment = deployments.data.find(
-        (d) => d.state === 'Completed'
-      )
+      // Check each completed deployment to see if it has actual changes (200 response)
+      for (const deployment of deployments.data) {
+        if (deployment.state === 'Completed') {
+          core.debug(
+            `Checking deployment ${deployment.id} for actual changes...`
+          )
 
-      if (completedDeployment) {
-        core.debug(
-          `Found latest completed deployment: ${completedDeployment.id}`
-        )
-        return completedDeployment.id
+          try {
+            // Try to get changes for this deployment
+            const changes = await this.tryGetChangesWithResponse(
+              deployment.id,
+              targetEnvironmentAlias
+            )
+
+            if (changes.hasChanges) {
+              core.debug(
+                `Found deployment ${deployment.id} with actual changes (200 response)`
+              )
+              return deployment.id
+            } else {
+              core.debug(
+                `Deployment ${deployment.id} has no changes (204 response), checking next...`
+              )
+              continue // Try next deployment
+            }
+          } catch (error) {
+            core.debug(
+              `Error checking deployment ${deployment.id}: ${error}, checking next...`
+            )
+            continue // Try next deployment
+          }
+        }
       }
 
       // Check if we've reached the end

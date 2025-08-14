@@ -27624,6 +27624,53 @@ class UmbracoCloudAPI {
             throw error;
         }
     }
+    /**
+     * Helper method to check if a deployment has changes (returns 200 vs 204)
+     * without throwing errors, and handles environment alias case sensitivity
+     */
+    async tryGetChangesWithResponse(deploymentId, targetEnvironmentAlias) {
+        const originalRequest = async () => {
+            const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (response.status === 200) {
+                const changes = await response.text();
+                return { hasChanges: !!(changes && changes.trim().length > 0), changes };
+            }
+            else if (response.status === 204) {
+                return { hasChanges: false };
+            }
+            else {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        };
+        const retryRequest = async () => {
+            const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`;
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (response.status === 200) {
+                const changes = await response.text();
+                return { hasChanges: !!(changes && changes.trim().length > 0), changes };
+            }
+            else if (response.status === 204) {
+                return { hasChanges: false };
+            }
+            else {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        };
+        try {
+            return await this.retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, targetEnvironmentAlias, 'tryGetChangesWithResponse');
+        }
+        catch (error) {
+            coreExports.debug(`Error checking changes for deployment ${deploymentId}: ${error}`);
+            return { hasChanges: false };
+        }
+    }
     async getLatestCompletedDeployment(targetEnvironmentAlias) {
         coreExports.debug('Finding latest completed deployment with changes...');
         let skip = 0;
@@ -27634,11 +27681,27 @@ class UmbracoCloudAPI {
             const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
             targetEnvironmentAlias);
             coreExports.debug(`Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`);
-            // Find the first completed deployment
-            const completedDeployment = deployments.data.find((d) => d.state === 'Completed');
-            if (completedDeployment) {
-                coreExports.debug(`Found latest completed deployment: ${completedDeployment.id}`);
-                return completedDeployment.id;
+            // Check each completed deployment to see if it has actual changes (200 response)
+            for (const deployment of deployments.data) {
+                if (deployment.state === 'Completed') {
+                    coreExports.debug(`Checking deployment ${deployment.id} for actual changes...`);
+                    try {
+                        // Try to get changes for this deployment
+                        const changes = await this.tryGetChangesWithResponse(deployment.id, targetEnvironmentAlias);
+                        if (changes.hasChanges) {
+                            coreExports.debug(`Found deployment ${deployment.id} with actual changes (200 response)`);
+                            return deployment.id;
+                        }
+                        else {
+                            coreExports.debug(`Deployment ${deployment.id} has no changes (204 response), checking next...`);
+                            continue; // Try next deployment
+                        }
+                    }
+                    catch (error) {
+                        coreExports.debug(`Error checking deployment ${deployment.id}: ${error}, checking next...`);
+                        continue; // Try next deployment
+                    }
+                }
             }
             // Check if we've reached the end
             if (deployments.data.length < take ||
