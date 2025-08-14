@@ -21,13 +21,14 @@ class ExcludedPathsValidationError extends Error {
 /**
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
+ * Returns the actual space saved in bytes
  */
 async function removeExcludedPaths(
   zip: JSZip,
   excludedPaths: string
-): Promise<void> {
+): Promise<number> {
   if (!excludedPaths.trim()) {
-    return
+    return 0
   }
 
   // Validate format: single path or comma-separated paths (no space-separated paths)
@@ -72,48 +73,39 @@ async function removeExcludedPaths(
 
   core.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`)
 
+  // Get the original zip size by generating it
+  const originalZipData = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 }
+  })
+  const originalSize = originalZipData.length
+
   let removedCount = 0
-  let totalSavedBytes = 0
   const foundPaths: string[] = []
   const notFoundPaths: string[] = [...pathsToExclude]
 
   const allFilenames = Object.keys(zip.files)
+  const filesToRemove: string[] = []
+
+  // Find all files to remove
   for (const filename of allFilenames) {
     for (const excludePath of pathsToExclude) {
       if (filename.startsWith(excludePath)) {
-        const fileEntry = zip.files[filename]
-        if (fileEntry && !fileEntry.dir) {
-          // Get the file size - try multiple approaches to ensure we get a valid size
-          let fileSize = 0
+        filesToRemove.push(filename)
+        break // Move to next filename once a match is found
+      }
+    }
+  }
 
-          // Method 1: Try to get from internal data
-          if ((fileEntry as any)._data?.uncompressedSize) {
-            fileSize = (fileEntry as any)._data.uncompressedSize
-          }
-          // Method 2: Try to get file content to determine actual size
-          else {
-            try {
-              const buffer = await fileEntry.async('nodebuffer')
-              fileSize = buffer.length
-            } catch (e) {
-              // Method 3: Use compressed size if available as fallback
-              if ((fileEntry as any)._data?.compressedSize) {
-                fileSize = (fileEntry as any)._data.compressedSize
-                core.debug(
-                  `Using compressed size for ${filename}: ${fileSize} bytes`
-                )
-              } else {
-                core.debug(`Could not determine size for ${filename}`)
-              }
-            }
-          }
+  // Remove the files
+  for (const filename of filesToRemove) {
+    zip.remove(filename)
+    removedCount++
 
-          totalSavedBytes += fileSize
-          core.debug(`File ${filename}: ${fileSize} bytes`)
-        }
-
-        zip.remove(filename)
-        removedCount++
+    // Track which paths were found
+    for (const excludePath of pathsToExclude) {
+      if (filename.startsWith(excludePath)) {
         if (!foundPaths.includes(excludePath)) {
           foundPaths.push(excludePath)
           // Remove from not found list
@@ -122,18 +114,28 @@ async function removeExcludedPaths(
             notFoundPaths.splice(notFoundIndex, 1)
           }
         }
-        break // Move to next filename once a match is found
+        break
       }
     }
   }
 
+  // Calculate actual space saved by comparing zip sizes
+  let actualSpaceSaved = 0
   if (removedCount > 0) {
-    const savedMB = (totalSavedBytes / (1024 * 1024)).toFixed(2)
+    const newZipData = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 }
+    })
+    const newSize = newZipData.length
+    actualSpaceSaved = originalSize - newSize
+
+    const savedMB = (actualSpaceSaved / (1024 * 1024)).toFixed(2)
     core.info(
       `Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`
     )
     core.info(
-      `Space saved: ${savedMB} MB (${totalSavedBytes.toLocaleString()} bytes)`
+      `Space saved: ${savedMB} MB (${actualSpaceSaved.toLocaleString()} bytes)`
     )
 
     // Environmental impact message based on space saved
@@ -169,6 +171,8 @@ async function removeExcludedPaths(
       'No files were removed. Verify that the excluded paths match the structure of your artifact.'
     )
   }
+
+  return actualSpaceSaved
 }
 
 export async function handleAddArtifact(
