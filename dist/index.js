@@ -27713,6 +27713,54 @@ class UmbracoCloudAPI {
         coreExports.debug('No completed deployments with changes found after checking all batches');
         return null;
     }
+    /**
+     * Get multiple latest completed deployments with changes for fallback scenarios
+     * Returns up to maxResults deployment IDs that have actual changes
+     */
+    async getLatestCompletedDeployments(targetEnvironmentAlias, maxResults = 5) {
+        coreExports.debug(`Finding up to ${maxResults} latest completed deployments with changes...`);
+        let skip = 0;
+        const take = 10;
+        const maxAttempts = 20;
+        const foundDeployments = [];
+        for (let attempt = 0; attempt < maxAttempts && foundDeployments.length < maxResults; attempt++) {
+            coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
+            const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
+            targetEnvironmentAlias);
+            coreExports.debug(`Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`);
+            // Check each completed deployment to see if it has actual changes (200 response)
+            for (const deployment of deployments.data) {
+                if (deployment.state === 'Completed' &&
+                    foundDeployments.length < maxResults) {
+                    coreExports.debug(`Checking deployment ${deployment.id} for actual changes...`);
+                    try {
+                        // Try to get changes for this deployment
+                        const changes = await this.tryGetChangesWithResponse(deployment.id, targetEnvironmentAlias);
+                        if (changes.hasChanges) {
+                            coreExports.debug(`Found deployment ${deployment.id} with actual changes (200 response)`);
+                            foundDeployments.push(deployment.id);
+                        }
+                        else {
+                            coreExports.debug(`Deployment ${deployment.id} has no changes (204 response), checking next...`);
+                            continue; // Try next deployment
+                        }
+                    }
+                    catch (error) {
+                        coreExports.debug(`Error checking deployment ${deployment.id}: ${error}, checking next...`);
+                        continue; // Try next deployment
+                    }
+                }
+            }
+            // Check if we've reached the end
+            if (deployments.data.length < take ||
+                skip + take >= deployments.totalItems) {
+                break;
+            }
+            skip += take;
+        }
+        coreExports.debug(`Found ${foundDeployments.length} completed deployments with changes`);
+        return foundDeployments;
+    }
     async getDeploymentErrorDetails(deploymentId, targetEnvironmentAlias) {
         try {
             const deployment = await this.checkDeploymentStatus(deploymentId, targetEnvironmentAlias, 10 // Short timeout just to get current status
@@ -35144,8 +35192,85 @@ var Octokit = Octokit$1.plugin(
 });
 
 /**
- * Create a pull request with the provided git patch
+ * Try to apply a git patch and return success status
  */
+async function tryApplyGitPatch(gitPatch, patchFilePath) {
+    try {
+        coreExports.info('Writing patch file...');
+        fs.writeFileSync(patchFilePath, gitPatch, 'utf8');
+        coreExports.info('Applying git patch...');
+        const applyExitCode = await execExports.exec('git', ['apply', '--check', patchFilePath], {
+            ignoreReturnCode: true
+        });
+        if (applyExitCode === 0) {
+            // Patch can be applied, now actually apply it
+            const actualApplyExitCode = await execExports.exec('git', ['apply', patchFilePath], {
+                ignoreReturnCode: true
+            });
+            if (actualApplyExitCode === 0) {
+                coreExports.info('Git patch applied successfully');
+                return true;
+            }
+            else {
+                coreExports.warning('Git patch failed to apply during actual application');
+                return false;
+            }
+        }
+        else {
+            coreExports.warning('Git patch cannot be applied (likely already applied or conflicts)');
+            return false;
+        }
+    }
+    catch (error) {
+        coreExports.warning(`Error applying git patch: ${error}`);
+        return false;
+    }
+    finally {
+        // Clean up patch file
+        if (fs.existsSync(patchFilePath)) {
+            fs.unlinkSync(patchFilePath);
+        }
+    }
+}
+/**
+ * Create a pull request with git patches from multiple deployment IDs, trying until one works
+ */
+async function createPullRequestWithMultipleDeployments(deploymentIds, getChangesFunction, baseBranch, title, body) {
+    if (deploymentIds.length === 0) {
+        throw new Error('No deployment IDs provided');
+    }
+    for (let i = 0; i < deploymentIds.length; i++) {
+        const deploymentId = deploymentIds[i];
+        coreExports.info(`Attempting to create PR with deployment ${deploymentId} (${i + 1}/${deploymentIds.length})`);
+        try {
+            // Get the git patch for this deployment
+            const gitPatch = await getChangesFunction(deploymentId);
+            if (!gitPatch.trim()) {
+                coreExports.warning(`Deployment ${deploymentId} has empty git patch, trying next...`);
+                continue;
+            }
+            // Try to create the PR with this deployment
+            const result = await createPullRequestWithPatch(gitPatch, baseBranch, title, body, deploymentId);
+            coreExports.info(`Successfully created PR with deployment ${deploymentId}`);
+            return {
+                ...result,
+                deploymentId
+            };
+        }
+        catch (error) {
+            coreExports.warning(`Failed to create PR with deployment ${deploymentId}: ${error}`);
+            if (i === deploymentIds.length - 1) {
+                // This was the last deployment, re-throw the error
+                throw new Error(`Failed to create PR with any of the ${deploymentIds.length} deployments. Last error: ${error}`);
+            }
+            else {
+                coreExports.info(`Trying next deployment...`);
+                continue;
+            }
+        }
+    }
+    throw new Error('No deployments were successfully processed');
+}
 async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, latestCompletedDeploymentId) {
     try {
         // Create a new branch name using the format: umbcloud/{deploymentId}
@@ -35220,19 +35345,10 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             coreExports.info(`Fetching and checking out remote branch: ${newBranchName}`);
             await execExports.exec('git', ['fetch', 'origin']);
             await execExports.exec('git', ['checkout', newBranchName]);
-            coreExports.info('Writing patch file...');
-            fs.writeFileSync(patchFilePath, gitPatch, 'utf8');
-            coreExports.info('Applying git patch...');
-            const applyExitCode = await execExports.exec('git', ['apply', patchFilePath], {
-                ignoreReturnCode: true
-            });
-            if (applyExitCode !== 0) {
-                throw new Error('Failed to apply git patch');
-            }
-            // Clean up patch file before adding changes to git
-            coreExports.info('Removing patch file...');
-            if (fs.existsSync(patchFilePath)) {
-                fs.unlinkSync(patchFilePath);
+            // Try to apply the git patch
+            const patchApplied = await tryApplyGitPatch(gitPatch, patchFilePath);
+            if (!patchApplied) {
+                throw new Error('Failed to apply git patch - likely already applied or conflicts exist');
             }
             coreExports.info('Adding changes to git...');
             await execExports.exec('git', ['add', '.']);
@@ -35458,35 +35574,46 @@ async function getErrorDetails(api, inputs) {
 }
 async function attemptPullRequestCreation(api, inputs, deploymentStatus) {
     try {
-        coreExports.info('Attempting to get latest completed deployment with changes and create PR...');
-        const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(inputs.targetEnvironmentAlias);
-        if (!latestCompletedDeploymentId) {
+        coreExports.info('Attempting to get multiple completed deployments with changes and create PR...');
+        // Get multiple deployment IDs as fallbacks
+        const deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 3 // Try up to 3 deployments
+        );
+        if (deploymentIds.length === 0) {
             coreExports.warning('No completed deployments found to create PR from');
             return {
                 deploymentState: deploymentStatus.deploymentState,
                 deploymentStatus: JSON.stringify(deploymentStatus)
             };
         }
-        coreExports.info(`Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`);
-        // Get the changes from the latest completed deployment
-        const changes = await api.getChangesById(latestCompletedDeploymentId, inputs.targetEnvironmentAlias);
-        coreExports.info('Retrieved changes from latest completed deployment');
-        coreExports.setOutput('latest-completed-deployment-id', latestCompletedDeploymentId);
-        coreExports.setOutput('changes', JSON.stringify(changes));
-        // Create GitHub PR with the changes
+        coreExports.info(`Found ${deploymentIds.length} completed deployment(s) with changes: ${deploymentIds.join(', ')}`);
+        // Create GitHub PR with the changes, trying multiple deployments
         const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`;
-        const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).
+        const prBody = (deploymentId) => `This PR applies changes from completed deployment (${deploymentId}) to fix the failed deployment (${inputs.deploymentId}).
 
 **Failed Deployment ID:** ${inputs.deploymentId}
-**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
+**Source Deployment ID:** ${deploymentId}
 **Target Environment:** ${inputs.targetEnvironmentAlias}
 
-The changes in this PR are based on the git patch from the latest successful deployment.`;
-        await createPullRequestInWorkspace(changes.changes, prTitle, prBody, latestCompletedDeploymentId);
+The changes in this PR are based on the git patch from a successful deployment.`;
+        // Function to get changes for a specific deployment
+        const getChangesFunction = async (deploymentId) => {
+            const changes = await api.getChangesById(deploymentId, inputs.targetEnvironmentAlias);
+            return changes.changes;
+        };
+        // Try to create PR with multiple deployments
+        const result = await createPullRequestWithMultipleDeployments(deploymentIds, getChangesFunction, githubExports.context.ref.replace('refs/heads/', ''), prTitle, prBody(deploymentIds[0]) // Use the first deployment ID for the body initially
+        );
+        // Get the successful deployment ID from the result
+        const successfulDeploymentId = result.deploymentId;
+        // Get the changes from the successful deployment for the output
+        const changes = await api.getChangesById(successfulDeploymentId, inputs.targetEnvironmentAlias);
+        coreExports.info('Retrieved changes from latest completed deployment');
+        coreExports.setOutput('latest-completed-deployment-id', successfulDeploymentId);
+        coreExports.setOutput('changes', JSON.stringify(changes));
         return {
             deploymentState: deploymentStatus.deploymentState,
             deploymentStatus: JSON.stringify(deploymentStatus),
-            latestCompletedDeploymentId,
+            latestCompletedDeploymentId: successfulDeploymentId,
             changes: JSON.stringify(changes)
         };
     }

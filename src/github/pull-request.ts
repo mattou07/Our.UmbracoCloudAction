@@ -6,8 +6,123 @@ import { Octokit } from '@octokit/rest'
 import { PullRequestInfo } from '../types/index.js'
 
 /**
- * Create a pull request with the provided git patch
+ * Try to apply a git patch and return success status
  */
+async function tryApplyGitPatch(
+  gitPatch: string,
+  patchFilePath: string
+): Promise<boolean> {
+  try {
+    core.info('Writing patch file...')
+    fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
+
+    core.info('Applying git patch...')
+    const applyExitCode = await exec.exec(
+      'git',
+      ['apply', '--check', patchFilePath],
+      {
+        ignoreReturnCode: true
+      }
+    )
+
+    if (applyExitCode === 0) {
+      // Patch can be applied, now actually apply it
+      const actualApplyExitCode = await exec.exec(
+        'git',
+        ['apply', patchFilePath],
+        {
+          ignoreReturnCode: true
+        }
+      )
+
+      if (actualApplyExitCode === 0) {
+        core.info('Git patch applied successfully')
+        return true
+      } else {
+        core.warning('Git patch failed to apply during actual application')
+        return false
+      }
+    } else {
+      core.warning(
+        'Git patch cannot be applied (likely already applied or conflicts)'
+      )
+      return false
+    }
+  } catch (error) {
+    core.warning(`Error applying git patch: ${error}`)
+    return false
+  } finally {
+    // Clean up patch file
+    if (fs.existsSync(patchFilePath)) {
+      fs.unlinkSync(patchFilePath)
+    }
+  }
+}
+
+/**
+ * Create a pull request with git patches from multiple deployment IDs, trying until one works
+ */
+export async function createPullRequestWithMultipleDeployments(
+  deploymentIds: string[],
+  getChangesFunction: (deploymentId: string) => Promise<string>,
+  baseBranch: string,
+  title: string,
+  body: string
+): Promise<PullRequestInfo & { deploymentId: string }> {
+  if (deploymentIds.length === 0) {
+    throw new Error('No deployment IDs provided')
+  }
+
+  for (let i = 0; i < deploymentIds.length; i++) {
+    const deploymentId = deploymentIds[i]
+    core.info(
+      `Attempting to create PR with deployment ${deploymentId} (${i + 1}/${deploymentIds.length})`
+    )
+
+    try {
+      // Get the git patch for this deployment
+      const gitPatch = await getChangesFunction(deploymentId)
+
+      if (!gitPatch.trim()) {
+        core.warning(
+          `Deployment ${deploymentId} has empty git patch, trying next...`
+        )
+        continue
+      }
+
+      // Try to create the PR with this deployment
+      const result = await createPullRequestWithPatch(
+        gitPatch,
+        baseBranch,
+        title,
+        body,
+        deploymentId
+      )
+
+      core.info(`Successfully created PR with deployment ${deploymentId}`)
+      return {
+        ...result,
+        deploymentId
+      }
+    } catch (error) {
+      core.warning(
+        `Failed to create PR with deployment ${deploymentId}: ${error}`
+      )
+
+      if (i === deploymentIds.length - 1) {
+        // This was the last deployment, re-throw the error
+        throw new Error(
+          `Failed to create PR with any of the ${deploymentIds.length} deployments. Last error: ${error}`
+        )
+      } else {
+        core.info(`Trying next deployment...`)
+        continue
+      }
+    }
+  }
+
+  throw new Error('No deployments were successfully processed')
+}
 export async function createPullRequestWithPatch(
   gitPatch: string,
   baseBranch: string,
@@ -105,22 +220,13 @@ export async function createPullRequestWithPatch(
       await exec.exec('git', ['fetch', 'origin'])
       await exec.exec('git', ['checkout', newBranchName])
 
-      core.info('Writing patch file...')
-      fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
+      // Try to apply the git patch
+      const patchApplied = await tryApplyGitPatch(gitPatch, patchFilePath)
 
-      core.info('Applying git patch...')
-      const applyExitCode = await exec.exec('git', ['apply', patchFilePath], {
-        ignoreReturnCode: true
-      })
-
-      if (applyExitCode !== 0) {
-        throw new Error('Failed to apply git patch')
-      }
-
-      // Clean up patch file before adding changes to git
-      core.info('Removing patch file...')
-      if (fs.existsSync(patchFilePath)) {
-        fs.unlinkSync(patchFilePath)
+      if (!patchApplied) {
+        throw new Error(
+          'Failed to apply git patch - likely already applied or conflicts exist'
+        )
       }
 
       core.info('Adding changes to git...')

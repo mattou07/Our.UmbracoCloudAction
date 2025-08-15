@@ -8,7 +8,10 @@ import {
 } from '../types/index.js'
 import { validateRequiredInputs } from '../utils/helpers.js'
 import { pollDeploymentStatus } from '../utils/deployment-polling.js'
-import { createPullRequestWithPatch } from '../github/pull-request.js'
+import {
+  createPullRequestWithPatch,
+  createPullRequestWithMultipleDeployments
+} from '../github/pull-request.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as github from '@actions/github'
@@ -293,14 +296,16 @@ async function attemptPullRequestCreation(
 ): Promise<ActionOutputs> {
   try {
     core.info(
-      'Attempting to get latest completed deployment with changes and create PR...'
+      'Attempting to get multiple completed deployments with changes and create PR...'
     )
 
-    const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(
-      inputs.targetEnvironmentAlias!
+    // Get multiple deployment IDs as fallbacks
+    const deploymentIds = await api.getLatestCompletedDeployments(
+      inputs.targetEnvironmentAlias!,
+      3 // Try up to 3 deployments
     )
 
-    if (!latestCompletedDeploymentId) {
+    if (deploymentIds.length === 0) {
       core.warning('No completed deployments found to create PR from')
       return {
         deploymentState: deploymentStatus.deploymentState,
@@ -309,43 +314,58 @@ async function attemptPullRequestCreation(
     }
 
     core.info(
-      `Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`
+      `Found ${deploymentIds.length} completed deployment(s) with changes: ${deploymentIds.join(', ')}`
     )
 
-    // Get the changes from the latest completed deployment
+    // Create GitHub PR with the changes, trying multiple deployments
+    const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`
+    const prBody = (
+      deploymentId: string
+    ) => `This PR applies changes from completed deployment (${deploymentId}) to fix the failed deployment (${inputs.deploymentId}).
+
+**Failed Deployment ID:** ${inputs.deploymentId}
+**Source Deployment ID:** ${deploymentId}
+**Target Environment:** ${inputs.targetEnvironmentAlias}
+
+The changes in this PR are based on the git patch from a successful deployment.`
+
+    // Function to get changes for a specific deployment
+    const getChangesFunction = async (
+      deploymentId: string
+    ): Promise<string> => {
+      const changes = await api.getChangesById(
+        deploymentId,
+        inputs.targetEnvironmentAlias!
+      )
+      return changes.changes
+    }
+
+    // Try to create PR with multiple deployments
+    const result = await createPullRequestWithMultipleDeployments(
+      deploymentIds,
+      getChangesFunction,
+      github.context.ref.replace('refs/heads/', ''),
+      prTitle,
+      prBody(deploymentIds[0]) // Use the first deployment ID for the body initially
+    )
+
+    // Get the successful deployment ID from the result
+    const successfulDeploymentId = result.deploymentId
+
+    // Get the changes from the successful deployment for the output
     const changes = await api.getChangesById(
-      latestCompletedDeploymentId,
+      successfulDeploymentId,
       inputs.targetEnvironmentAlias!
     )
 
     core.info('Retrieved changes from latest completed deployment')
-    core.setOutput(
-      'latest-completed-deployment-id',
-      latestCompletedDeploymentId
-    )
+    core.setOutput('latest-completed-deployment-id', successfulDeploymentId)
     core.setOutput('changes', JSON.stringify(changes))
-
-    // Create GitHub PR with the changes
-    const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`
-    const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).
-
-**Failed Deployment ID:** ${inputs.deploymentId}
-**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
-**Target Environment:** ${inputs.targetEnvironmentAlias}
-
-The changes in this PR are based on the git patch from the latest successful deployment.`
-
-    await createPullRequestInWorkspace(
-      changes.changes,
-      prTitle,
-      prBody,
-      latestCompletedDeploymentId
-    )
 
     return {
       deploymentState: deploymentStatus.deploymentState,
       deploymentStatus: JSON.stringify(deploymentStatus),
-      latestCompletedDeploymentId,
+      latestCompletedDeploymentId: successfulDeploymentId,
       changes: JSON.stringify(changes)
     }
   } catch (error) {

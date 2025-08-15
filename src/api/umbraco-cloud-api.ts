@@ -634,6 +634,95 @@ export class UmbracoCloudAPI {
     return null
   }
 
+  /**
+   * Get multiple latest completed deployments with changes for fallback scenarios
+   * Returns up to maxResults deployment IDs that have actual changes
+   */
+  async getLatestCompletedDeployments(
+    targetEnvironmentAlias: string,
+    maxResults: number = 5
+  ): Promise<string[]> {
+    core.debug(
+      `Finding up to ${maxResults} latest completed deployments with changes...`
+    )
+
+    let skip = 0
+    const take = 10
+    const maxAttempts = 20
+    const foundDeployments: string[] = []
+
+    for (
+      let attempt = 0;
+      attempt < maxAttempts && foundDeployments.length < maxResults;
+      attempt++
+    ) {
+      core.debug(`Checking deployments batch: skip=${skip}, take=${take}`)
+
+      const deployments = await this.getDeployments(
+        skip,
+        take,
+        false, // Only deployments with changes
+        targetEnvironmentAlias
+      )
+
+      core.debug(
+        `Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`
+      )
+
+      // Check each completed deployment to see if it has actual changes (200 response)
+      for (const deployment of deployments.data) {
+        if (
+          deployment.state === 'Completed' &&
+          foundDeployments.length < maxResults
+        ) {
+          core.debug(
+            `Checking deployment ${deployment.id} for actual changes...`
+          )
+
+          try {
+            // Try to get changes for this deployment
+            const changes = await this.tryGetChangesWithResponse(
+              deployment.id,
+              targetEnvironmentAlias
+            )
+
+            if (changes.hasChanges) {
+              core.debug(
+                `Found deployment ${deployment.id} with actual changes (200 response)`
+              )
+              foundDeployments.push(deployment.id)
+            } else {
+              core.debug(
+                `Deployment ${deployment.id} has no changes (204 response), checking next...`
+              )
+              continue // Try next deployment
+            }
+          } catch (error) {
+            core.debug(
+              `Error checking deployment ${deployment.id}: ${error}, checking next...`
+            )
+            continue // Try next deployment
+          }
+        }
+      }
+
+      // Check if we've reached the end
+      if (
+        deployments.data.length < take ||
+        skip + take >= deployments.totalItems
+      ) {
+        break
+      }
+
+      skip += take
+    }
+
+    core.debug(
+      `Found ${foundDeployments.length} completed deployments with changes`
+    )
+    return foundDeployments
+  }
+
   async getDeploymentErrorDetails(
     deploymentId: string,
     targetEnvironmentAlias: string
