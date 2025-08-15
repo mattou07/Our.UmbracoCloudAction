@@ -566,8 +566,8 @@ export class UmbracoCloudAPI {
     core.debug('Finding latest completed deployment with changes...')
 
     let skip = 0
-    const take = 20 // Increased batch size to get more deployments per request
-    const maxAttempts = 30 // Increased attempts to search through more deployments
+    const take = 50 // Increased batch size significantly
+    const maxAttempts = 100 // Much higher attempts to search through more deployments
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       core.debug(`Checking deployments batch: skip=${skip}, take=${take}`)
@@ -575,7 +575,7 @@ export class UmbracoCloudAPI {
       const deployments = await this.getDeployments(
         skip,
         take,
-        false, // Only deployments with changes
+        true, // Include ALL deployments, not just those with changes
         targetEnvironmentAlias
       )
 
@@ -647,12 +647,15 @@ export class UmbracoCloudAPI {
     )
 
     let skip = 0
-    const take = 30 // Increased batch size to get more deployments per request
-    const maxAttempts = 50 // Significantly increased attempts to search through more deployments
+    const take = 50 // Increased batch size significantly to get more deployments per request
+    const maxAttempts = 100 // Much higher search capacity to handle 204 responses
     const foundDeployments: string[] = []
 
     let totalDeploymentsSearched = 0
     let batchesProcessed = 0
+    let completedDeploymentsChecked = 0
+    let deploymentsWithChanges = 0
+    let deploymentsWithoutChanges = 0
 
     for (
       let attempt = 0;
@@ -660,19 +663,21 @@ export class UmbracoCloudAPI {
       attempt++
     ) {
       batchesProcessed = attempt + 1
-      core.debug(`Checking deployments batch: skip=${skip}, take=${take}`)
+      core.debug(
+        `Checking deployments batch ${batchesProcessed}: skip=${skip}, take=${take}`
+      )
 
       const deployments = await this.getDeployments(
         skip,
         take,
-        false, // Only deployments with changes
+        true, // Include ALL deployments, not just those with changes - this was the key issue!
         targetEnvironmentAlias
       )
 
       totalDeploymentsSearched = skip + deployments.data.length
 
       core.debug(
-        `Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`
+        `Batch ${batchesProcessed}: Found ${deployments.data.length} deployments (total available: ${deployments.totalItems})`
       )
 
       // Check each completed deployment to see if it has actual changes (200 response)
@@ -681,8 +686,9 @@ export class UmbracoCloudAPI {
           deployment.state === 'Completed' &&
           foundDeployments.length < maxResults
         ) {
+          completedDeploymentsChecked++
           core.debug(
-            `Checking deployment ${deployment.id} for actual changes...`
+            `Checking deployment ${deployment.id} for actual changes (${completedDeploymentsChecked} completed deployments checked)...`
           )
 
           try {
@@ -693,23 +699,36 @@ export class UmbracoCloudAPI {
             )
 
             if (changes.hasChanges) {
+              deploymentsWithChanges++
               core.debug(
-                `Found deployment ${deployment.id} with actual changes (200 response)`
+                `✓ Deployment ${deployment.id} has actual changes (200 response) - Added to list`
               )
               foundDeployments.push(deployment.id)
             } else {
+              deploymentsWithoutChanges++
               core.debug(
-                `Deployment ${deployment.id} has no changes (204 response), checking next...`
+                `✗ Deployment ${deployment.id} has no changes (204 response) - Skipping`
               )
               continue // Try next deployment
             }
           } catch (error) {
             core.debug(
-              `Error checking deployment ${deployment.id}: ${error}, checking next...`
+              `⚠ Error checking deployment ${deployment.id}: ${error}, checking next...`
             )
             continue // Try next deployment
           }
+        } else if (deployment.state !== 'Completed') {
+          core.debug(
+            `Skipping deployment ${deployment.id} - state: ${deployment.state}`
+          )
         }
+      }
+
+      // Log progress every few batches
+      if (batchesProcessed % 5 === 0 || foundDeployments.length >= maxResults) {
+        core.info(
+          `Progress: ${foundDeployments.length}/${maxResults} found after ${batchesProcessed} batches (${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes, ${deploymentsWithoutChanges} without)`
+        )
       }
 
       // Check if we've reached the end
@@ -717,14 +736,18 @@ export class UmbracoCloudAPI {
         deployments.data.length < take ||
         skip + take >= deployments.totalItems
       ) {
+        core.debug('Reached end of available deployments')
         break
       }
 
       skip += take
     }
 
-    core.debug(
-      `Found ${foundDeployments.length} completed deployments with changes after searching ${totalDeploymentsSearched} total deployments`
+    core.info(
+      `Search complete: Found ${foundDeployments.length} deployments with changes after searching ${totalDeploymentsSearched} total deployments across ${batchesProcessed} batches`
+    )
+    core.info(
+      `Statistics: ${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes (200), ${deploymentsWithoutChanges} without changes (204)`
     )
 
     if (foundDeployments.length > 0) {
@@ -733,7 +756,10 @@ export class UmbracoCloudAPI {
       )
     } else {
       core.warning(
-        `No deployments with changes found after searching ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`
+        `No deployments with changes found after comprehensive search of ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`
+      )
+      core.warning(
+        `This suggests most recent deployments return 204 (no changes). You may need to look further back in deployment history.`
       )
     }
 

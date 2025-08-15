@@ -27674,11 +27674,11 @@ class UmbracoCloudAPI {
     async getLatestCompletedDeployment(targetEnvironmentAlias) {
         coreExports.debug('Finding latest completed deployment with changes...');
         let skip = 0;
-        const take = 20; // Increased batch size to get more deployments per request
-        const maxAttempts = 30; // Increased attempts to search through more deployments
+        const take = 50; // Increased batch size significantly
+        const maxAttempts = 100; // Much higher attempts to search through more deployments
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
-            const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
+            const deployments = await this.getDeployments(skip, take, true, // Include ALL deployments, not just those with changes
             targetEnvironmentAlias);
             coreExports.debug(`Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`);
             // Check each completed deployment to see if it has actual changes (200 response)
@@ -27720,54 +27720,70 @@ class UmbracoCloudAPI {
     async getLatestCompletedDeployments(targetEnvironmentAlias, maxResults = 5) {
         coreExports.debug(`Finding up to ${maxResults} latest completed deployments with changes...`);
         let skip = 0;
-        const take = 30; // Increased batch size to get more deployments per request
-        const maxAttempts = 50; // Significantly increased attempts to search through more deployments
+        const take = 50; // Increased batch size significantly to get more deployments per request
+        const maxAttempts = 100; // Much higher search capacity to handle 204 responses
         const foundDeployments = [];
         let totalDeploymentsSearched = 0;
         let batchesProcessed = 0;
+        let completedDeploymentsChecked = 0;
+        let deploymentsWithChanges = 0;
+        let deploymentsWithoutChanges = 0;
         for (let attempt = 0; attempt < maxAttempts && foundDeployments.length < maxResults; attempt++) {
             batchesProcessed = attempt + 1;
-            coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
-            const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
+            coreExports.debug(`Checking deployments batch ${batchesProcessed}: skip=${skip}, take=${take}`);
+            const deployments = await this.getDeployments(skip, take, true, // Include ALL deployments, not just those with changes - this was the key issue!
             targetEnvironmentAlias);
             totalDeploymentsSearched = skip + deployments.data.length;
-            coreExports.debug(`Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`);
+            coreExports.debug(`Batch ${batchesProcessed}: Found ${deployments.data.length} deployments (total available: ${deployments.totalItems})`);
             // Check each completed deployment to see if it has actual changes (200 response)
             for (const deployment of deployments.data) {
                 if (deployment.state === 'Completed' &&
                     foundDeployments.length < maxResults) {
-                    coreExports.debug(`Checking deployment ${deployment.id} for actual changes...`);
+                    completedDeploymentsChecked++;
+                    coreExports.debug(`Checking deployment ${deployment.id} for actual changes (${completedDeploymentsChecked} completed deployments checked)...`);
                     try {
                         // Try to get changes for this deployment
                         const changes = await this.tryGetChangesWithResponse(deployment.id, targetEnvironmentAlias);
                         if (changes.hasChanges) {
-                            coreExports.debug(`Found deployment ${deployment.id} with actual changes (200 response)`);
+                            deploymentsWithChanges++;
+                            coreExports.debug(`✓ Deployment ${deployment.id} has actual changes (200 response) - Added to list`);
                             foundDeployments.push(deployment.id);
                         }
                         else {
-                            coreExports.debug(`Deployment ${deployment.id} has no changes (204 response), checking next...`);
+                            deploymentsWithoutChanges++;
+                            coreExports.debug(`✗ Deployment ${deployment.id} has no changes (204 response) - Skipping`);
                             continue; // Try next deployment
                         }
                     }
                     catch (error) {
-                        coreExports.debug(`Error checking deployment ${deployment.id}: ${error}, checking next...`);
+                        coreExports.debug(`⚠ Error checking deployment ${deployment.id}: ${error}, checking next...`);
                         continue; // Try next deployment
                     }
                 }
+                else if (deployment.state !== 'Completed') {
+                    coreExports.debug(`Skipping deployment ${deployment.id} - state: ${deployment.state}`);
+                }
+            }
+            // Log progress every few batches
+            if (batchesProcessed % 5 === 0 || foundDeployments.length >= maxResults) {
+                coreExports.info(`Progress: ${foundDeployments.length}/${maxResults} found after ${batchesProcessed} batches (${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes, ${deploymentsWithoutChanges} without)`);
             }
             // Check if we've reached the end
             if (deployments.data.length < take ||
                 skip + take >= deployments.totalItems) {
+                coreExports.debug('Reached end of available deployments');
                 break;
             }
             skip += take;
         }
-        coreExports.debug(`Found ${foundDeployments.length} completed deployments with changes after searching ${totalDeploymentsSearched} total deployments`);
+        coreExports.info(`Search complete: Found ${foundDeployments.length} deployments with changes after searching ${totalDeploymentsSearched} total deployments across ${batchesProcessed} batches`);
+        coreExports.info(`Statistics: ${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes (200), ${deploymentsWithoutChanges} without changes (204)`);
         if (foundDeployments.length > 0) {
             coreExports.info(`Successfully found ${foundDeployments.length} deployment(s) with changes: ${foundDeployments.join(', ')}`);
         }
         else {
-            coreExports.warning(`No deployments with changes found after searching ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`);
+            coreExports.warning(`No deployments with changes found after comprehensive search of ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`);
+            coreExports.warning(`This suggests most recent deployments return 204 (no changes). You may need to look further back in deployment history.`);
         }
         return foundDeployments;
     }
