@@ -340,8 +340,8 @@ The changes in this PR are based on the git patch from a successful deployment.`
       return changes.changes
     }
 
-    // Try to create PR with multiple deployments
-    const result = await createPullRequestWithMultipleDeployments(
+    // Try to create PR with multiple deployments in workspace
+    const result = await createPullRequestWithMultipleDeploymentsInWorkspace(
       deploymentIds,
       getChangesFunction,
       github.context.ref.replace('refs/heads/', ''),
@@ -439,7 +439,6 @@ async function createPullRequestInWorkspace(
     ])
 
     // Change working directory to the subfolder for all git/PR operations
-    const originalCwd = process.cwd()
     process.chdir(prWorkspace)
 
     // Ensure working directory is clean before proceeding
@@ -456,6 +455,114 @@ async function createPullRequestInWorkspace(
 
     // Restore original working directory
     process.chdir(originalCwd)
+  } catch (error) {
+    // Restore original working directory even on error
+    process.chdir(originalCwd)
+    core.error(`Failed to create PR workspace or clone repository: ${error}`)
+
+    if (error instanceof Error) {
+      if (
+        error.message.includes('Authentication failed') ||
+        error.message.includes('fatal: Authentication failed')
+      ) {
+        core.error(
+          'Git authentication failed. This suggests an issue with the GITHUB_TOKEN.'
+        )
+        core.error('Ensure that:')
+        core.error('1. The workflow has appropriate permissions')
+        core.error('2. The GITHUB_TOKEN is properly set')
+        core.error('3. The repository is accessible with the provided token')
+      } else if (
+        error.message.includes('Repository not found') ||
+        error.message.includes('fatal: repository')
+      ) {
+        core.error('Repository not found or not accessible.')
+        core.error(
+          'Check that the repository exists and the token has the necessary permissions.'
+        )
+      }
+    }
+
+    throw error
+  } finally {
+    // Clean up the subfolder after PR creation
+    if (fs.existsSync(prWorkspace)) {
+      try {
+        fs.rmSync(prWorkspace, { recursive: true, force: true })
+        core.info(`Cleaned up workspace: ${prWorkspace}`)
+      } catch (cleanupError) {
+        core.warning(`Failed to clean up workspace: ${cleanupError}`)
+      }
+    }
+  }
+}
+
+async function createPullRequestWithMultipleDeploymentsInWorkspace(
+  deploymentIds: string[],
+  getChangesFunction: (deploymentId: string) => Promise<string>,
+  baseBranch: string,
+  prTitle: string,
+  prBody: string
+): Promise<{ deploymentId: string }> {
+  const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
+  const prWorkspace = path.join(
+    process.env.GITHUB_WORKSPACE || process.cwd(),
+    `pr-workspace-${runId}`
+  )
+
+  // Store original working directory before any changes
+  const originalCwd = process.cwd()
+
+  try {
+    // The GITHUB_TOKEN is automatically available in GitHub Actions environment
+    const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+    if (!githubToken) {
+      throw new Error(
+        'GITHUB_TOKEN or GH_TOKEN environment variable is not available. Ensure the workflow has proper permissions.'
+      )
+    }
+
+    // Create the subfolder
+    fs.mkdirSync(prWorkspace, { recursive: true })
+
+    // Clone the current repo and checkout the current branch into the subfolder
+    // Use the token in the URL for authentication
+    const repoUrl = `https://x-access-token:${githubToken}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+    const currentBranch = github.context.ref.replace('refs/heads/', '')
+
+    core.info(`Cloning repository to: ${prWorkspace}`)
+    core.info(
+      `Repository URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+    )
+    core.info(`Branch: ${currentBranch}`)
+
+    await exec.exec('git', [
+      'clone',
+      '--branch',
+      currentBranch,
+      repoUrl,
+      prWorkspace
+    ])
+
+    // Change working directory to the subfolder for all git/PR operations
+    process.chdir(prWorkspace)
+
+    // Ensure working directory is clean before proceeding
+    await ensureCleanWorkingDirectory()
+
+    // Try multiple deployments using the existing multi-deployment function
+    const result = await createPullRequestWithMultipleDeployments(
+      deploymentIds,
+      getChangesFunction,
+      baseBranch,
+      prTitle,
+      prBody
+    )
+
+    // Restore original working directory
+    process.chdir(originalCwd)
+
+    return result
   } catch (error) {
     // Restore original working directory even on error
     process.chdir(originalCwd)

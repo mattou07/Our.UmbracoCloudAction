@@ -217,10 +217,12 @@ export async function createPullRequestWithPatch(
 
       // Create and checkout the branch locally first
       core.info(`Fetching and checking out remote branch: ${newBranchName}`)
-      await exec.exec('git', ['fetch', 'origin'])
-      await exec.exec('git', ['checkout', newBranchName])
+      core.info(
+        `Current working directory before git operations: ${process.cwd()}`
+      )
 
-      // Try to apply the git patch
+      await exec.exec('git', ['fetch', 'origin'])
+      await exec.exec('git', ['checkout', newBranchName]) // Try to apply the git patch
       const patchApplied = await tryApplyGitPatch(gitPatch, patchFilePath)
 
       if (!patchApplied) {
