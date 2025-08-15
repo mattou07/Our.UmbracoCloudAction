@@ -6,6 +6,16 @@ import { Octokit } from '@octokit/rest'
 import { PullRequestInfo } from '../types/index.js'
 
 /**
+ * Custom error for git patch application failures
+ */
+class GitPatchApplyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'GitPatchApplyError'
+  }
+}
+
+/**
  * Try to apply a git patch and return success status
  */
 async function tryApplyGitPatch(
@@ -105,9 +115,15 @@ export async function createPullRequestWithMultipleDeployments(
         deploymentId
       }
     } catch (error) {
-      core.warning(
-        `Failed to create PR with deployment ${deploymentId}: ${error}`
-      )
+      if (error instanceof GitPatchApplyError) {
+        core.warning(
+          `Git patch from deployment ${deploymentId} cannot be applied (likely already applied or conflicts). Trying next deployment...`
+        )
+      } else {
+        core.warning(
+          `Failed to create PR with deployment ${deploymentId}: ${error}`
+        )
+      }
 
       if (i === deploymentIds.length - 1) {
         // This was the last deployment, re-throw the error
@@ -134,7 +150,7 @@ export async function createPullRequestWithPatch(
     // Create a new branch name using the format: umbcloud/{deploymentId}
     let newBranchName = `umbcloud/${latestCompletedDeploymentId}`
     let guidConflictOccurred = false
-    core.info(`Creating new branch: ${newBranchName}`)
+    core.info(`Planning to create branch: ${newBranchName}`)
 
     // Initialize Octokit with the GitHub token from environment
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
@@ -159,40 +175,6 @@ export async function createPullRequestWithPatch(
     const baseSha = baseBranchData.commit.sha
     core.info(`Base branch SHA: ${baseSha}`)
 
-    // Create the new branch using Octokit
-    try {
-      await octokit.git.createRef({
-        owner,
-        repo,
-        ref: `refs/heads/${newBranchName}`,
-        sha: baseSha
-      })
-      core.info(`Branch created successfully: ${newBranchName}`)
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('Reference already exists')
-      ) {
-        // Branch already exists, try with a timestamp suffix
-        const timestamp = Date.now()
-        newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`
-        guidConflictOccurred = true
-        core.info(
-          `Branch already exists, creating with timestamp: ${newBranchName}`
-        )
-
-        await octokit.git.createRef({
-          owner,
-          repo,
-          ref: `refs/heads/${newBranchName}`,
-          sha: baseSha
-        })
-        core.info(`Branch created successfully: ${newBranchName}`)
-      } else {
-        throw error
-      }
-    }
-
     // Create a temporary patch file and apply it using git
     const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`
     const patchFilePath = `./${patchFileName}`
@@ -215,21 +197,57 @@ export async function createPullRequestWithPatch(
       // Configure git user identity using Peter Evans approach with -c flags
       core.info('Setting git identity using -c flags approach...')
 
-      // Create and checkout the branch locally first
-      core.info(`Fetching and checking out remote branch: ${newBranchName}`)
-      core.info(
-        `Current working directory before git operations: ${process.cwd()}`
-      )
-
-      await exec.exec('git', ['fetch', 'origin'])
-      await exec.exec('git', ['checkout', newBranchName]) // Try to apply the git patch
+      // Apply the git patch to the current branch (base branch) first
+      core.info('Applying git patch to base branch...')
       const patchApplied = await tryApplyGitPatch(gitPatch, patchFilePath)
 
       if (!patchApplied) {
-        throw new Error(
+        throw new GitPatchApplyError(
           'Failed to apply git patch - likely already applied or conflicts exist'
         )
       }
+
+      // Only create the branch after patch is successfully applied
+      core.info(`Creating new branch: ${newBranchName}`)
+
+      // Check if branch name conflicts and create unique name if needed
+      try {
+        await octokit.git.createRef({
+          owner,
+          repo,
+          ref: `refs/heads/${newBranchName}`,
+          sha: baseSha
+        })
+        core.info(`Branch created successfully: ${newBranchName}`)
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes('Reference already exists')
+        ) {
+          // Branch already exists, try with a timestamp suffix
+          const timestamp = Date.now()
+          newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`
+          guidConflictOccurred = true
+          core.info(
+            `Branch already exists, creating with timestamp: ${newBranchName}`
+          )
+
+          await octokit.git.createRef({
+            owner,
+            repo,
+            ref: `refs/heads/${newBranchName}`,
+            sha: baseSha
+          })
+          core.info(`Branch created successfully: ${newBranchName}`)
+        } else {
+          throw error
+        }
+      }
+
+      // Fetch and checkout the newly created branch
+      core.info(`Fetching and checking out new branch: ${newBranchName}`)
+      await exec.exec('git', ['fetch', 'origin'])
+      await exec.exec('git', ['checkout', newBranchName])
 
       core.info('Adding changes to git...')
       await exec.exec('git', ['add', '.'])

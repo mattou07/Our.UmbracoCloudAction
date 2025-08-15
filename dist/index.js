@@ -35192,6 +35192,15 @@ var Octokit = Octokit$1.plugin(
 });
 
 /**
+ * Custom error for git patch application failures
+ */
+class GitPatchApplyError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'GitPatchApplyError';
+    }
+}
+/**
  * Try to apply a git patch and return success status
  */
 async function tryApplyGitPatch(gitPatch, patchFilePath) {
@@ -35258,7 +35267,12 @@ async function createPullRequestWithMultipleDeployments(deploymentIds, getChange
             };
         }
         catch (error) {
-            coreExports.warning(`Failed to create PR with deployment ${deploymentId}: ${error}`);
+            if (error instanceof GitPatchApplyError) {
+                coreExports.warning(`Git patch from deployment ${deploymentId} cannot be applied (likely already applied or conflicts). Trying next deployment...`);
+            }
+            else {
+                coreExports.warning(`Failed to create PR with deployment ${deploymentId}: ${error}`);
+            }
             if (i === deploymentIds.length - 1) {
                 // This was the last deployment, re-throw the error
                 throw new Error(`Failed to create PR with any of the ${deploymentIds.length} deployments. Last error: ${error}`);
@@ -35276,7 +35290,7 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         // Create a new branch name using the format: umbcloud/{deploymentId}
         let newBranchName = `umbcloud/${latestCompletedDeploymentId}`;
         let guidConflictOccurred = false;
-        coreExports.info(`Creating new branch: ${newBranchName}`);
+        coreExports.info(`Planning to create branch: ${newBranchName}`);
         // Initialize Octokit with the GitHub token from environment
         const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
         if (!token) {
@@ -35294,36 +35308,6 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         });
         const baseSha = baseBranchData.commit.sha;
         coreExports.info(`Base branch SHA: ${baseSha}`);
-        // Create the new branch using Octokit
-        try {
-            await octokit.git.createRef({
-                owner,
-                repo,
-                ref: `refs/heads/${newBranchName}`,
-                sha: baseSha
-            });
-            coreExports.info(`Branch created successfully: ${newBranchName}`);
-        }
-        catch (error) {
-            if (error instanceof Error &&
-                error.message.includes('Reference already exists')) {
-                // Branch already exists, try with a timestamp suffix
-                const timestamp = Date.now();
-                newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`;
-                guidConflictOccurred = true;
-                coreExports.info(`Branch already exists, creating with timestamp: ${newBranchName}`);
-                await octokit.git.createRef({
-                    owner,
-                    repo,
-                    ref: `refs/heads/${newBranchName}`,
-                    sha: baseSha
-                });
-                coreExports.info(`Branch created successfully: ${newBranchName}`);
-            }
-            else {
-                throw error;
-            }
-        }
         // Create a temporary patch file and apply it using git
         const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
         const patchFilePath = `./${patchFileName}`;
@@ -35341,15 +35325,48 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             coreExports.info(`Debug - Computed author: ${authorName} <${authorEmail}>`);
             // Configure git user identity using Peter Evans approach with -c flags
             coreExports.info('Setting git identity using -c flags approach...');
-            // Create and checkout the branch locally first
-            coreExports.info(`Fetching and checking out remote branch: ${newBranchName}`);
-            coreExports.info(`Current working directory before git operations: ${process.cwd()}`);
-            await execExports.exec('git', ['fetch', 'origin']);
-            await execExports.exec('git', ['checkout', newBranchName]); // Try to apply the git patch
+            // Apply the git patch to the current branch (base branch) first
+            coreExports.info('Applying git patch to base branch...');
             const patchApplied = await tryApplyGitPatch(gitPatch, patchFilePath);
             if (!patchApplied) {
-                throw new Error('Failed to apply git patch - likely already applied or conflicts exist');
+                throw new GitPatchApplyError('Failed to apply git patch - likely already applied or conflicts exist');
             }
+            // Only create the branch after patch is successfully applied
+            coreExports.info(`Creating new branch: ${newBranchName}`);
+            // Check if branch name conflicts and create unique name if needed
+            try {
+                await octokit.git.createRef({
+                    owner,
+                    repo,
+                    ref: `refs/heads/${newBranchName}`,
+                    sha: baseSha
+                });
+                coreExports.info(`Branch created successfully: ${newBranchName}`);
+            }
+            catch (error) {
+                if (error instanceof Error &&
+                    error.message.includes('Reference already exists')) {
+                    // Branch already exists, try with a timestamp suffix
+                    const timestamp = Date.now();
+                    newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`;
+                    guidConflictOccurred = true;
+                    coreExports.info(`Branch already exists, creating with timestamp: ${newBranchName}`);
+                    await octokit.git.createRef({
+                        owner,
+                        repo,
+                        ref: `refs/heads/${newBranchName}`,
+                        sha: baseSha
+                    });
+                    coreExports.info(`Branch created successfully: ${newBranchName}`);
+                }
+                else {
+                    throw error;
+                }
+            }
+            // Fetch and checkout the newly created branch
+            coreExports.info(`Fetching and checking out new branch: ${newBranchName}`);
+            await execExports.exec('git', ['fetch', 'origin']);
+            await execExports.exec('git', ['checkout', newBranchName]);
             coreExports.info('Adding changes to git...');
             await execExports.exec('git', ['add', '.']);
             coreExports.info('Committing changes...');
