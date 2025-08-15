@@ -300,10 +300,27 @@ async function attemptPullRequestCreation(
     )
 
     // Get multiple deployment IDs as fallbacks
-    const deploymentIds = await api.getLatestCompletedDeployments(
+    let deploymentIds = await api.getLatestCompletedDeployments(
       inputs.targetEnvironmentAlias!,
-      10 // Try up to 10 deployments for better fallback coverage
+      15 // Try up to 15 deployments for better fallback coverage
     )
+
+    // If we only found 1 deployment, try again with expanded search to find more
+    if (deploymentIds.length === 1) {
+      core.warning('Only found 1 deployment with changes, expanding search...')
+      deploymentIds = await api.getLatestCompletedDeployments(
+        inputs.targetEnvironmentAlias!,
+        25 // Significantly expanded search for more options
+      )
+
+      if (deploymentIds.length === 1) {
+        core.warning('Still only found 1 deployment after expanded search')
+      } else {
+        core.info(
+          `Found ${deploymentIds.length} deployments after expanded search`
+        )
+      }
+    }
 
     if (deploymentIds.length === 0) {
       core.warning('No completed deployments found to create PR from')

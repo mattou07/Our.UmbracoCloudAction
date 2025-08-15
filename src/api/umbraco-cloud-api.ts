@@ -647,15 +647,19 @@ export class UmbracoCloudAPI {
     )
 
     let skip = 0
-    const take = 20 // Increased batch size to get more deployments per request
-    const maxAttempts = 30 // Increased attempts to search through more deployments
+    const take = 30 // Increased batch size to get more deployments per request
+    const maxAttempts = 50 // Significantly increased attempts to search through more deployments
     const foundDeployments: string[] = []
+
+    let totalDeploymentsSearched = 0
+    let batchesProcessed = 0
 
     for (
       let attempt = 0;
       attempt < maxAttempts && foundDeployments.length < maxResults;
       attempt++
     ) {
+      batchesProcessed = attempt + 1
       core.debug(`Checking deployments batch: skip=${skip}, take=${take}`)
 
       const deployments = await this.getDeployments(
@@ -664,6 +668,8 @@ export class UmbracoCloudAPI {
         false, // Only deployments with changes
         targetEnvironmentAlias
       )
+
+      totalDeploymentsSearched = skip + deployments.data.length
 
       core.debug(
         `Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`
@@ -718,8 +724,19 @@ export class UmbracoCloudAPI {
     }
 
     core.debug(
-      `Found ${foundDeployments.length} completed deployments with changes`
+      `Found ${foundDeployments.length} completed deployments with changes after searching ${totalDeploymentsSearched} total deployments`
     )
+
+    if (foundDeployments.length > 0) {
+      core.info(
+        `Successfully found ${foundDeployments.length} deployment(s) with changes: ${foundDeployments.join(', ')}`
+      )
+    } else {
+      core.warning(
+        `No deployments with changes found after searching ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`
+      )
+    }
+
     return foundDeployments
   }
 

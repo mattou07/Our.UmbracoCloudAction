@@ -27720,13 +27720,17 @@ class UmbracoCloudAPI {
     async getLatestCompletedDeployments(targetEnvironmentAlias, maxResults = 5) {
         coreExports.debug(`Finding up to ${maxResults} latest completed deployments with changes...`);
         let skip = 0;
-        const take = 20; // Increased batch size to get more deployments per request
-        const maxAttempts = 30; // Increased attempts to search through more deployments
+        const take = 30; // Increased batch size to get more deployments per request
+        const maxAttempts = 50; // Significantly increased attempts to search through more deployments
         const foundDeployments = [];
+        let totalDeploymentsSearched = 0;
+        let batchesProcessed = 0;
         for (let attempt = 0; attempt < maxAttempts && foundDeployments.length < maxResults; attempt++) {
+            batchesProcessed = attempt + 1;
             coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
             const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
             targetEnvironmentAlias);
+            totalDeploymentsSearched = skip + deployments.data.length;
             coreExports.debug(`Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`);
             // Check each completed deployment to see if it has actual changes (200 response)
             for (const deployment of deployments.data) {
@@ -27758,7 +27762,13 @@ class UmbracoCloudAPI {
             }
             skip += take;
         }
-        coreExports.debug(`Found ${foundDeployments.length} completed deployments with changes`);
+        coreExports.debug(`Found ${foundDeployments.length} completed deployments with changes after searching ${totalDeploymentsSearched} total deployments`);
+        if (foundDeployments.length > 0) {
+            coreExports.info(`Successfully found ${foundDeployments.length} deployment(s) with changes: ${foundDeployments.join(', ')}`);
+        }
+        else {
+            coreExports.warning(`No deployments with changes found after searching ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`);
+        }
         return foundDeployments;
     }
     async getDeploymentErrorDetails(deploymentId, targetEnvironmentAlias) {
@@ -35593,8 +35603,20 @@ async function attemptPullRequestCreation(api, inputs, deploymentStatus) {
     try {
         coreExports.info('Attempting to get multiple completed deployments with changes and create PR...');
         // Get multiple deployment IDs as fallbacks
-        const deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 10 // Try up to 10 deployments for better fallback coverage
+        let deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 15 // Try up to 15 deployments for better fallback coverage
         );
+        // If we only found 1 deployment, try again with expanded search to find more
+        if (deploymentIds.length === 1) {
+            coreExports.warning('Only found 1 deployment with changes, expanding search...');
+            deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 25 // Significantly expanded search for more options
+            );
+            if (deploymentIds.length === 1) {
+                coreExports.warning('Still only found 1 deployment after expanded search');
+            }
+            else {
+                coreExports.info(`Found ${deploymentIds.length} deployments after expanded search`);
+            }
+        }
         if (deploymentIds.length === 0) {
             coreExports.warning('No completed deployments found to create PR from');
             return {
