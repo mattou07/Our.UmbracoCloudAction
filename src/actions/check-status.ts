@@ -302,7 +302,7 @@ async function attemptPullRequestCreation(
     // Get multiple deployment IDs as fallbacks
     const deploymentIds = await api.getLatestCompletedDeployments(
       inputs.targetEnvironmentAlias!,
-      3 // Try up to 3 deployments
+      10 // Try up to 10 deployments for better fallback coverage
     )
 
     if (deploymentIds.length === 0) {
@@ -404,6 +404,9 @@ async function createPullRequestInWorkspace(
     `pr-workspace-${runId}`
   )
 
+  // Store original working directory before any changes
+  const originalCwd = process.cwd()
+
   try {
     // The GITHUB_TOKEN is automatically available in GitHub Actions environment
     const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
@@ -454,6 +457,8 @@ async function createPullRequestInWorkspace(
     // Restore original working directory
     process.chdir(originalCwd)
   } catch (error) {
+    // Restore original working directory even on error
+    process.chdir(originalCwd)
     core.error(`Failed to create PR workspace or clone repository: ${error}`)
 
     if (error instanceof Error) {

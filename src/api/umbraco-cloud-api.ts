@@ -566,8 +566,8 @@ export class UmbracoCloudAPI {
     core.debug('Finding latest completed deployment with changes...')
 
     let skip = 0
-    const take = 10
-    const maxAttempts = 20
+    const take = 20 // Increased batch size to get more deployments per request
+    const maxAttempts = 30 // Increased attempts to search through more deployments
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       core.debug(`Checking deployments batch: skip=${skip}, take=${take}`)
@@ -647,8 +647,8 @@ export class UmbracoCloudAPI {
     )
 
     let skip = 0
-    const take = 10
-    const maxAttempts = 20
+    const take = 20 // Increased batch size to get more deployments per request
+    const maxAttempts = 30 // Increased attempts to search through more deployments
     const foundDeployments: string[] = []
 
     for (

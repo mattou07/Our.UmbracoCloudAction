@@ -27674,8 +27674,8 @@ class UmbracoCloudAPI {
     async getLatestCompletedDeployment(targetEnvironmentAlias) {
         coreExports.debug('Finding latest completed deployment with changes...');
         let skip = 0;
-        const take = 10;
-        const maxAttempts = 20;
+        const take = 20; // Increased batch size to get more deployments per request
+        const maxAttempts = 30; // Increased attempts to search through more deployments
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
             const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
@@ -27720,8 +27720,8 @@ class UmbracoCloudAPI {
     async getLatestCompletedDeployments(targetEnvironmentAlias, maxResults = 5) {
         coreExports.debug(`Finding up to ${maxResults} latest completed deployments with changes...`);
         let skip = 0;
-        const take = 10;
-        const maxAttempts = 20;
+        const take = 20; // Increased batch size to get more deployments per request
+        const maxAttempts = 30; // Increased attempts to search through more deployments
         const foundDeployments = [];
         for (let attempt = 0; attempt < maxAttempts && foundDeployments.length < maxResults; attempt++) {
             coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
@@ -35576,7 +35576,7 @@ async function attemptPullRequestCreation(api, inputs, deploymentStatus) {
     try {
         coreExports.info('Attempting to get multiple completed deployments with changes and create PR...');
         // Get multiple deployment IDs as fallbacks
-        const deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 3 // Try up to 3 deployments
+        const deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 10 // Try up to 10 deployments for better fallback coverage
         );
         if (deploymentIds.length === 0) {
             coreExports.warning('No completed deployments found to create PR from');
@@ -35634,6 +35634,8 @@ The changes in this PR are based on the git patch from a successful deployment.`
 async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDeploymentId) {
     const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
     const prWorkspace = path$1.join(process.env.GITHUB_WORKSPACE || process.cwd(), `pr-workspace-${runId}`);
+    // Store original working directory before any changes
+    const originalCwd = process.cwd();
     try {
         // The GITHUB_TOKEN is automatically available in GitHub Actions environment
         const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -35667,6 +35669,8 @@ async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDepl
         process.chdir(originalCwd);
     }
     catch (error) {
+        // Restore original working directory even on error
+        process.chdir(originalCwd);
         coreExports.error(`Failed to create PR workspace or clone repository: ${error}`);
         if (error instanceof Error) {
             if (error.message.includes('Authentication failed') ||
