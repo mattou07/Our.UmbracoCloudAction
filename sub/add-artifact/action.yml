@@ -1,0 +1,95 @@
+name: Umbraco Cloud Deployment Action (Add Artifact)
+description: Deploy to Umbraco Cloud with comprehensive deployment management
+author: Matthew Hart
+
+# Add your action's branding here. This will appear on the GitHub Marketplace.
+branding:
+  icon: cloud
+  color: blue
+
+# Define your inputs here.
+inputs:
+  projectId:
+    description: 'The Umbraco Cloud project ID'
+    required: true
+  apiKey:
+    description: 'The Umbraco Cloud API key'
+    required: true
+  targetEnvironmentAlias:
+    description:
+      'The target environment alias to deploy to'
+    required: false
+  action:
+    description:
+      'The action to perform (start-deployment, check-status, add-artifact,
+      get-changes, get-latest-changes, apply-patch)'
+    required: false
+    default: 'add-artifact'
+  timeoutSeconds:
+    description: 'Timeout in seconds for status checks'
+    required: false
+    default: '1200'
+  filePath:
+    description:
+      'Path to the file to upload as artifact (required for add-artifact)'
+    required: false
+  description:
+    description: 'Description for the artifact'
+    required: false
+  version:
+    description: 'Version for the artifact'
+    required: false
+  baseUrl:
+    description: 'Base URL for Umbraco Cloud API'
+    required: false
+    default: 'https://api.cloud.umbraco.com'
+  upload-retries:
+    description: 'Number of retry attempts for artifact upload (default: 3)'
+    required: false
+    default: '3'
+  upload-retry-delay:
+    description:
+      'Base delay in milliseconds between upload retries (default: 10000)'
+    required: false
+    default: '10000'
+  upload-timeout:
+    description: 'Timeout in milliseconds for artifact upload (default: 60000)'
+    required: false
+    default: '60000'
+  nuget-source-name:
+    description: 'Name for the NuGet package source (optional for add-artifact)'
+    required: false
+  nuget-source-url:
+    description: 'URL for the NuGet package source (optional for add-artifact)'
+    required: false
+  nuget-source-username:
+    description:
+      'Username for NuGet package source authentication (optional for
+      add-artifact)'
+    required: false
+  nuget-source-password:
+    description:
+      'Password for NuGet package source authentication (optional for
+      add-artifact)'
+    required: false
+  excluded-paths:
+    description:
+      'Comma-separated list of paths to exclude from artifacts. Paths are
+      matched as prefixes (e.g., ".git/,.github/"). Use relative paths of the
+      repository only, no ".." or absolute paths are allowed.'
+    required: false
+    default: '.git/,.github/'
+
+
+# Define your outputs here.
+outputs:
+  artifactId:
+    description: 'The artifact ID returned from add-artifact'
+
+  nuget-source-status:
+    description: 'Status of NuGet package source injection into artifact'
+
+
+runs:
+  using: node20
+  main: ../../dist/index.js
