@@ -495,14 +495,79 @@ export class UmbracoCloudAPI {
     }
   }
 
+  /**
+   * Helper method to check if a deployment has changes (returns 200 vs 204)
+   * without throwing errors, and handles environment alias case sensitivity
+   */
+  private async tryGetChangesWithResponse(
+    deploymentId: string,
+    targetEnvironmentAlias: string
+  ): Promise<{ hasChanges: boolean; changes?: string }> {
+    const originalRequest = async (): Promise<{
+      hasChanges: boolean
+      changes?: string
+    }> => {
+      const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getHeaders()
+      })
+
+      if (response.status === 200) {
+        const changes = await response.text()
+        return { hasChanges: !!(changes && changes.trim().length > 0), changes }
+      } else if (response.status === 204) {
+        return { hasChanges: false }
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+    }
+
+    const retryRequest = async (): Promise<{
+      hasChanges: boolean
+      changes?: string
+    }> => {
+      const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`
+
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getHeaders()
+      })
+
+      if (response.status === 200) {
+        const changes = await response.text()
+        return { hasChanges: !!(changes && changes.trim().length > 0), changes }
+      } else if (response.status === 204) {
+        return { hasChanges: false }
+      } else {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`)
+      }
+    }
+
+    try {
+      return await this.retryWithLowercaseEnvironmentAlias(
+        originalRequest,
+        retryRequest,
+        targetEnvironmentAlias,
+        'tryGetChangesWithResponse'
+      )
+    } catch (error) {
+      core.debug(
+        `Error checking changes for deployment ${deploymentId}: ${error}`
+      )
+      return { hasChanges: false }
+    }
+  }
+
   async getLatestCompletedDeployment(
     targetEnvironmentAlias: string
   ): Promise<string | null> {
     core.debug('Finding latest completed deployment with changes...')
 
     let skip = 0
-    const take = 10
-    const maxAttempts = 20
+    const take = 50 // Increased batch size significantly
+    const maxAttempts = 100 // Much higher attempts to search through more deployments
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       core.debug(`Checking deployments batch: skip=${skip}, take=${take}`)
@@ -510,7 +575,7 @@ export class UmbracoCloudAPI {
       const deployments = await this.getDeployments(
         skip,
         take,
-        false, // Only deployments with changes
+        true, // Include ALL deployments, not just those with changes
         targetEnvironmentAlias
       )
 
@@ -518,16 +583,38 @@ export class UmbracoCloudAPI {
         `Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`
       )
 
-      // Find the first completed deployment
-      const completedDeployment = deployments.data.find(
-        (d) => d.state === 'Completed'
-      )
+      // Check each completed deployment to see if it has actual changes (200 response)
+      for (const deployment of deployments.data) {
+        if (deployment.state === 'Completed') {
+          core.debug(
+            `Checking deployment ${deployment.id} for actual changes...`
+          )
 
-      if (completedDeployment) {
-        core.debug(
-          `Found latest completed deployment: ${completedDeployment.id}`
-        )
-        return completedDeployment.id
+          try {
+            // Try to get changes for this deployment
+            const changes = await this.tryGetChangesWithResponse(
+              deployment.id,
+              targetEnvironmentAlias
+            )
+
+            if (changes.hasChanges) {
+              core.debug(
+                `Found deployment ${deployment.id} with actual changes (200 response)`
+              )
+              return deployment.id
+            } else {
+              core.debug(
+                `Deployment ${deployment.id} has no changes (204 response), checking next...`
+              )
+              continue // Try next deployment
+            }
+          } catch (error) {
+            core.debug(
+              `Error checking deployment ${deployment.id}: ${error}, checking next...`
+            )
+            continue // Try next deployment
+          }
+        }
       }
 
       // Check if we've reached the end
@@ -545,6 +632,138 @@ export class UmbracoCloudAPI {
       'No completed deployments with changes found after checking all batches'
     )
     return null
+  }
+
+  /**
+   * Get multiple latest completed deployments with changes for fallback scenarios
+   * Returns up to maxResults deployment IDs that have actual changes
+   */
+  async getLatestCompletedDeployments(
+    targetEnvironmentAlias: string,
+    maxResults: number = 5
+  ): Promise<string[]> {
+    core.debug(
+      `Finding up to ${maxResults} latest completed deployments with changes...`
+    )
+
+    let skip = 0
+    const take = 50 // Increased batch size significantly to get more deployments per request
+    const maxAttempts = 100 // Much higher search capacity to handle 204 responses
+    const foundDeployments: string[] = []
+
+    let totalDeploymentsSearched = 0
+    let batchesProcessed = 0
+    let completedDeploymentsChecked = 0
+    let deploymentsWithChanges = 0
+    let deploymentsWithoutChanges = 0
+
+    for (
+      let attempt = 0;
+      attempt < maxAttempts && foundDeployments.length < maxResults;
+      attempt++
+    ) {
+      batchesProcessed = attempt + 1
+      core.debug(
+        `Checking deployments batch ${batchesProcessed}: skip=${skip}, take=${take}`
+      )
+
+      const deployments = await this.getDeployments(
+        skip,
+        take,
+        true, // Include ALL deployments, not just those with changes - this was the key issue!
+        targetEnvironmentAlias
+      )
+
+      totalDeploymentsSearched = skip + deployments.data.length
+
+      core.debug(
+        `Batch ${batchesProcessed}: Found ${deployments.data.length} deployments (total available: ${deployments.totalItems})`
+      )
+
+      // Check each completed deployment to see if it has actual changes (200 response)
+      for (const deployment of deployments.data) {
+        if (
+          deployment.state === 'Completed' &&
+          foundDeployments.length < maxResults
+        ) {
+          completedDeploymentsChecked++
+          core.debug(
+            `Checking deployment ${deployment.id} for actual changes (${completedDeploymentsChecked} completed deployments checked)...`
+          )
+
+          try {
+            // Try to get changes for this deployment
+            const changes = await this.tryGetChangesWithResponse(
+              deployment.id,
+              targetEnvironmentAlias
+            )
+
+            if (changes.hasChanges) {
+              deploymentsWithChanges++
+              core.debug(
+                `✓ Deployment ${deployment.id} has actual changes (200 response) - Added to list`
+              )
+              foundDeployments.push(deployment.id)
+            } else {
+              deploymentsWithoutChanges++
+              core.debug(
+                `✗ Deployment ${deployment.id} has no changes (204 response) - Skipping`
+              )
+              continue // Try next deployment
+            }
+          } catch (error) {
+            core.debug(
+              `⚠ Error checking deployment ${deployment.id}: ${error}, checking next...`
+            )
+            continue // Try next deployment
+          }
+        } else if (deployment.state !== 'Completed') {
+          core.debug(
+            `Skipping deployment ${deployment.id} - state: ${deployment.state}`
+          )
+        }
+      }
+
+      // Log progress every few batches
+      if (batchesProcessed % 5 === 0 || foundDeployments.length >= maxResults) {
+        core.info(
+          `Progress: ${foundDeployments.length}/${maxResults} found after ${batchesProcessed} batches (${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes, ${deploymentsWithoutChanges} without)`
+        )
+      }
+
+      // Check if we've reached the end
+      if (
+        deployments.data.length < take ||
+        skip + take >= deployments.totalItems
+      ) {
+        core.debug('Reached end of available deployments')
+        break
+      }
+
+      skip += take
+    }
+
+    core.info(
+      `Search complete: Found ${foundDeployments.length} deployments with changes after searching ${totalDeploymentsSearched} total deployments across ${batchesProcessed} batches`
+    )
+    core.info(
+      `Statistics: ${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes (200), ${deploymentsWithoutChanges} without changes (204)`
+    )
+
+    if (foundDeployments.length > 0) {
+      core.info(
+        `Successfully found ${foundDeployments.length} deployment(s) with changes: ${foundDeployments.join(', ')}`
+      )
+    } else {
+      core.warning(
+        `No deployments with changes found after comprehensive search of ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`
+      )
+      core.warning(
+        `This suggests most recent deployments return 204 (no changes). You may need to look further back in deployment history.`
+      )
+    }
+
+    return foundDeployments
   }
 
   async getDeploymentErrorDetails(

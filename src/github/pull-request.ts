@@ -6,8 +6,139 @@ import { Octokit } from '@octokit/rest'
 import { PullRequestInfo } from '../types/index.js'
 
 /**
- * Create a pull request with the provided git patch
+ * Custom error for git patch application failures
  */
+class GitPatchApplyError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'GitPatchApplyError'
+  }
+}
+
+/**
+ * Try to apply a git patch and return success status
+ */
+async function tryApplyGitPatch(
+  gitPatch: string,
+  patchFilePath: string
+): Promise<boolean> {
+  try {
+    core.info('Writing patch file...')
+    fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
+
+    core.info('Applying git patch...')
+    const applyExitCode = await exec.exec(
+      'git',
+      ['apply', '--check', patchFilePath],
+      {
+        ignoreReturnCode: true
+      }
+    )
+
+    if (applyExitCode === 0) {
+      // Patch can be applied, now actually apply it
+      const actualApplyExitCode = await exec.exec(
+        'git',
+        ['apply', patchFilePath],
+        {
+          ignoreReturnCode: true
+        }
+      )
+
+      if (actualApplyExitCode === 0) {
+        core.info('Git patch applied successfully')
+        return true
+      } else {
+        core.warning('Git patch failed to apply during actual application')
+        return false
+      }
+    } else {
+      core.warning(
+        'Git patch cannot be applied (likely already applied or conflicts)'
+      )
+      return false
+    }
+  } catch (error) {
+    core.warning(`Error applying git patch: ${error}`)
+    return false
+  } finally {
+    // Clean up patch file
+    if (fs.existsSync(patchFilePath)) {
+      fs.unlinkSync(patchFilePath)
+    }
+  }
+}
+
+/**
+ * Create a pull request with git patches from multiple deployment IDs, trying until one works
+ */
+export async function createPullRequestWithMultipleDeployments(
+  deploymentIds: string[],
+  getChangesFunction: (deploymentId: string) => Promise<string>,
+  baseBranch: string,
+  title: string,
+  body: string
+): Promise<PullRequestInfo & { deploymentId: string }> {
+  if (deploymentIds.length === 0) {
+    throw new Error('No deployment IDs provided')
+  }
+
+  for (let i = 0; i < deploymentIds.length; i++) {
+    const deploymentId = deploymentIds[i]
+    core.info(
+      `Attempting to create PR with deployment ${deploymentId} (${i + 1}/${deploymentIds.length})`
+    )
+
+    try {
+      // Get the git patch for this deployment
+      const gitPatch = await getChangesFunction(deploymentId)
+
+      if (!gitPatch.trim()) {
+        core.warning(
+          `Deployment ${deploymentId} has empty git patch, trying next...`
+        )
+        continue
+      }
+
+      // Try to create the PR with this deployment
+      const result = await createPullRequestWithPatch(
+        gitPatch,
+        baseBranch,
+        title,
+        body,
+        deploymentId
+      )
+
+      core.info(`Successfully created PR with deployment ${deploymentId}`)
+      return {
+        ...result,
+        deploymentId
+      }
+    } catch (error) {
+      if (error instanceof GitPatchApplyError) {
+        core.warning(
+          `Git patch from deployment ${deploymentId} cannot be applied (likely already applied or conflicts). Trying next deployment...`
+        )
+      } else {
+        core.warning(
+          `Failed to create PR with deployment ${deploymentId}: ${error}`
+        )
+      }
+
+      if (i === deploymentIds.length - 1) {
+        // This was the last deployment, re-throw the error
+        throw new Error(
+          `Failed to create PR with any of the ${deploymentIds.length} deployments. Last error: ${error}`
+        )
+      } else {
+        core.info(`Trying next deployment...`)
+        continue
+      }
+    }
+  }
+
+  throw new Error('No deployments were successfully processed')
+}
 export async function createPullRequestWithPatch(
   gitPatch: string,
   baseBranch: string,
@@ -19,7 +150,7 @@ export async function createPullRequestWithPatch(
     // Create a new branch name using the format: umbcloud/{deploymentId}
     let newBranchName = `umbcloud/${latestCompletedDeploymentId}`
     let guidConflictOccurred = false
-    core.info(`Creating new branch: ${newBranchName}`)
+    core.info(`Planning to create branch: ${newBranchName}`)
 
     // Initialize Octokit with the GitHub token from environment
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
@@ -44,40 +175,6 @@ export async function createPullRequestWithPatch(
     const baseSha = baseBranchData.commit.sha
     core.info(`Base branch SHA: ${baseSha}`)
 
-    // Create the new branch using Octokit
-    try {
-      await octokit.git.createRef({
-        owner,
-        repo,
-        ref: `refs/heads/${newBranchName}`,
-        sha: baseSha
-      })
-      core.info(`Branch created successfully: ${newBranchName}`)
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('Reference already exists')
-      ) {
-        // Branch already exists, try with a timestamp suffix
-        const timestamp = Date.now()
-        newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`
-        guidConflictOccurred = true
-        core.info(
-          `Branch already exists, creating with timestamp: ${newBranchName}`
-        )
-
-        await octokit.git.createRef({
-          owner,
-          repo,
-          ref: `refs/heads/${newBranchName}`,
-          sha: baseSha
-        })
-        core.info(`Branch created successfully: ${newBranchName}`)
-      } else {
-        throw error
-      }
-    }
-
     // Create a temporary patch file and apply it using git
     const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`
     const patchFilePath = `./${patchFileName}`
@@ -100,28 +197,57 @@ export async function createPullRequestWithPatch(
       // Configure git user identity using Peter Evans approach with -c flags
       core.info('Setting git identity using -c flags approach...')
 
-      // Create and checkout the branch locally first
-      core.info(`Fetching and checking out remote branch: ${newBranchName}`)
+      // Apply the git patch to the current branch (base branch) first
+      core.info('Applying git patch to base branch...')
+      const patchApplied = await tryApplyGitPatch(gitPatch, patchFilePath)
+
+      if (!patchApplied) {
+        throw new GitPatchApplyError(
+          'Failed to apply git patch - likely already applied or conflicts exist'
+        )
+      }
+
+      // Only create the branch after patch is successfully applied
+      core.info(`Creating new branch: ${newBranchName}`)
+
+      // Check if branch name conflicts and create unique name if needed
+      try {
+        await octokit.git.createRef({
+          owner,
+          repo,
+          ref: `refs/heads/${newBranchName}`,
+          sha: baseSha
+        })
+        core.info(`Branch created successfully: ${newBranchName}`)
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes('Reference already exists')
+        ) {
+          // Branch already exists, try with a timestamp suffix
+          const timestamp = Date.now()
+          newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`
+          guidConflictOccurred = true
+          core.info(
+            `Branch already exists, creating with timestamp: ${newBranchName}`
+          )
+
+          await octokit.git.createRef({
+            owner,
+            repo,
+            ref: `refs/heads/${newBranchName}`,
+            sha: baseSha
+          })
+          core.info(`Branch created successfully: ${newBranchName}`)
+        } else {
+          throw error
+        }
+      }
+
+      // Fetch and checkout the newly created branch
+      core.info(`Fetching and checking out new branch: ${newBranchName}`)
       await exec.exec('git', ['fetch', 'origin'])
       await exec.exec('git', ['checkout', newBranchName])
-
-      core.info('Writing patch file...')
-      fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
-
-      core.info('Applying git patch...')
-      const applyExitCode = await exec.exec('git', ['apply', patchFilePath], {
-        ignoreReturnCode: true
-      })
-
-      if (applyExitCode !== 0) {
-        throw new Error('Failed to apply git patch')
-      }
-
-      // Clean up patch file before adding changes to git
-      core.info('Removing patch file...')
-      if (fs.existsSync(patchFilePath)) {
-        fs.unlinkSync(patchFilePath)
-      }
 
       core.info('Adding changes to git...')
       await exec.exec('git', ['add', '.'])

@@ -21,10 +21,14 @@ class ExcludedPathsValidationError extends Error {
 /**
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
+ * Returns the actual space saved in bytes
  */
-function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
+async function removeExcludedPaths(
+  zip: JSZip,
+  excludedPaths: string
+): Promise<number> {
   if (!excludedPaths.trim()) {
-    return
+    return 0
   }
 
   // Validate format: single path or comma-separated paths (no space-separated paths)
@@ -69,15 +73,39 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
 
   core.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`)
 
+  // Get the original zip size by generating it
+  const originalZipData = await zip.generateAsync({
+    type: 'nodebuffer',
+    compression: 'DEFLATE',
+    compressionOptions: { level: 9 }
+  })
+  const originalSize = originalZipData.length
+
   let removedCount = 0
   const foundPaths: string[] = []
   const notFoundPaths: string[] = [...pathsToExclude]
 
-  Object.keys(zip.files).forEach((filename) => {
+  const allFilenames = Object.keys(zip.files)
+  const filesToRemove: string[] = []
+
+  // Find all files to remove
+  for (const filename of allFilenames) {
     for (const excludePath of pathsToExclude) {
       if (filename.startsWith(excludePath)) {
-        zip.remove(filename)
-        removedCount++
+        filesToRemove.push(filename)
+        break // Move to next filename once a match is found
+      }
+    }
+  }
+
+  // Remove the files
+  for (const filename of filesToRemove) {
+    zip.remove(filename)
+    removedCount++
+
+    // Track which paths were found
+    for (const excludePath of pathsToExclude) {
+      if (filename.startsWith(excludePath)) {
         if (!foundPaths.includes(excludePath)) {
           foundPaths.push(excludePath)
           // Remove from not found list
@@ -86,15 +114,49 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
             notFoundPaths.splice(notFoundIndex, 1)
           }
         }
-        break // Move to next filename once a match is found
+        break
       }
     }
-  })
+  }
 
+  // Calculate actual space saved by comparing zip sizes
+  let actualSpaceSaved = 0
   if (removedCount > 0) {
+    const newZipData = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 }
+    })
+    const newSize = newZipData.length
+    actualSpaceSaved = originalSize - newSize
+
+    const savedMB = (actualSpaceSaved / (1024 * 1024)).toFixed(2)
     core.info(
       `Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`
     )
+    core.info(
+      `Space saved: ${savedMB} MB (${actualSpaceSaved.toLocaleString()} bytes)`
+    )
+
+    // Environmental impact message based on space saved
+    const savedMBNum = parseFloat(savedMB)
+    let carbonMessage = ''
+
+    if (savedMBNum >= 100) {
+      carbonMessage = `🌍 Significant Efficiency Achieved — You've saved ${savedMB} MB, representing a substantial reduction in transfer data and associated carbon emissions.`
+    } else if (savedMBNum >= 50) {
+      carbonMessage = `🌿 High Efficiency — ${savedMB} MB saved means a notable decrease in bandwidth usage, helping to reduce server energy consumption.`
+    } else if (savedMBNum >= 20) {
+      carbonMessage = `📦 Efficient Deployment — ${savedMB} MB saved results in a meaningful reduction in network load and environmental impact.`
+    } else if (savedMBNum >= 5) {
+      carbonMessage = `⚡ Optimized Transfer — ${savedMB} MB saved helps lower both operational costs and energy usage.`
+    } else if (savedMBNum >= 1) {
+      carbonMessage = `📉 Compact & Efficient — ${savedMB} MB saved conserves resources during transfer and deployment.`
+    } else {
+      carbonMessage = `💾 Minimal Transfer Footprint — ${savedMB} MB saved reduces energy use and supports sustainable operations.`
+    }
+
+    core.info(carbonMessage)
   }
 
   // Error if any paths weren't found - stop the action
@@ -109,6 +171,8 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
       'No files were removed. Verify that the excluded paths match the structure of your artifact.'
     )
   }
+
+  return actualSpaceSaved
 }
 
 export async function handleAddArtifact(
@@ -197,7 +261,7 @@ async function processArtifactWithNugetConfig(
   const zip = await JSZip.loadAsync(data)
 
   // Remove excluded paths
-  removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
+  await removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
 
   // Add or update NuGet.config in the root
   const nugetConfig = {
@@ -332,7 +396,7 @@ async function processCloudGitignore(
   const zip = await JSZip.loadAsync(data)
 
   // Remove excluded paths first
-  removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
+  await removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
 
   // Process .cloud_gitignore replacement
   const wasProcessed = await processCloudGitignoreInZip(zip)

@@ -27624,21 +27624,84 @@ class UmbracoCloudAPI {
             throw error;
         }
     }
+    /**
+     * Helper method to check if a deployment has changes (returns 200 vs 204)
+     * without throwing errors, and handles environment alias case sensitivity
+     */
+    async tryGetChangesWithResponse(deploymentId, targetEnvironmentAlias) {
+        const originalRequest = async () => {
+            const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`;
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (response.status === 200) {
+                const changes = await response.text();
+                return { hasChanges: !!(changes && changes.trim().length > 0), changes };
+            }
+            else if (response.status === 204) {
+                return { hasChanges: false };
+            }
+            else {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        };
+        const retryRequest = async () => {
+            const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`;
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: this.getHeaders()
+            });
+            if (response.status === 200) {
+                const changes = await response.text();
+                return { hasChanges: !!(changes && changes.trim().length > 0), changes };
+            }
+            else if (response.status === 204) {
+                return { hasChanges: false };
+            }
+            else {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+        };
+        try {
+            return await this.retryWithLowercaseEnvironmentAlias(originalRequest, retryRequest, targetEnvironmentAlias, 'tryGetChangesWithResponse');
+        }
+        catch (error) {
+            coreExports.debug(`Error checking changes for deployment ${deploymentId}: ${error}`);
+            return { hasChanges: false };
+        }
+    }
     async getLatestCompletedDeployment(targetEnvironmentAlias) {
         coreExports.debug('Finding latest completed deployment with changes...');
         let skip = 0;
-        const take = 10;
-        const maxAttempts = 20;
+        const take = 50; // Increased batch size significantly
+        const maxAttempts = 100; // Much higher attempts to search through more deployments
         for (let attempt = 0; attempt < maxAttempts; attempt++) {
             coreExports.debug(`Checking deployments batch: skip=${skip}, take=${take}`);
-            const deployments = await this.getDeployments(skip, take, false, // Only deployments with changes
+            const deployments = await this.getDeployments(skip, take, true, // Include ALL deployments, not just those with changes
             targetEnvironmentAlias);
             coreExports.debug(`Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`);
-            // Find the first completed deployment
-            const completedDeployment = deployments.data.find((d) => d.state === 'Completed');
-            if (completedDeployment) {
-                coreExports.debug(`Found latest completed deployment: ${completedDeployment.id}`);
-                return completedDeployment.id;
+            // Check each completed deployment to see if it has actual changes (200 response)
+            for (const deployment of deployments.data) {
+                if (deployment.state === 'Completed') {
+                    coreExports.debug(`Checking deployment ${deployment.id} for actual changes...`);
+                    try {
+                        // Try to get changes for this deployment
+                        const changes = await this.tryGetChangesWithResponse(deployment.id, targetEnvironmentAlias);
+                        if (changes.hasChanges) {
+                            coreExports.debug(`Found deployment ${deployment.id} with actual changes (200 response)`);
+                            return deployment.id;
+                        }
+                        else {
+                            coreExports.debug(`Deployment ${deployment.id} has no changes (204 response), checking next...`);
+                            continue; // Try next deployment
+                        }
+                    }
+                    catch (error) {
+                        coreExports.debug(`Error checking deployment ${deployment.id}: ${error}, checking next...`);
+                        continue; // Try next deployment
+                    }
+                }
             }
             // Check if we've reached the end
             if (deployments.data.length < take ||
@@ -27649,6 +27712,80 @@ class UmbracoCloudAPI {
         }
         coreExports.debug('No completed deployments with changes found after checking all batches');
         return null;
+    }
+    /**
+     * Get multiple latest completed deployments with changes for fallback scenarios
+     * Returns up to maxResults deployment IDs that have actual changes
+     */
+    async getLatestCompletedDeployments(targetEnvironmentAlias, maxResults = 5) {
+        coreExports.debug(`Finding up to ${maxResults} latest completed deployments with changes...`);
+        let skip = 0;
+        const take = 50; // Increased batch size significantly to get more deployments per request
+        const maxAttempts = 100; // Much higher search capacity to handle 204 responses
+        const foundDeployments = [];
+        let totalDeploymentsSearched = 0;
+        let batchesProcessed = 0;
+        let completedDeploymentsChecked = 0;
+        let deploymentsWithChanges = 0;
+        let deploymentsWithoutChanges = 0;
+        for (let attempt = 0; attempt < maxAttempts && foundDeployments.length < maxResults; attempt++) {
+            batchesProcessed = attempt + 1;
+            coreExports.debug(`Checking deployments batch ${batchesProcessed}: skip=${skip}, take=${take}`);
+            const deployments = await this.getDeployments(skip, take, true, // Include ALL deployments, not just those with changes - this was the key issue!
+            targetEnvironmentAlias);
+            totalDeploymentsSearched = skip + deployments.data.length;
+            coreExports.debug(`Batch ${batchesProcessed}: Found ${deployments.data.length} deployments (total available: ${deployments.totalItems})`);
+            // Check each completed deployment to see if it has actual changes (200 response)
+            for (const deployment of deployments.data) {
+                if (deployment.state === 'Completed' &&
+                    foundDeployments.length < maxResults) {
+                    completedDeploymentsChecked++;
+                    coreExports.debug(`Checking deployment ${deployment.id} for actual changes (${completedDeploymentsChecked} completed deployments checked)...`);
+                    try {
+                        // Try to get changes for this deployment
+                        const changes = await this.tryGetChangesWithResponse(deployment.id, targetEnvironmentAlias);
+                        if (changes.hasChanges) {
+                            deploymentsWithChanges++;
+                            coreExports.debug(`✓ Deployment ${deployment.id} has actual changes (200 response) - Added to list`);
+                            foundDeployments.push(deployment.id);
+                        }
+                        else {
+                            deploymentsWithoutChanges++;
+                            coreExports.debug(`✗ Deployment ${deployment.id} has no changes (204 response) - Skipping`);
+                            continue; // Try next deployment
+                        }
+                    }
+                    catch (error) {
+                        coreExports.debug(`⚠ Error checking deployment ${deployment.id}: ${error}, checking next...`);
+                        continue; // Try next deployment
+                    }
+                }
+                else if (deployment.state !== 'Completed') {
+                    coreExports.debug(`Skipping deployment ${deployment.id} - state: ${deployment.state}`);
+                }
+            }
+            // Log progress every few batches
+            if (batchesProcessed % 5 === 0 || foundDeployments.length >= maxResults) {
+                coreExports.info(`Progress: ${foundDeployments.length}/${maxResults} found after ${batchesProcessed} batches (${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes, ${deploymentsWithoutChanges} without)`);
+            }
+            // Check if we've reached the end
+            if (deployments.data.length < take ||
+                skip + take >= deployments.totalItems) {
+                coreExports.debug('Reached end of available deployments');
+                break;
+            }
+            skip += take;
+        }
+        coreExports.info(`Search complete: Found ${foundDeployments.length} deployments with changes after searching ${totalDeploymentsSearched} total deployments across ${batchesProcessed} batches`);
+        coreExports.info(`Statistics: ${completedDeploymentsChecked} completed deployments checked, ${deploymentsWithChanges} with changes (200), ${deploymentsWithoutChanges} without changes (204)`);
+        if (foundDeployments.length > 0) {
+            coreExports.info(`Successfully found ${foundDeployments.length} deployment(s) with changes: ${foundDeployments.join(', ')}`);
+        }
+        else {
+            coreExports.warning(`No deployments with changes found after comprehensive search of ${totalDeploymentsSearched} deployments across ${batchesProcessed} batches`);
+            coreExports.warning(`This suggests most recent deployments return 204 (no changes). You may need to look further back in deployment history.`);
+        }
+        return foundDeployments;
     }
     async getDeploymentErrorDetails(deploymentId, targetEnvironmentAlias) {
         try {
@@ -35081,14 +35218,105 @@ var Octokit = Octokit$1.plugin(
 });
 
 /**
- * Create a pull request with the provided git patch
+ * Custom error for git patch application failures
  */
+class GitPatchApplyError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'GitPatchApplyError';
+    }
+}
+/**
+ * Try to apply a git patch and return success status
+ */
+async function tryApplyGitPatch(gitPatch, patchFilePath) {
+    try {
+        coreExports.info('Writing patch file...');
+        fs.writeFileSync(patchFilePath, gitPatch, 'utf8');
+        coreExports.info('Applying git patch...');
+        const applyExitCode = await execExports.exec('git', ['apply', '--check', patchFilePath], {
+            ignoreReturnCode: true
+        });
+        if (applyExitCode === 0) {
+            // Patch can be applied, now actually apply it
+            const actualApplyExitCode = await execExports.exec('git', ['apply', patchFilePath], {
+                ignoreReturnCode: true
+            });
+            if (actualApplyExitCode === 0) {
+                coreExports.info('Git patch applied successfully');
+                return true;
+            }
+            else {
+                coreExports.warning('Git patch failed to apply during actual application');
+                return false;
+            }
+        }
+        else {
+            coreExports.warning('Git patch cannot be applied (likely already applied or conflicts)');
+            return false;
+        }
+    }
+    catch (error) {
+        coreExports.warning(`Error applying git patch: ${error}`);
+        return false;
+    }
+    finally {
+        // Clean up patch file
+        if (fs.existsSync(patchFilePath)) {
+            fs.unlinkSync(patchFilePath);
+        }
+    }
+}
+/**
+ * Create a pull request with git patches from multiple deployment IDs, trying until one works
+ */
+async function createPullRequestWithMultipleDeployments(deploymentIds, getChangesFunction, baseBranch, title, body) {
+    if (deploymentIds.length === 0) {
+        throw new Error('No deployment IDs provided');
+    }
+    for (let i = 0; i < deploymentIds.length; i++) {
+        const deploymentId = deploymentIds[i];
+        coreExports.info(`Attempting to create PR with deployment ${deploymentId} (${i + 1}/${deploymentIds.length})`);
+        try {
+            // Get the git patch for this deployment
+            const gitPatch = await getChangesFunction(deploymentId);
+            if (!gitPatch.trim()) {
+                coreExports.warning(`Deployment ${deploymentId} has empty git patch, trying next...`);
+                continue;
+            }
+            // Try to create the PR with this deployment
+            const result = await createPullRequestWithPatch(gitPatch, baseBranch, title, body, deploymentId);
+            coreExports.info(`Successfully created PR with deployment ${deploymentId}`);
+            return {
+                ...result,
+                deploymentId
+            };
+        }
+        catch (error) {
+            if (error instanceof GitPatchApplyError) {
+                coreExports.warning(`Git patch from deployment ${deploymentId} cannot be applied (likely already applied or conflicts). Trying next deployment...`);
+            }
+            else {
+                coreExports.warning(`Failed to create PR with deployment ${deploymentId}: ${error}`);
+            }
+            if (i === deploymentIds.length - 1) {
+                // This was the last deployment, re-throw the error
+                throw new Error(`Failed to create PR with any of the ${deploymentIds.length} deployments. Last error: ${error}`);
+            }
+            else {
+                coreExports.info(`Trying next deployment...`);
+                continue;
+            }
+        }
+    }
+    throw new Error('No deployments were successfully processed');
+}
 async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, latestCompletedDeploymentId) {
     try {
         // Create a new branch name using the format: umbcloud/{deploymentId}
         let newBranchName = `umbcloud/${latestCompletedDeploymentId}`;
         let guidConflictOccurred = false;
-        coreExports.info(`Creating new branch: ${newBranchName}`);
+        coreExports.info(`Planning to create branch: ${newBranchName}`);
         // Initialize Octokit with the GitHub token from environment
         const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
         if (!token) {
@@ -35106,36 +35334,6 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
         });
         const baseSha = baseBranchData.commit.sha;
         coreExports.info(`Base branch SHA: ${baseSha}`);
-        // Create the new branch using Octokit
-        try {
-            await octokit.git.createRef({
-                owner,
-                repo,
-                ref: `refs/heads/${newBranchName}`,
-                sha: baseSha
-            });
-            coreExports.info(`Branch created successfully: ${newBranchName}`);
-        }
-        catch (error) {
-            if (error instanceof Error &&
-                error.message.includes('Reference already exists')) {
-                // Branch already exists, try with a timestamp suffix
-                const timestamp = Date.now();
-                newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`;
-                guidConflictOccurred = true;
-                coreExports.info(`Branch already exists, creating with timestamp: ${newBranchName}`);
-                await octokit.git.createRef({
-                    owner,
-                    repo,
-                    ref: `refs/heads/${newBranchName}`,
-                    sha: baseSha
-                });
-                coreExports.info(`Branch created successfully: ${newBranchName}`);
-            }
-            else {
-                throw error;
-            }
-        }
         // Create a temporary patch file and apply it using git
         const patchFileName = `git-patch-${latestCompletedDeploymentId}.diff`;
         const patchFilePath = `./${patchFileName}`;
@@ -35153,24 +35351,48 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
             coreExports.info(`Debug - Computed author: ${authorName} <${authorEmail}>`);
             // Configure git user identity using Peter Evans approach with -c flags
             coreExports.info('Setting git identity using -c flags approach...');
-            // Create and checkout the branch locally first
-            coreExports.info(`Fetching and checking out remote branch: ${newBranchName}`);
+            // Apply the git patch to the current branch (base branch) first
+            coreExports.info('Applying git patch to base branch...');
+            const patchApplied = await tryApplyGitPatch(gitPatch, patchFilePath);
+            if (!patchApplied) {
+                throw new GitPatchApplyError('Failed to apply git patch - likely already applied or conflicts exist');
+            }
+            // Only create the branch after patch is successfully applied
+            coreExports.info(`Creating new branch: ${newBranchName}`);
+            // Check if branch name conflicts and create unique name if needed
+            try {
+                await octokit.git.createRef({
+                    owner,
+                    repo,
+                    ref: `refs/heads/${newBranchName}`,
+                    sha: baseSha
+                });
+                coreExports.info(`Branch created successfully: ${newBranchName}`);
+            }
+            catch (error) {
+                if (error instanceof Error &&
+                    error.message.includes('Reference already exists')) {
+                    // Branch already exists, try with a timestamp suffix
+                    const timestamp = Date.now();
+                    newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`;
+                    guidConflictOccurred = true;
+                    coreExports.info(`Branch already exists, creating with timestamp: ${newBranchName}`);
+                    await octokit.git.createRef({
+                        owner,
+                        repo,
+                        ref: `refs/heads/${newBranchName}`,
+                        sha: baseSha
+                    });
+                    coreExports.info(`Branch created successfully: ${newBranchName}`);
+                }
+                else {
+                    throw error;
+                }
+            }
+            // Fetch and checkout the newly created branch
+            coreExports.info(`Fetching and checking out new branch: ${newBranchName}`);
             await execExports.exec('git', ['fetch', 'origin']);
             await execExports.exec('git', ['checkout', newBranchName]);
-            coreExports.info('Writing patch file...');
-            fs.writeFileSync(patchFilePath, gitPatch, 'utf8');
-            coreExports.info('Applying git patch...');
-            const applyExitCode = await execExports.exec('git', ['apply', patchFilePath], {
-                ignoreReturnCode: true
-            });
-            if (applyExitCode !== 0) {
-                throw new Error('Failed to apply git patch');
-            }
-            // Clean up patch file before adding changes to git
-            coreExports.info('Removing patch file...');
-            if (fs.existsSync(patchFilePath)) {
-                fs.unlinkSync(patchFilePath);
-            }
             coreExports.info('Adding changes to git...');
             await execExports.exec('git', ['add', '.']);
             coreExports.info('Committing changes...');
@@ -35395,35 +35617,58 @@ async function getErrorDetails(api, inputs) {
 }
 async function attemptPullRequestCreation(api, inputs, deploymentStatus) {
     try {
-        coreExports.info('Attempting to get latest completed deployment with changes and create PR...');
-        const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(inputs.targetEnvironmentAlias);
-        if (!latestCompletedDeploymentId) {
+        coreExports.info('Attempting to get multiple completed deployments with changes and create PR...');
+        // Get multiple deployment IDs as fallbacks
+        let deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 15 // Try up to 15 deployments for better fallback coverage
+        );
+        // If we only found 1 deployment, try again with expanded search to find more
+        if (deploymentIds.length === 1) {
+            coreExports.warning('Only found 1 deployment with changes, expanding search...');
+            deploymentIds = await api.getLatestCompletedDeployments(inputs.targetEnvironmentAlias, 25 // Significantly expanded search for more options
+            );
+            if (deploymentIds.length === 1) {
+                coreExports.warning('Still only found 1 deployment after expanded search');
+            }
+            else {
+                coreExports.info(`Found ${deploymentIds.length} deployments after expanded search`);
+            }
+        }
+        if (deploymentIds.length === 0) {
             coreExports.warning('No completed deployments found to create PR from');
             return {
                 deploymentState: deploymentStatus.deploymentState,
                 deploymentStatus: JSON.stringify(deploymentStatus)
             };
         }
-        coreExports.info(`Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`);
-        // Get the changes from the latest completed deployment
-        const changes = await api.getChangesById(latestCompletedDeploymentId, inputs.targetEnvironmentAlias);
-        coreExports.info('Retrieved changes from latest completed deployment');
-        coreExports.setOutput('latest-completed-deployment-id', latestCompletedDeploymentId);
-        coreExports.setOutput('changes', JSON.stringify(changes));
-        // Create GitHub PR with the changes
+        coreExports.info(`Found ${deploymentIds.length} completed deployment(s) with changes: ${deploymentIds.join(', ')}`);
+        // Create GitHub PR with the changes, trying multiple deployments
         const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`;
-        const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).
+        const prBody = (deploymentId) => `This PR applies changes from completed deployment (${deploymentId}) to fix the failed deployment (${inputs.deploymentId}).
 
 **Failed Deployment ID:** ${inputs.deploymentId}
-**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
+**Source Deployment ID:** ${deploymentId}
 **Target Environment:** ${inputs.targetEnvironmentAlias}
 
-The changes in this PR are based on the git patch from the latest successful deployment.`;
-        await createPullRequestInWorkspace(changes.changes, prTitle, prBody, latestCompletedDeploymentId);
+The changes in this PR are based on the git patch from a successful deployment.`;
+        // Function to get changes for a specific deployment
+        const getChangesFunction = async (deploymentId) => {
+            const changes = await api.getChangesById(deploymentId, inputs.targetEnvironmentAlias);
+            return changes.changes;
+        };
+        // Try to create PR with multiple deployments in workspace
+        const result = await createPullRequestWithMultipleDeploymentsInWorkspace(deploymentIds, getChangesFunction, githubExports.context.ref.replace('refs/heads/', ''), prTitle, prBody(deploymentIds[0]) // Use the first deployment ID for the body initially
+        );
+        // Get the successful deployment ID from the result
+        const successfulDeploymentId = result.deploymentId;
+        // Get the changes from the successful deployment for the output
+        const changes = await api.getChangesById(successfulDeploymentId, inputs.targetEnvironmentAlias);
+        coreExports.info('Retrieved changes from latest completed deployment');
+        coreExports.setOutput('latest-completed-deployment-id', successfulDeploymentId);
+        coreExports.setOutput('changes', JSON.stringify(changes));
         return {
             deploymentState: deploymentStatus.deploymentState,
             deploymentStatus: JSON.stringify(deploymentStatus),
-            latestCompletedDeploymentId,
+            latestCompletedDeploymentId: successfulDeploymentId,
             changes: JSON.stringify(changes)
         };
     }
@@ -35444,6 +35689,8 @@ The changes in this PR are based on the git patch from the latest successful dep
 async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDeploymentId) {
     const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
     const prWorkspace = path$1.join(process.env.GITHUB_WORKSPACE || process.cwd(), `pr-workspace-${runId}`);
+    // Store original working directory before any changes
+    const originalCwd = process.cwd();
     try {
         // The GITHUB_TOKEN is automatically available in GitHub Actions environment
         const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
@@ -35467,7 +35714,6 @@ async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDepl
             prWorkspace
         ]);
         // Change working directory to the subfolder for all git/PR operations
-        const originalCwd = process.cwd();
         process.chdir(prWorkspace);
         // Ensure working directory is clean before proceeding
         await ensureCleanWorkingDirectory();
@@ -35477,6 +35723,79 @@ async function createPullRequestInWorkspace(changes, prTitle, prBody, sourceDepl
         process.chdir(originalCwd);
     }
     catch (error) {
+        // Restore original working directory even on error
+        process.chdir(originalCwd);
+        coreExports.error(`Failed to create PR workspace or clone repository: ${error}`);
+        if (error instanceof Error) {
+            if (error.message.includes('Authentication failed') ||
+                error.message.includes('fatal: Authentication failed')) {
+                coreExports.error('Git authentication failed. This suggests an issue with the GITHUB_TOKEN.');
+                coreExports.error('Ensure that:');
+                coreExports.error('1. The workflow has appropriate permissions');
+                coreExports.error('2. The GITHUB_TOKEN is properly set');
+                coreExports.error('3. The repository is accessible with the provided token');
+            }
+            else if (error.message.includes('Repository not found') ||
+                error.message.includes('fatal: repository')) {
+                coreExports.error('Repository not found or not accessible.');
+                coreExports.error('Check that the repository exists and the token has the necessary permissions.');
+            }
+        }
+        throw error;
+    }
+    finally {
+        // Clean up the subfolder after PR creation
+        if (fs.existsSync(prWorkspace)) {
+            try {
+                fs.rmSync(prWorkspace, { recursive: true, force: true });
+                coreExports.info(`Cleaned up workspace: ${prWorkspace}`);
+            }
+            catch (cleanupError) {
+                coreExports.warning(`Failed to clean up workspace: ${cleanupError}`);
+            }
+        }
+    }
+}
+async function createPullRequestWithMultipleDeploymentsInWorkspace(deploymentIds, getChangesFunction, baseBranch, prTitle, prBody) {
+    const runId = process.env.GITHUB_RUN_ID || Date.now().toString();
+    const prWorkspace = path$1.join(process.env.GITHUB_WORKSPACE || process.cwd(), `pr-workspace-${runId}`);
+    // Store original working directory before any changes
+    const originalCwd = process.cwd();
+    try {
+        // The GITHUB_TOKEN is automatically available in GitHub Actions environment
+        const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+        if (!githubToken) {
+            throw new Error('GITHUB_TOKEN or GH_TOKEN environment variable is not available. Ensure the workflow has proper permissions.');
+        }
+        // Create the subfolder
+        fs.mkdirSync(prWorkspace, { recursive: true });
+        // Clone the current repo and checkout the current branch into the subfolder
+        // Use the token in the URL for authentication
+        const repoUrl = `https://x-access-token:${githubToken}@github.com/${githubExports.context.repo.owner}/${githubExports.context.repo.repo}.git`;
+        const currentBranch = githubExports.context.ref.replace('refs/heads/', '');
+        coreExports.info(`Cloning repository to: ${prWorkspace}`);
+        coreExports.info(`Repository URL: https://github.com/${githubExports.context.repo.owner}/${githubExports.context.repo.repo}.git`);
+        coreExports.info(`Branch: ${currentBranch}`);
+        await execExports.exec('git', [
+            'clone',
+            '--branch',
+            currentBranch,
+            repoUrl,
+            prWorkspace
+        ]);
+        // Change working directory to the subfolder for all git/PR operations
+        process.chdir(prWorkspace);
+        // Ensure working directory is clean before proceeding
+        await ensureCleanWorkingDirectory();
+        // Try multiple deployments using the existing multi-deployment function
+        const result = await createPullRequestWithMultipleDeployments(deploymentIds, getChangesFunction, baseBranch, prTitle, prBody);
+        // Restore original working directory
+        process.chdir(originalCwd);
+        return result;
+    }
+    catch (error) {
+        // Restore original working directory even on error
+        process.chdir(originalCwd);
         coreExports.error(`Failed to create PR workspace or clone repository: ${error}`);
         if (error instanceof Error) {
             if (error.message.includes('Authentication failed') ||
@@ -65042,10 +65361,11 @@ class ExcludedPathsValidationError extends Error {
 /**
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
+ * Returns the actual space saved in bytes
  */
-function removeExcludedPaths(zip, excludedPaths) {
+async function removeExcludedPaths(zip, excludedPaths) {
     if (!excludedPaths.trim()) {
-        return;
+        return 0;
     }
     // Validate format: single path or comma-separated paths (no space-separated paths)
     // Valid: "mypath/test", "mypath\\hello", ".git/,mypath/test", ".git/, .github/"
@@ -65076,14 +65396,34 @@ function removeExcludedPaths(zip, excludedPaths) {
         }
     }
     coreExports.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`);
+    // Get the original zip size by generating it
+    const originalZipData = await zip.generateAsync({
+        type: 'nodebuffer',
+        compression: 'DEFLATE',
+        compressionOptions: { level: 9 }
+    });
+    const originalSize = originalZipData.length;
     let removedCount = 0;
     const foundPaths = [];
     const notFoundPaths = [...pathsToExclude];
-    Object.keys(zip.files).forEach((filename) => {
+    const allFilenames = Object.keys(zip.files);
+    const filesToRemove = [];
+    // Find all files to remove
+    for (const filename of allFilenames) {
         for (const excludePath of pathsToExclude) {
             if (filename.startsWith(excludePath)) {
-                zip.remove(filename);
-                removedCount++;
+                filesToRemove.push(filename);
+                break; // Move to next filename once a match is found
+            }
+        }
+    }
+    // Remove the files
+    for (const filename of filesToRemove) {
+        zip.remove(filename);
+        removedCount++;
+        // Track which paths were found
+        for (const excludePath of pathsToExclude) {
+            if (filename.startsWith(excludePath)) {
                 if (!foundPaths.includes(excludePath)) {
                     foundPaths.push(excludePath);
                     // Remove from not found list
@@ -65092,12 +65432,45 @@ function removeExcludedPaths(zip, excludedPaths) {
                         notFoundPaths.splice(notFoundIndex, 1);
                     }
                 }
-                break; // Move to next filename once a match is found
+                break;
             }
         }
-    });
+    }
+    // Calculate actual space saved by comparing zip sizes
+    let actualSpaceSaved = 0;
     if (removedCount > 0) {
+        const newZipData = await zip.generateAsync({
+            type: 'nodebuffer',
+            compression: 'DEFLATE',
+            compressionOptions: { level: 9 }
+        });
+        const newSize = newZipData.length;
+        actualSpaceSaved = originalSize - newSize;
+        const savedMB = (actualSpaceSaved / (1024 * 1024)).toFixed(2);
         coreExports.info(`Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`);
+        coreExports.info(`Space saved: ${savedMB} MB (${actualSpaceSaved.toLocaleString()} bytes)`);
+        // Environmental impact message based on space saved
+        const savedMBNum = parseFloat(savedMB);
+        let carbonMessage = '';
+        if (savedMBNum >= 100) {
+            carbonMessage = `🌍 Significant Efficiency Achieved — You've saved ${savedMB} MB, representing a substantial reduction in transfer data and associated carbon emissions.`;
+        }
+        else if (savedMBNum >= 50) {
+            carbonMessage = `🌿 High Efficiency — ${savedMB} MB saved means a notable decrease in bandwidth usage, helping to reduce server energy consumption.`;
+        }
+        else if (savedMBNum >= 20) {
+            carbonMessage = `📦 Efficient Deployment — ${savedMB} MB saved results in a meaningful reduction in network load and environmental impact.`;
+        }
+        else if (savedMBNum >= 5) {
+            carbonMessage = `⚡ Optimized Transfer — ${savedMB} MB saved helps lower both operational costs and energy usage.`;
+        }
+        else if (savedMBNum >= 1) {
+            carbonMessage = `📉 Compact & Efficient — ${savedMB} MB saved conserves resources during transfer and deployment.`;
+        }
+        else {
+            carbonMessage = `💾 Minimal Transfer Footprint — ${savedMB} MB saved reduces energy use and supports sustainable operations.`;
+        }
+        coreExports.info(carbonMessage);
     }
     // Error if any paths weren't found - stop the action
     if (notFoundPaths.length > 0) {
@@ -65106,6 +65479,7 @@ function removeExcludedPaths(zip, excludedPaths) {
     if (removedCount === 0 && pathsToExclude.length > 0) {
         throw new ExcludedPathsValidationError('No files were removed. Verify that the excluded paths match the structure of your artifact.');
     }
+    return actualSpaceSaved;
 }
 async function handleAddArtifact(api, inputs) {
     validateRequiredInputs(inputs, [
@@ -65159,7 +65533,7 @@ async function processArtifactWithNugetConfig(filePath, nugetSourceName, nugetSo
     const data = fs.readFileSync(filePath);
     const zip = await JSZip.loadAsync(data);
     // Remove excluded paths
-    removeExcludedPaths(zip, excludedPaths || '.git/,.github/');
+    await removeExcludedPaths(zip, excludedPaths || '.git/,.github/');
     // Add or update NuGet.config in the root
     const nugetConfig = {
         name: nugetSourceName,
@@ -65260,7 +65634,7 @@ async function processCloudGitignore(filePath, excludedPaths) {
     const data = fs.readFileSync(filePath);
     const zip = await JSZip.loadAsync(data);
     // Remove excluded paths first
-    removeExcludedPaths(zip, excludedPaths || '.git/,.github/');
+    await removeExcludedPaths(zip, excludedPaths || '.git/,.github/');
     // Process .cloud_gitignore replacement
     const wasProcessed = await processCloudGitignoreInZip(zip);
     if (wasProcessed) {

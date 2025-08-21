@@ -8,7 +8,10 @@ import {
 } from '../types/index.js'
 import { validateRequiredInputs } from '../utils/helpers.js'
 import { pollDeploymentStatus } from '../utils/deployment-polling.js'
-import { createPullRequestWithPatch } from '../github/pull-request.js'
+import {
+  createPullRequestWithPatch,
+  createPullRequestWithMultipleDeployments
+} from '../github/pull-request.js'
 import * as fs from 'fs'
 import * as path from 'path'
 import * as github from '@actions/github'
@@ -293,14 +296,33 @@ async function attemptPullRequestCreation(
 ): Promise<ActionOutputs> {
   try {
     core.info(
-      'Attempting to get latest completed deployment with changes and create PR...'
+      'Attempting to get multiple completed deployments with changes and create PR...'
     )
 
-    const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(
-      inputs.targetEnvironmentAlias!
+    // Get multiple deployment IDs as fallbacks
+    let deploymentIds = await api.getLatestCompletedDeployments(
+      inputs.targetEnvironmentAlias!,
+      15 // Try up to 15 deployments for better fallback coverage
     )
 
-    if (!latestCompletedDeploymentId) {
+    // If we only found 1 deployment, try again with expanded search to find more
+    if (deploymentIds.length === 1) {
+      core.warning('Only found 1 deployment with changes, expanding search...')
+      deploymentIds = await api.getLatestCompletedDeployments(
+        inputs.targetEnvironmentAlias!,
+        25 // Significantly expanded search for more options
+      )
+
+      if (deploymentIds.length === 1) {
+        core.warning('Still only found 1 deployment after expanded search')
+      } else {
+        core.info(
+          `Found ${deploymentIds.length} deployments after expanded search`
+        )
+      }
+    }
+
+    if (deploymentIds.length === 0) {
       core.warning('No completed deployments found to create PR from')
       return {
         deploymentState: deploymentStatus.deploymentState,
@@ -309,43 +331,58 @@ async function attemptPullRequestCreation(
     }
 
     core.info(
-      `Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`
+      `Found ${deploymentIds.length} completed deployment(s) with changes: ${deploymentIds.join(', ')}`
     )
 
-    // Get the changes from the latest completed deployment
+    // Create GitHub PR with the changes, trying multiple deployments
+    const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`
+    const prBody = (
+      deploymentId: string
+    ) => `This PR applies changes from completed deployment (${deploymentId}) to fix the failed deployment (${inputs.deploymentId}).
+
+**Failed Deployment ID:** ${inputs.deploymentId}
+**Source Deployment ID:** ${deploymentId}
+**Target Environment:** ${inputs.targetEnvironmentAlias}
+
+The changes in this PR are based on the git patch from a successful deployment.`
+
+    // Function to get changes for a specific deployment
+    const getChangesFunction = async (
+      deploymentId: string
+    ): Promise<string> => {
+      const changes = await api.getChangesById(
+        deploymentId,
+        inputs.targetEnvironmentAlias!
+      )
+      return changes.changes
+    }
+
+    // Try to create PR with multiple deployments in workspace
+    const result = await createPullRequestWithMultipleDeploymentsInWorkspace(
+      deploymentIds,
+      getChangesFunction,
+      github.context.ref.replace('refs/heads/', ''),
+      prTitle,
+      prBody(deploymentIds[0]) // Use the first deployment ID for the body initially
+    )
+
+    // Get the successful deployment ID from the result
+    const successfulDeploymentId = result.deploymentId
+
+    // Get the changes from the successful deployment for the output
     const changes = await api.getChangesById(
-      latestCompletedDeploymentId,
+      successfulDeploymentId,
       inputs.targetEnvironmentAlias!
     )
 
     core.info('Retrieved changes from latest completed deployment')
-    core.setOutput(
-      'latest-completed-deployment-id',
-      latestCompletedDeploymentId
-    )
+    core.setOutput('latest-completed-deployment-id', successfulDeploymentId)
     core.setOutput('changes', JSON.stringify(changes))
-
-    // Create GitHub PR with the changes
-    const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`
-    const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).
-
-**Failed Deployment ID:** ${inputs.deploymentId}
-**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
-**Target Environment:** ${inputs.targetEnvironmentAlias}
-
-The changes in this PR are based on the git patch from the latest successful deployment.`
-
-    await createPullRequestInWorkspace(
-      changes.changes,
-      prTitle,
-      prBody,
-      latestCompletedDeploymentId
-    )
 
     return {
       deploymentState: deploymentStatus.deploymentState,
       deploymentStatus: JSON.stringify(deploymentStatus),
-      latestCompletedDeploymentId,
+      latestCompletedDeploymentId: successfulDeploymentId,
       changes: JSON.stringify(changes)
     }
   } catch (error) {
@@ -384,6 +421,9 @@ async function createPullRequestInWorkspace(
     `pr-workspace-${runId}`
   )
 
+  // Store original working directory before any changes
+  const originalCwd = process.cwd()
+
   try {
     // The GITHUB_TOKEN is automatically available in GitHub Actions environment
     const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
@@ -416,7 +456,6 @@ async function createPullRequestInWorkspace(
     ])
 
     // Change working directory to the subfolder for all git/PR operations
-    const originalCwd = process.cwd()
     process.chdir(prWorkspace)
 
     // Ensure working directory is clean before proceeding
@@ -434,6 +473,116 @@ async function createPullRequestInWorkspace(
     // Restore original working directory
     process.chdir(originalCwd)
   } catch (error) {
+    // Restore original working directory even on error
+    process.chdir(originalCwd)
+    core.error(`Failed to create PR workspace or clone repository: ${error}`)
+
+    if (error instanceof Error) {
+      if (
+        error.message.includes('Authentication failed') ||
+        error.message.includes('fatal: Authentication failed')
+      ) {
+        core.error(
+          'Git authentication failed. This suggests an issue with the GITHUB_TOKEN.'
+        )
+        core.error('Ensure that:')
+        core.error('1. The workflow has appropriate permissions')
+        core.error('2. The GITHUB_TOKEN is properly set')
+        core.error('3. The repository is accessible with the provided token')
+      } else if (
+        error.message.includes('Repository not found') ||
+        error.message.includes('fatal: repository')
+      ) {
+        core.error('Repository not found or not accessible.')
+        core.error(
+          'Check that the repository exists and the token has the necessary permissions.'
+        )
+      }
+    }
+
+    throw error
+  } finally {
+    // Clean up the subfolder after PR creation
+    if (fs.existsSync(prWorkspace)) {
+      try {
+        fs.rmSync(prWorkspace, { recursive: true, force: true })
+        core.info(`Cleaned up workspace: ${prWorkspace}`)
+      } catch (cleanupError) {
+        core.warning(`Failed to clean up workspace: ${cleanupError}`)
+      }
+    }
+  }
+}
+
+async function createPullRequestWithMultipleDeploymentsInWorkspace(
+  deploymentIds: string[],
+  getChangesFunction: (deploymentId: string) => Promise<string>,
+  baseBranch: string,
+  prTitle: string,
+  prBody: string
+): Promise<{ deploymentId: string }> {
+  const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
+  const prWorkspace = path.join(
+    process.env.GITHUB_WORKSPACE || process.cwd(),
+    `pr-workspace-${runId}`
+  )
+
+  // Store original working directory before any changes
+  const originalCwd = process.cwd()
+
+  try {
+    // The GITHUB_TOKEN is automatically available in GitHub Actions environment
+    const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+    if (!githubToken) {
+      throw new Error(
+        'GITHUB_TOKEN or GH_TOKEN environment variable is not available. Ensure the workflow has proper permissions.'
+      )
+    }
+
+    // Create the subfolder
+    fs.mkdirSync(prWorkspace, { recursive: true })
+
+    // Clone the current repo and checkout the current branch into the subfolder
+    // Use the token in the URL for authentication
+    const repoUrl = `https://x-access-token:${githubToken}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+    const currentBranch = github.context.ref.replace('refs/heads/', '')
+
+    core.info(`Cloning repository to: ${prWorkspace}`)
+    core.info(
+      `Repository URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
+    )
+    core.info(`Branch: ${currentBranch}`)
+
+    await exec.exec('git', [
+      'clone',
+      '--branch',
+      currentBranch,
+      repoUrl,
+      prWorkspace
+    ])
+
+    // Change working directory to the subfolder for all git/PR operations
+    process.chdir(prWorkspace)
+
+    // Ensure working directory is clean before proceeding
+    await ensureCleanWorkingDirectory()
+
+    // Try multiple deployments using the existing multi-deployment function
+    const result = await createPullRequestWithMultipleDeployments(
+      deploymentIds,
+      getChangesFunction,
+      baseBranch,
+      prTitle,
+      prBody
+    )
+
+    // Restore original working directory
+    process.chdir(originalCwd)
+
+    return result
+  } catch (error) {
+    // Restore original working directory even on error
+    process.chdir(originalCwd)
     core.error(`Failed to create PR workspace or clone repository: ${error}`)
 
     if (error instanceof Error) {
