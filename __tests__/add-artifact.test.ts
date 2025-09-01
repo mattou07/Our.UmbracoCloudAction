@@ -35,25 +35,47 @@ describe('removeExcludedPaths', () => {
 
   describe('Valid Input Scenarios', () => {
     test('removes single excluded path', () => {
-      zip.file('.git/config', 'config data')
-      zip.file('.git/HEAD', 'head data')
-      zip.file('src/index.js', 'source code')
+      // Arrange
+      const testFiles = {
+        '.git/config': 'config data',
+        '.git/HEAD': 'head data',
+        'src/index.js': 'source code'
+      }
 
-      removeExcludedPaths(zip, '.git/')
+      Object.entries(testFiles).forEach(([path, content]) => {
+        zip.file(path, content)
+      })
 
+      const pathToExclude = '.git/'
+
+      // Act
+      removeExcludedPaths(zip, pathToExclude)
+
+      // Assert
       expect(zip.files['.git/config']).toBeUndefined()
       expect(zip.files['.git/HEAD']).toBeUndefined()
       expect(zip.files['src/index.js']).toBeDefined()
     })
 
     test('removes multiple comma-separated excluded paths', () => {
-      zip.file('.git/config', 'data')
-      zip.file('.github/workflow.yml', 'data')
-      zip.file('node_modules/package/index.js', 'data')
-      zip.file('src/index.js', 'data')
+      // Arrange
+      const testFiles = {
+        '.git/config': 'data',
+        '.github/workflow.yml': 'data',
+        'node_modules/package/index.js': 'data',
+        'src/index.js': 'data'
+      }
 
-      removeExcludedPaths(zip, '.git/,.github/,node_modules/')
+      Object.entries(testFiles).forEach(([path, content]) => {
+        zip.file(path, content)
+      })
 
+      const pathsToExclude = '.git/,.github/,node_modules/'
+
+      // Act
+      removeExcludedPaths(zip, pathsToExclude)
+
+      // Assert
       expect(zip.files['.git/config']).toBeUndefined()
       expect(zip.files['.github/workflow.yml']).toBeUndefined()
       expect(zip.files['node_modules/package/index.js']).toBeUndefined()
@@ -61,13 +83,24 @@ describe('removeExcludedPaths', () => {
     })
 
     test('removes paths with spaces around commas', () => {
-      zip.file('.git/config', 'data')
-      zip.file('.github/workflow.yml', 'data')
-      zip.file('temp/file.txt', 'data')
-      zip.file('src/index.js', 'data')
+      // Arrange
+      const testFiles = {
+        '.git/config': 'data',
+        '.github/workflow.yml': 'data',
+        'temp/file.txt': 'data',
+        'src/index.js': 'data'
+      }
 
-      removeExcludedPaths(zip, '.git/, .github/ , temp/')
+      Object.entries(testFiles).forEach(([path, content]) => {
+        zip.file(path, content)
+      })
 
+      const pathsToExclude = '.git/, .github/ , temp/'
+
+      // Act
+      removeExcludedPaths(zip, pathsToExclude)
+
+      // Assert
       expect(zip.files['.git/config']).toBeUndefined()
       expect(zip.files['.github/workflow.yml']).toBeUndefined()
       expect(zip.files['temp/file.txt']).toBeUndefined()
@@ -75,59 +108,94 @@ describe('removeExcludedPaths', () => {
     })
 
     test('handles backslash path separators', () => {
-      zip.file('temp\\cache\\file.tmp', 'data')
-      zip.file('src\\index.js', 'data')
+      // Arrange
+      const testFiles = {
+        'temp\\cache\\file.tmp': 'data',
+        'src\\index.js': 'data'
+      }
 
-      removeExcludedPaths(zip, 'temp\\')
+      Object.entries(testFiles).forEach(([path, content]) => {
+        zip.file(path, content)
+      })
 
+      const pathToExclude = 'temp\\'
+
+      // Act
+      removeExcludedPaths(zip, pathToExclude)
+
+      // Assert
       expect(zip.files['temp\\cache\\file.tmp']).toBeUndefined()
       expect(zip.files['src\\index.js']).toBeDefined()
     })
 
     test('handles empty excluded paths gracefully', () => {
-      zip.file('src/index.js', 'data')
-      zip.file('.git/config', 'data')
+      // Arrange
+      const testFiles = {
+        'src/index.js': 'data',
+        '.git/config': 'data'
+      }
 
-      // Should not throw and not remove anything
-      expect(() => removeExcludedPaths(zip, '')).not.toThrow()
+      Object.entries(testFiles).forEach(([path, content]) => {
+        zip.file(path, content)
+      })
+
+      const emptyPathsToExclude = ''
+
+      // Act & Assert
+      expect(() => removeExcludedPaths(zip, emptyPathsToExclude)).not.toThrow()
       expect(zip.files['src/index.js']).toBeDefined()
       expect(zip.files['.git/config']).toBeDefined()
     })
 
     test('handles whitespace-only excluded paths', () => {
+      // Arrange
       zip.file('src/index.js', 'data')
+      const whitespaceOnlyPaths = '   \t\n  '
 
-      expect(() => removeExcludedPaths(zip, '   \t\n  ')).not.toThrow()
+      // Act & Assert
+      expect(() => removeExcludedPaths(zip, whitespaceOnlyPaths)).not.toThrow()
       expect(zip.files['src/index.js']).toBeDefined()
     })
   })
 
   describe('Invalid Input Validation', () => {
     test('throws error for space-separated paths', () => {
-      expect(() => removeExcludedPaths(zip, 'foo bar')).toThrow(
-        'Invalid excluded-paths format'
-      )
-      expect(() => removeExcludedPaths(zip, '.git/ .github/')).toThrow(
-        'Invalid excluded-paths format'
-      )
+      // Arrange
+      const invalidSpaceSeparatedPaths = ['foo bar', '.git/ .github/']
+      const expectedErrorMessage = 'Invalid excluded-paths format'
+
+      // Act & Assert
+      invalidSpaceSeparatedPaths.forEach((invalidPath) => {
+        expect(() => removeExcludedPaths(zip, invalidPath)).toThrow(
+          expectedErrorMessage
+        )
+      })
     })
 
     test('throws error for mixed path separators', () => {
-      expect(() => removeExcludedPaths(zip, 'foo/bar\\baz')).toThrow(
-        'contains mixed separators'
-      )
-      expect(() => removeExcludedPaths(zip, 'path\\to/mixed')).toThrow(
-        'contains mixed separators'
-      )
+      // Arrange
+      const invalidMixedSeparatorPaths = ['foo/bar\\baz', 'path\\to/mixed']
+      const expectedErrorMessage = 'contains mixed separators'
+
+      // Act & Assert
+      invalidMixedSeparatorPaths.forEach((invalidPath) => {
+        expect(() => removeExcludedPaths(zip, invalidPath)).toThrow(
+          expectedErrorMessage
+        )
+      })
     })
 
     test('throws error for unsafe relative paths', () => {
-      expect(() => removeExcludedPaths(zip, '../etc/passwd')).toThrow(
-        'Invalid path'
-      )
-      expect(() => removeExcludedPaths(zip, '../../sensitive')).toThrow(
-        'Invalid path'
-      )
+      // Arrange
+      const unsafeRelativePaths = ['../etc/passwd', '../../sensitive']
+      const expectedErrorMessage = 'Invalid path'
+
+      // Act & Assert
+      unsafeRelativePaths.forEach((unsafePath) => {
+        expect(() => removeExcludedPaths(zip, unsafePath)).toThrow(
+          expectedErrorMessage
+        )
+      })
     })
 
     test('throws error for absolute paths', () => {
@@ -225,7 +293,8 @@ describe('handleAddArtifact', () => {
 
   describe('Valid Input Scenarios', () => {
     test('handles minimal required inputs', async () => {
-      const inputs: ActionInputs = {
+      // Arrange
+      const minimalInputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
         action: 'add-artifact',
@@ -234,22 +303,25 @@ describe('handleAddArtifact', () => {
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org/v3/index.json'
       }
-
       const expectedArtifactId = 'artifact-123'
+
       mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
 
-      const result = await handleAddArtifact(mockApi, inputs)
+      // Act
+      const result = await handleAddArtifact(mockApi, minimalInputs)
 
+      // Assert
       expect(result.artifactId).toBe(expectedArtifactId)
       expect(mockApi.addDeploymentArtifact).toHaveBeenCalledWith(
-        inputs.filePath,
+        minimalInputs.filePath,
         undefined, // description
         undefined // version
       )
     })
 
     test('handles all optional parameters', async () => {
-      const inputs: ActionInputs = {
+      // Arrange
+      const fullInputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
         action: 'add-artifact',
@@ -262,23 +334,24 @@ describe('handleAddArtifact', () => {
         nugetSourcePassword: 'prod-pass',
         excludedPaths: '.git/,.github/,.vscode/,temp/'
       }
-
       const expectedArtifactId = 'full-artifact-456'
+
       mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
 
-      const result = await handleAddArtifact(mockApi, inputs)
+      // Act
+      const result = await handleAddArtifact(mockApi, fullInputs)
 
+      // Assert
       expect(result).toEqual<ActionOutputs>({
         artifactId: expectedArtifactId,
         nugetSourceStatus: expect.stringContaining(
           'Failed to configure NuGet source'
         )
       })
-
       expect(mockApi.addDeploymentArtifact).toHaveBeenCalledWith(
-        inputs.filePath,
-        inputs.description,
-        inputs.version
+        fullInputs.filePath,
+        fullInputs.description,
+        fullInputs.version
       )
     })
 

@@ -21,20 +21,27 @@ describe('main.ts', () => {
 
   describe('getActionInputs - Valid Inputs', () => {
     test('parses all required inputs correctly', () => {
+      // Arrange
+      const expectedProjectId = 'test-project-123'
+      const expectedApiKey = 'sk_test_key_abc123'
+      const expectedAction = 'start-deployment'
+
       defineEnv({
-        projectId: 'test-project-123',
-        apiKey: 'sk_test_key_abc123',
-        action: 'start-deployment',
+        projectId: expectedProjectId,
+        apiKey: expectedApiKey,
+        action: expectedAction,
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
       })
 
-      const inputs = getActionInputs()
+      // Act
+      const result = getActionInputs()
 
-      expect(inputs.projectId).toBe('test-project-123')
-      expect(inputs.apiKey).toBe('sk_test_key_abc123')
-      expect(inputs.action).toBe('start-deployment')
-      expect(inputs).toMatchObject<Partial<ActionInputs>>({
+      // Assert
+      expect(result.projectId).toBe(expectedProjectId)
+      expect(result.apiKey).toBe(expectedApiKey)
+      expect(result.action).toBe(expectedAction)
+      expect(result).toMatchObject<Partial<ActionInputs>>({
         projectId: expect.any(String),
         apiKey: expect.any(String),
         action: expect.any(String)
@@ -42,7 +49,8 @@ describe('main.ts', () => {
     })
 
     test('parses all inputs with custom values', () => {
-      defineEnv({
+      // Arrange
+      const inputValues = {
         projectId: 'pid',
         apiKey: 'key',
         action: 'start-deployment',
@@ -67,98 +75,128 @@ describe('main.ts', () => {
         'nuget-source-username': 'nuget-user',
         'nuget-source-password': 'nuget-pass',
         'excluded-paths': '.git/,.github/,.vscode/'
-      })
+      }
 
-      const inputs = getActionInputs()
+      defineEnv(inputValues)
 
-      expect(inputs.projectId).toBe('pid')
-      expect(inputs.apiKey).toBe('key')
-      expect(inputs.action).toBe('start-deployment')
-      expect(inputs.baseUrl).toBe('https://custom-api.umbraco.com')
-      expect(inputs.artifactId).toBe('art-123')
-      expect(inputs.targetEnvironmentAlias).toBe('staging')
-      expect(inputs.commitMessage).toBe('Custom deploy message')
-      expect(inputs.timeoutSeconds).toBe(2400)
-      expect(inputs.noBuildAndRestore).toBe(true)
-      expect(inputs.skipVersionCheck).toBe(true)
-      expect(inputs.deploymentId).toBe('deploy-456')
-      expect(inputs.filePath).toBe('/custom/path/artifact.zip')
-      expect(inputs.description).toBe('Custom artifact description')
-      expect(inputs.version).toBe('2.1.0')
-      expect(inputs.changeId).toBe('change-789')
-      expect(inputs.baseBranch).toBe('develop')
-      expect(inputs.uploadRetries).toBe(5)
-      expect(inputs.uploadRetryDelay).toBe(15000)
-      expect(inputs.uploadTimeout).toBe(120000)
-      expect(inputs.nugetSourceName).toBe('CustomSource')
-      expect(inputs.nugetSourceUrl).toBe(
+      // Act
+      const result = getActionInputs()
+
+      // Assert
+      expect(result.projectId).toBe('pid')
+      expect(result.apiKey).toBe('key')
+      expect(result.action).toBe('start-deployment')
+      expect(result.baseUrl).toBe('https://custom-api.umbraco.com')
+      expect(result.artifactId).toBe('art-123')
+      expect(result.targetEnvironmentAlias).toBe('staging')
+      expect(result.commitMessage).toBe('Custom deploy message')
+      expect(result.timeoutSeconds).toBe(2400)
+      expect(result.noBuildAndRestore).toBe(true)
+      expect(result.skipVersionCheck).toBe(true)
+      expect(result.deploymentId).toBe('deploy-456')
+      expect(result.filePath).toBe('/custom/path/artifact.zip')
+      expect(result.description).toBe('Custom artifact description')
+      expect(result.version).toBe('2.1.0')
+      expect(result.changeId).toBe('change-789')
+      expect(result.baseBranch).toBe('develop')
+      expect(result.uploadRetries).toBe(5)
+      expect(result.uploadRetryDelay).toBe(15000)
+      expect(result.uploadTimeout).toBe(120000)
+      expect(result.nugetSourceName).toBe('CustomSource')
+      expect(result.nugetSourceUrl).toBe(
         'https://nuget.custom.com/v3/index.json'
       )
-      expect(inputs.nugetSourceUsername).toBe('nuget-user')
-      expect(inputs.nugetSourcePassword).toBe('nuget-pass')
-      expect(inputs.excludedPaths).toBe('.git/,.github/,.vscode/')
+      expect(result.nugetSourceUsername).toBe('nuget-user')
+      expect(result.nugetSourcePassword).toBe('nuget-pass')
+      expect(result.excludedPaths).toBe('.git/,.github/,.vscode/')
     })
 
     test('uses default values for optional inputs', () => {
-      defineEnv({
+      // Arrange
+      const minimalInputs = {
         projectId: 'pid',
         apiKey: 'key',
         action: 'add-artifact',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
-      })
+      }
+      const expectedDefaults = {
+        baseUrl: 'https://api.cloud.umbraco.com',
+        commitMessage: 'Deployment from GitHub Actions',
+        timeoutSeconds: 1200,
+        uploadRetries: 3,
+        uploadRetryDelay: 10000,
+        uploadTimeout: 60000,
+        excludedPaths: '.git/,.github/'
+      }
 
-      const inputs = getActionInputs()
+      defineEnv(minimalInputs)
 
-      expect(inputs.baseUrl).toBe('https://api.cloud.umbraco.com')
-      expect(inputs.commitMessage).toBe('Deployment from GitHub Actions')
-      expect(inputs.timeoutSeconds).toBe(1200)
-      expect(inputs.noBuildAndRestore).toBe(false)
-      expect(inputs.skipVersionCheck).toBe(false)
-      expect(inputs.uploadRetries).toBe(3)
-      expect(inputs.uploadRetryDelay).toBe(10000)
-      expect(inputs.uploadTimeout).toBe(60000)
-      expect(inputs.excludedPaths).toBe('.git/,.github/')
+      // Act
+      const result = getActionInputs()
 
-      // Verify optional inputs are undefined when not provided
-      expect(inputs.artifactId).toBe('')
-      expect(inputs.targetEnvironmentAlias).toBe('')
-      expect(inputs.deploymentId).toBe('')
-      expect(inputs.filePath).toBe('')
-      expect(inputs.description).toBe('')
-      expect(inputs.version).toBe('')
-      expect(inputs.changeId).toBe('')
-      expect(inputs.baseBranch).toBe('')
+      // Assert
+      expect(result.baseUrl).toBe(expectedDefaults.baseUrl)
+      expect(result.commitMessage).toBe(expectedDefaults.commitMessage)
+      expect(result.timeoutSeconds).toBe(expectedDefaults.timeoutSeconds)
+      expect(result.noBuildAndRestore).toBe(false)
+      expect(result.skipVersionCheck).toBe(false)
+      expect(result.uploadRetries).toBe(expectedDefaults.uploadRetries)
+      expect(result.uploadRetryDelay).toBe(expectedDefaults.uploadRetryDelay)
+      expect(result.uploadTimeout).toBe(expectedDefaults.uploadTimeout)
+      expect(result.excludedPaths).toBe(expectedDefaults.excludedPaths)
+
+      // Verify optional inputs are empty when not provided
+      expect(result.artifactId).toBe('')
+      expect(result.targetEnvironmentAlias).toBe('')
+      expect(result.deploymentId).toBe('')
+      expect(result.filePath).toBe('')
+      expect(result.description).toBe('')
+      expect(result.version).toBe('')
+      expect(result.changeId).toBe('')
+      expect(result.baseBranch).toBe('')
     })
   })
 
   describe('getActionInputs - Boolean Input Parsing', () => {
     test('correctly parses boolean true values', () => {
-      defineEnv({
+      // Arrange
+      const inputsWithTrueBooleans = {
         projectId: 'pid',
         apiKey: 'key',
         action: 'start-deployment',
         noBuildAndRestore: 'true',
         skipVersionCheck: 'true'
-      })
+      }
 
-      const inputs = getActionInputs()
-      expect(inputs.noBuildAndRestore).toBe(true)
-      expect(inputs.skipVersionCheck).toBe(true)
+      defineEnv(inputsWithTrueBooleans)
+
+      // Act
+      const result = getActionInputs()
+
+      // Assert
+      expect(result.noBuildAndRestore).toBe(true)
+      expect(result.skipVersionCheck).toBe(true)
     })
 
     test('correctly parses boolean false values', () => {
-      defineEnv({
+      // Arrange
+      const inputsWithFalseBooleans = {
         projectId: 'pid',
         apiKey: 'key',
         action: 'start-deployment',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
-      })
+      }
 
-      const inputs = getActionInputs()
-      expect(inputs.noBuildAndRestore).toBe(false)
-      expect(inputs.skipVersionCheck).toBe(false)
+      defineEnv(inputsWithFalseBooleans)
+
+      // Act
+      const result = getActionInputs()
+
+      // Assert
+      expect(result.noBuildAndRestore).toBe(false)
+      expect(result.skipVersionCheck).toBe(false)
     })
 
     test('defaults to false for missing boolean inputs', () => {
