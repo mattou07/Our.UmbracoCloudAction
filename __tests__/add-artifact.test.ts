@@ -11,17 +11,19 @@ import { ActionInputs, ActionOutputs } from '../src/types/index.js'
 
 // Mock the validateRequiredInputs function directly
 jest.mock('../src/utils/helpers.js', () => ({
-  validateRequiredInputs: jest.fn((inputs: any, required: string[]) => {
-    const missing = required.filter((key) => !inputs[key])
-    if (missing.length > 0) {
-      throw new Error(`Missing required inputs: ${missing.join(', ')}`)
+  validateRequiredInputs: jest.fn(
+    (inputs: Record<string, unknown>, required: string[]) => {
+      const missing = required.filter((key) => !inputs[key])
+      if (missing.length > 0) {
+        throw new Error(`Missing required inputs: ${missing.join(', ')}`)
+      }
     }
-  })
+  )
 }))
 
 // Mock exec module to avoid system calls
 jest.mock('@actions/exec', () => ({
-  exec: jest.fn(() => Promise.resolve(0)) as any
+  exec: jest.fn(() => Promise.resolve(0))
 }))
 
 describe('removeExcludedPaths', () => {
@@ -218,7 +220,7 @@ describe('handleAddArtifact', () => {
 
     mockApi = {
       addDeploymentArtifact: jest.fn()
-    } as any
+    } as Partial<jest.Mocked<UmbracoCloudAPI>> as jest.Mocked<UmbracoCloudAPI>
   })
 
   describe('Valid Input Scenarios', () => {

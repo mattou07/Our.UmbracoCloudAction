@@ -324,21 +324,19 @@ describe('main.ts', () => {
       expect(typeof inputs.apiKey).toBe('string')
       expect(typeof inputs.action).toBe('string')
 
-      // Verify optional boolean fields are boolean or undefined
-      if (inputs.noBuildAndRestore !== undefined) {
-        expect(typeof inputs.noBuildAndRestore).toBe('boolean')
-      }
-      if (inputs.skipVersionCheck !== undefined) {
-        expect(typeof inputs.skipVersionCheck).toBe('boolean')
-      }
+      // Verify boolean fields are boolean (not undefined since we set them explicitly)
+      expect(typeof inputs.noBuildAndRestore).toBe('boolean')
+      expect(typeof inputs.skipVersionCheck).toBe('boolean')
 
       // Verify optional number fields are number or undefined
-      if (inputs.timeoutSeconds !== undefined) {
-        expect(typeof inputs.timeoutSeconds).toBe('number')
-      }
-      if (inputs.uploadRetries !== undefined) {
-        expect(typeof inputs.uploadRetries).toBe('number')
-      }
+      expect(
+        inputs.timeoutSeconds === undefined ||
+          typeof inputs.timeoutSeconds === 'number'
+      ).toBe(true)
+      expect(
+        inputs.uploadRetries === undefined ||
+          typeof inputs.uploadRetries === 'number'
+      ).toBe(true)
     })
   })
 
