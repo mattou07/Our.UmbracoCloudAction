@@ -12,20 +12,23 @@ import { PullRequestInfo } from '../types/index.js'
 function validateDeploymentId(deploymentId: string): void {
   // Standard GUID pattern: 8-4-4-4-12 hexadecimal characters separated by hyphens
   // Optional curly braces are supported as per Microsoft GUID format
-  const guidPattern = /^[{]?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}[}]?$/
-  
+  const guidPattern =
+    /^[{]?[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}[}]?$/
+
   // Fallback pattern for simpler deployment IDs (alphanumeric + hyphens)
   const simplePattern = /^[a-zA-Z0-9-]+$/
-  
+
   // Check if deployment ID matches either valid pattern
   const isValidGuid = guidPattern.test(deploymentId)
   const isValidSimple = simplePattern.test(deploymentId)
-  
+
   if (isValidGuid || isValidSimple) {
     return // Valid format - exit early
   }
-  
-  throw new Error('Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.')
+
+  throw new Error(
+    'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
+  )
 }
 
 /**
@@ -41,7 +44,7 @@ export async function createPullRequestWithPatch(
   try {
     // Validate the deployment ID format
     validateDeploymentId(latestCompletedDeploymentId)
-    
+
     // Create a new branch name using the format: umbcloud/{deploymentId}
     let newBranchName = `umbcloud/${latestCompletedDeploymentId}`
     let guidConflictOccurred = false

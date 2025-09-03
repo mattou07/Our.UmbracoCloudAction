@@ -68,20 +68,22 @@ index abc123..def456 100644
     fs = await import('fs')
     await import('@actions/github')
     Octokit = await import('@octokit/rest')
-    createPullRequestWithPatch = (await import('../../src/github/pull-request.js')).createPullRequestWithPatch
+    createPullRequestWithPatch = (
+      await import('../../src/github/pull-request.js')
+    ).createPullRequestWithPatch
   })
 
   beforeEach(() => {
     jest.clearAllMocks()
-    
+
     // Set up default environment variables
     process.env.GITHUB_TOKEN = 'test-token'
     process.env.GITHUB_ACTOR = 'testuser'
     process.env.GITHUB_ACTOR_ID = '12345'
-    
+
     // Set up default mocks
     Octokit.Octokit.mockImplementation(() => mockOctokit)
-    
+
     mockOctokit.repos.getBranch.mockResolvedValue({
       data: {
         commit: {
@@ -89,16 +91,16 @@ index abc123..def456 100644
         }
       }
     })
-    
+
     mockOctokit.git.createRef.mockResolvedValue({})
-    
+
     mockOctokit.pulls.create.mockResolvedValue({
       data: {
         html_url: 'https://github.com/testowner/testrepo/pull/123',
         number: 123
       }
     })
-    
+
     exec.exec.mockResolvedValue(0)
     fs.existsSync.mockReturnValue(false)
   })
@@ -121,7 +123,13 @@ index abc123..def456 100644
     const deploymentId = 'dep-123'
 
     // Act
-    const result = await createPullRequestWithPatch(gitPatch, baseBranch, title, body, deploymentId)
+    const result = await createPullRequestWithPatch(
+      gitPatch,
+      baseBranch,
+      title,
+      body,
+      deploymentId
+    )
 
     // Assert
     expect(result).toEqual(validResponse)
@@ -152,7 +160,13 @@ index abc123..def456 100644
     process.env.GH_TOKEN = 'gh-token'
 
     // Act
-    const result = await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+    const result = await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123'
+    )
 
     // Assert
     expect(result).toEqual(validResponse)
@@ -161,19 +175,40 @@ index abc123..def456 100644
 
   test('applies git patch and commits changes successfully', async () => {
     // Arrange & Act
-    await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+    await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123'
+    )
 
     // Assert
-    expect(fs.writeFileSync).toHaveBeenCalledWith('./git-patch-dep-123.diff', validPatch, 'utf8')
-    expect(exec.exec).toHaveBeenCalledWith('git', ['apply', './git-patch-dep-123.diff'], { ignoreReturnCode: true })
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      './git-patch-dep-123.diff',
+      validPatch,
+      'utf8'
+    )
+    expect(exec.exec).toHaveBeenCalledWith(
+      'git',
+      ['apply', './git-patch-dep-123.diff'],
+      { ignoreReturnCode: true }
+    )
     expect(exec.exec).toHaveBeenCalledWith('git', ['add', '.'])
     expect(exec.exec).toHaveBeenCalledWith('git', [
-      '-c', 'user.name=testuser',
-      '-c', 'user.email=12345+testuser@users.noreply.github.com',
+      '-c',
+      'user.name=testuser',
+      '-c',
+      'user.email=12345+testuser@users.noreply.github.com',
       'commit',
-      '-m', 'Apply Umbraco Cloud changes from deployment dep-123'
+      '-m',
+      'Apply Umbraco Cloud changes from deployment dep-123'
     ])
-    expect(exec.exec).toHaveBeenCalledWith('git', ['push', 'origin', 'umbcloud/dep-123'])
+    expect(exec.exec).toHaveBeenCalledWith('git', [
+      'push',
+      'origin',
+      'umbcloud/dep-123'
+    ])
   })
 
   // Invalid Input Scenarios
@@ -185,7 +220,9 @@ index abc123..def456 100644
     // Act & Assert
     await expect(
       createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
-    ).rejects.toThrow('GitHub token not found. Please set GITHUB_TOKEN or GH_TOKEN environment variable.')
+    ).rejects.toThrow(
+      'GitHub token not found. Please set GITHUB_TOKEN or GH_TOKEN environment variable.'
+    )
   })
 
   test('throws error when git patch application fails', async () => {
@@ -205,7 +242,9 @@ index abc123..def456 100644
 
   test('throws error when branch creation fails with non-conflict error', async () => {
     // Arrange
-    mockOctokit.git.createRef.mockRejectedValue(new Error('API rate limit exceeded'))
+    mockOctokit.git.createRef.mockRejectedValue(
+      new Error('API rate limit exceeded')
+    )
 
     // Act & Assert
     await expect(
@@ -235,7 +274,13 @@ index abc123..def456 100644
     jest.spyOn(Date, 'now').mockReturnValue(mockTimestamp)
 
     // Act
-    const result = await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+    const result = await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123'
+    )
 
     // Assert
     expect(mockOctokit.git.createRef).toHaveBeenCalledTimes(2)
@@ -261,14 +306,23 @@ index abc123..def456 100644
     delete process.env.GITHUB_ACTOR_ID
 
     // Act
-    await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+    await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123'
+    )
 
     // Assert
     expect(exec.exec).toHaveBeenCalledWith('git', [
-      '-c', 'user.name=github-actions[bot]',
-      '-c', 'user.email=41898282+github-actions[bot]@users.noreply.github.com',
+      '-c',
+      'user.name=github-actions[bot]',
+      '-c',
+      'user.email=41898282+github-actions[bot]@users.noreply.github.com',
       'commit',
-      '-m', 'Apply Umbraco Cloud changes from deployment dep-123'
+      '-m',
+      'Apply Umbraco Cloud changes from deployment dep-123'
     ])
   })
 
@@ -300,11 +354,19 @@ index abc123..def456 100644
     })
 
     // Act
-    const result = await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+    const result = await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123'
+    )
 
     // Assert
     expect(result).toEqual(validResponse)
-    expect(core.warning).toHaveBeenCalledWith(expect.stringContaining('Could not return to original branch'))
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('Could not return to original branch')
+    )
   })
 
   test('handles empty or invalid git patch', async () => {
@@ -312,10 +374,20 @@ index abc123..def456 100644
     const emptyPatch = ''
 
     // Act
-    const result = await createPullRequestWithPatch(emptyPatch, 'main', 'Title', 'Body', 'dep-123')
+    const result = await createPullRequestWithPatch(
+      emptyPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123'
+    )
 
     // Assert
-    expect(fs.writeFileSync).toHaveBeenCalledWith('./git-patch-dep-123.diff', emptyPatch, 'utf8')
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      './git-patch-dep-123.diff',
+      emptyPatch,
+      'utf8'
+    )
     expect(result).toEqual(validResponse)
   })
 
@@ -324,7 +396,13 @@ index abc123..def456 100644
     const guidDeploymentId = '550e8400-e29b-41d4-a716-446655440000'
 
     // Act
-    const result = await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', guidDeploymentId)
+    const result = await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      guidDeploymentId
+    )
 
     // Assert
     expect(mockOctokit.git.createRef).toHaveBeenCalledWith({
@@ -342,8 +420,16 @@ index abc123..def456 100644
 
     // Act & Assert
     await expect(
-      createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', invalidDeploymentId)
-    ).rejects.toThrow('Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.')
+      createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        invalidDeploymentId
+      )
+    ).rejects.toThrow(
+      'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
+    )
   })
 
   test('throws error for deployment ID with spaces', async () => {
@@ -352,8 +438,16 @@ index abc123..def456 100644
 
     // Act & Assert
     await expect(
-      createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', invalidDeploymentId)
-    ).rejects.toThrow('Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.')
+      createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        invalidDeploymentId
+      )
+    ).rejects.toThrow(
+      'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
+    )
   })
 
   test('accepts valid deployment ID formats', async () => {
@@ -370,7 +464,13 @@ index abc123..def456 100644
 
     // Act & Assert - All should work without throwing
     for (const deploymentId of validIds) {
-      const result = await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', deploymentId)
+      const result = await createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        deploymentId
+      )
       expect(result).toEqual(validResponse)
     }
   })
@@ -389,8 +489,16 @@ index abc123..def456 100644
     // Act & Assert - Test each case individually
     for (const testCase of testCases) {
       await expect(
-        createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', testCase.id)
-      ).rejects.toThrow('Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.')
+        createPullRequestWithPatch(
+          validPatch,
+          'main',
+          'Title',
+          'Body',
+          testCase.id
+        )
+      ).rejects.toThrow(
+        'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
+      )
     }
   })
 
@@ -405,7 +513,13 @@ index abc123..def456 100644
 
     // Act & Assert - All should work
     for (const guid of validGuids) {
-      const result = await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', guid)
+      const result = await createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        guid
+      )
       expect(result).toEqual(validResponse)
     }
   })
@@ -413,7 +527,13 @@ index abc123..def456 100644
   // TypeScript Type Safety
   test('returns PullRequestInfo type with correct structure', async () => {
     // Arrange & Act
-    const result = await createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+    const result = await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123'
+    )
 
     // Assert - Validate interface compliance
     expect(result).toHaveProperty('url')
