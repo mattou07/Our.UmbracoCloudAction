@@ -1,6 +1,6 @@
 # Our Umbraco Cloud Action
 
-:warning: This action is in Testing phase and not ready for Production websites.
+:warning: This action is in Testing phase and not ready for Production sites.
 :warning:
 
 This aims to be a comprehensive GitHub Action for deploying to Umbraco Cloud
@@ -17,7 +17,7 @@ This action is currently in testing phase with bugs being worked out as I go.
   your workflow
 - **Automatic PR creation**: Retrieve and apply changes between environments
   with pull requests
-- **Built in Git ignore replacement**: Action will automatically look for
+- **Built-in Git ignore replacement**: Action will automatically look for
   .cloud_gitignore and replace all .gitignore files in the artifact sent to
   cloud
 
@@ -416,9 +416,9 @@ jobs:
 
 ## Development
 
-This project is based on the Typescript template from
-[Github](https://github.com/actions/typescript-action). More details on how to
-use the template are in their README.
+This project is based on the TypeScript template from
+[GitHub](https://github.com/actions/typescript-action). More details on how to
+use the template are in their readme.
 
 ### Building
 
