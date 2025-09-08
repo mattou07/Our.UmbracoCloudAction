@@ -111,6 +111,8 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
   }
 }
 
+export { removeExcludedPaths }
+
 export async function handleAddArtifact(
   api: UmbracoCloudAPI,
   inputs: ActionInputs

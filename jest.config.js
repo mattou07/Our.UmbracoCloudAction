@@ -11,6 +11,5 @@ export default {
   transformIgnorePatterns: [],
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts'],
   testMatch: ['**/__tests__/**/*.test.ts'],
-  verbose: true,
-  setupFilesAfterEnv: ['./jest.setup.js']
+  verbose: true
 }
