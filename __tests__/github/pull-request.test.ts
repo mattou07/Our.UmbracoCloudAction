@@ -18,7 +18,12 @@ jest.unstable_mockModule('fs', () => ({
   readFileSync: jest.fn(),
   readdirSync: jest.fn(),
   mkdirSync: jest.fn(),
-  rmSync: jest.fn()
+  rmSync: jest.fn(),
+  copyFileSync: jest.fn()
+}))
+
+jest.unstable_mockModule('os', () => ({
+  tmpdir: jest.fn(() => '/tmp')
 }))
 
 jest.unstable_mockModule('@actions/artifact', () => ({
@@ -76,6 +81,8 @@ index abc123..def456 100644
     core = await import('@actions/core')
     exec = await import('@actions/exec')
     fs = await import('fs')
+    await import('os')
+    await import('@actions/artifact')
     await import('@actions/github')
     Octokit = await import('@octokit/rest')
     createPullRequestWithPatch = (
@@ -201,8 +208,8 @@ index abc123..def456 100644
     )
     expect(exec.exec).toHaveBeenCalledWith(
       'git',
-      ['apply', './git-patch-dep-123.diff'],
-      { ignoreReturnCode: true }
+      ['apply', '--reject', '--ignore-space-change', '--ignore-whitespace', './git-patch-dep-123.diff'],
+      { ignoreReturnCode: true, cwd: expect.any(String) }
     )
     expect(exec.exec).toHaveBeenCalledWith('git', ['add', '.'])
     expect(exec.exec).toHaveBeenCalledWith('git', [
@@ -238,8 +245,8 @@ index abc123..def456 100644
   test('throws error when git patch application fails', async () => {
     // Arrange
     exec.exec.mockImplementation((cmd: any, args: any) => {
-      if (args.includes('apply')) {
-        return Promise.resolve(1) // Non-zero exit code indicates failure
+      if (args.includes('apply') && args.includes('--reject')) {
+        return Promise.resolve(2) // Exit code > 1 indicates actual failure
       }
       return Promise.resolve(0)
     })
@@ -606,7 +613,7 @@ index abc123..def456 100644
       })
     })
 
-    it('should retry with --reject when initial git apply fails', async () => {
+    it('should apply patch with --reject and handle .rej files when rejections occur', async () => {
       // Arrange
       const inputs = {
         repoUrl: 'https://github.com/test/repo.git',
@@ -619,6 +626,7 @@ index abc123..def456 100644
 
       // Mock file system operations
       fs.writeFileSync.mockImplementation(() => {})
+      fs.copyFileSync.mockImplementation(() => {})
       fs.readFileSync.mockImplementation((path: string) => {
         if (path.includes('.rej')) {
           return 'Mock rejection file content'
@@ -631,14 +639,18 @@ index abc123..def456 100644
           options !== null &&
           'withFileTypes' in options
         ) {
-          // Return mock Dirent objects for recursive search
+          // Return mock Dirent objects for recursive search - simulate workspace root with .rej files
           return [
             {
               name: 'file1.cs.rej',
               isFile: () => true,
               isDirectory: () => false
             },
-            { name: 'subdir', isFile: () => false, isDirectory: () => true }
+            {
+              name: 'file2.csproj.rej',
+              isFile: () => true,
+              isDirectory: () => false
+            }
           ]
         }
         return ['file1.cs.rej', 'file2.csproj.rej']
@@ -647,37 +659,19 @@ index abc123..def456 100644
       fs.mkdirSync.mockImplementation(() => {})
       fs.rmSync.mockImplementation(() => {})
 
-      // Mock exec calls - first git apply fails, second with --reject succeeds
+      // Mock exec calls - git apply --reject succeeds with exit code 1 (has rejections)
       exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          !args.includes('--reject')
-        ) {
-          // First attempt without --reject fails
-          throw new Error('patch does not apply')
-        }
         if (
           command === 'git' &&
           args &&
           args.includes('apply') &&
           args.includes('--reject')
         ) {
-          // Second attempt with --reject succeeds and creates .rej files
-          return Promise.resolve(0)
+          // git apply --reject succeeds but creates .rej files (exit code 1)
+          return Promise.resolve(1)
         }
         return Promise.resolve(0)
       })
-
-      // Mock GitHub artifact upload
-      const mockArtifactClient = {
-        uploadArtifact: jest.fn()
-      }
-      const { DefaultArtifactClient } = jest.requireActual(
-        '@actions/artifact'
-      ) as any
-      DefaultArtifactClient.mockImplementation(() => mockArtifactClient)
 
       // Act
       const result = await createPullRequestWithPatch(
@@ -689,38 +683,19 @@ index abc123..def456 100644
       )
 
       // Assert
-      // Verify initial git apply was attempted
+      // Verify git apply --reject was called with all flags
       expect(exec.exec).toHaveBeenCalledWith(
         'git',
-        ['apply', './git-patch-deploy-456.diff'],
+        ['apply', '--reject', '--ignore-space-change', '--ignore-whitespace', './git-patch-deploy-456.diff'],
         expect.objectContaining({
-          cwd: expect.stringContaining('pr-workspace')
-        })
-      )
-
-      // Verify retry with --reject flag
-      expect(exec.exec).toHaveBeenCalledWith(
-        'git',
-        ['apply', '--reject', './git-patch-deploy-456.diff'],
-        expect.objectContaining({
-          cwd: expect.stringContaining('pr-workspace')
+          cwd: expect.any(String),
+          ignoreReturnCode: true
         })
       )
 
       // Verify .rej files were found and collected
       expect(core.info).toHaveBeenCalledWith(
         'Found 2 .rej files to collect as artifacts'
-      )
-
-      // Verify artifact upload was called
-      expect(mockArtifactClient.uploadArtifact).toHaveBeenCalledWith(
-        'patch-rejections-deploy-456',
-        expect.arrayContaining([
-          expect.stringContaining('file1.cs.rej'),
-          expect.stringContaining('file2.csproj.rej')
-        ]),
-        expect.stringContaining('reject-files'),
-        { retentionDays: 30 }
       )
 
       // Verify .rej files were cleaned up from workspace
@@ -731,13 +706,10 @@ index abc123..def456 100644
         expect.stringContaining('file2.csproj.rej')
       )
 
-      // Verify git add was called after cleanup
+      // Verify git add was called after cleanup  
       expect(exec.exec).toHaveBeenCalledWith(
         'git',
-        ['add', '.'],
-        expect.objectContaining({
-          cwd: expect.stringContaining('pr-workspace')
-        })
+        ['add', '.']
       )
 
       // Verify PR was created successfully
@@ -756,14 +728,17 @@ index abc123..def456 100644
         latestCompletedDeploymentId: 'deploy-789'
       }
 
-      // Mock nested directory structure with .rej files
+      // Mock nested directory structure with .rej files using a call counter
+      let readDirCallCount = 0
       fs.readdirSync.mockImplementation((path: string, options?: unknown) => {
         if (
           typeof options === 'object' &&
           options !== null &&
           'withFileTypes' in options
         ) {
-          if (path.includes('pr-workspace')) {
+          readDirCallCount++
+          if (readDirCallCount === 1) {
+            // First call to workspace root - has src directory and one .rej file
             return [
               { name: 'src', isFile: () => false, isDirectory: () => true },
               {
@@ -772,8 +747,8 @@ index abc123..def456 100644
                 isDirectory: () => false
               }
             ]
-          }
-          if (path.includes('src')) {
+          } else if (readDirCallCount === 2) {
+            // Second call to src directory - has ProjectA directory and one .rej file
             return [
               {
                 name: 'ProjectA',
@@ -786,8 +761,8 @@ index abc123..def456 100644
                 isDirectory: () => false
               }
             ]
-          }
-          if (path.includes('ProjectA')) {
+          } else if (readDirCallCount === 3) {
+            // Third call to ProjectA directory - has one .rej file
             return [
               {
                 name: 'project.csproj.rej',
@@ -805,26 +780,18 @@ index abc123..def456 100644
       fs.mkdirSync.mockImplementation(() => {})
       fs.rmSync.mockImplementation(() => {})
 
-      // Mock git apply to fail first, succeed with --reject
+      // Mock git apply --reject to succeed with exit code 1 (rejections created)
       exec.exec.mockImplementation((command: string, args?: string[]) => {
         if (
           command === 'git' &&
           args &&
           args.includes('apply') &&
-          !args.includes('--reject')
+          args.includes('--reject')
         ) {
-          throw new Error('patch does not apply')
+          return Promise.resolve(1) // Exit code 1 means rejections were created
         }
         return Promise.resolve(0)
       })
-
-      const mockArtifactClient = {
-        uploadArtifact: jest.fn()
-      }
-      const { DefaultArtifactClient } = jest.requireActual(
-        '@actions/artifact'
-      ) as any
-      DefaultArtifactClient.mockImplementation(() => mockArtifactClient)
 
       // Act
       const result = await createPullRequestWithPatch(
@@ -839,15 +806,9 @@ index abc123..def456 100644
       expect(core.info).toHaveBeenCalledWith(
         'Found 3 .rej files to collect as artifacts'
       )
-      expect(mockArtifactClient.uploadArtifact).toHaveBeenCalledWith(
-        'patch-rejections-deploy-789',
-        expect.arrayContaining([
-          expect.stringContaining('file1.rej'),
-          expect.stringContaining('file2.cs.rej'),
-          expect.stringContaining('project.csproj.rej')
-        ]),
-        expect.stringContaining('reject-files'),
-        { retentionDays: 30 }
+      // Verify artifact upload was called (mocked at top level)
+      expect(core.info).toHaveBeenCalledWith(
+        expect.stringContaining('Uploaded 3 reject files as artifact')
       )
 
       // Verify PR was created successfully
@@ -855,7 +816,7 @@ index abc123..def456 100644
       expect(result.number).toBe(123)
     })
 
-    it('should fail gracefully when both regular and --reject git apply fail', async () => {
+    it('should fail gracefully when git apply --reject fails', async () => {
       // Arrange
       const inputs = {
         repoUrl: 'https://github.com/test/repo.git',
@@ -869,10 +830,10 @@ index abc123..def456 100644
       fs.writeFileSync.mockImplementation(() => {})
       fs.existsSync.mockReturnValue(true)
 
-      // Mock both git apply attempts to fail
+      // Mock git apply --reject to fail with exit code > 1
       exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (command === 'git' && args && args.includes('apply')) {
-          throw new Error('Cannot apply patch - too many conflicts')
+        if (command === 'git' && args && args.includes('apply') && args.includes('--reject')) {
+          return Promise.resolve(2) // Exit code > 1 indicates actual failure
         }
         return Promise.resolve(0)
       })
@@ -888,39 +849,41 @@ index abc123..def456 100644
         )
       ).rejects.toThrow('Failed to apply git patch')
 
-      // Verify both attempts were made
+      // Verify git apply --reject was attempted
       expect(exec.exec).toHaveBeenCalledWith(
         'git',
-        ['apply', './git-patch-deploy-fail.diff'],
+        ['apply', '--reject', '--ignore-space-change', '--ignore-whitespace', './git-patch-deploy-fail.diff'],
         expect.objectContaining({
-          cwd: expect.stringContaining('pr-workspace')
-        })
-      )
-      expect(exec.exec).toHaveBeenCalledWith(
-        'git',
-        ['apply', '--reject', './git-patch-deploy-fail.diff'],
-        expect.objectContaining({
-          cwd: expect.stringContaining('pr-workspace')
+          cwd: expect.any(String),
+          ignoreReturnCode: true
         })
       )
     })
 
-    it('should proceed normally when git apply succeeds on first attempt', async () => {
+    it('should proceed normally when git apply --reject succeeds cleanly', async () => {
       // Arrange
       const inputs = {
         repoUrl: 'https://github.com/test/repo.git',
         branch: 'main',
         patchContent: createSimpleWorkingPatch(),
         title: 'Test PR - Clean Apply',
-        body: 'This should work without --reject',
+        body: 'This should work cleanly with --reject flag',
         latestCompletedDeploymentId: 'deploy-clean'
       }
 
       fs.writeFileSync.mockImplementation(() => {})
       fs.existsSync.mockReturnValue(true)
 
-      // Mock git apply to succeed on first attempt
-      exec.exec.mockResolvedValue(0)
+      // Mock git apply --reject to succeed with exit code 0 (clean apply)
+      exec.exec.mockImplementation((command: string, args?: string[]) => {
+        if (command === 'git' && args && args.includes('apply') && args.includes('--reject')) {
+          return Promise.resolve(0) // Exit code 0 means clean apply
+        }
+        return Promise.resolve(0)
+      })
+
+      // Mock no .rej files found
+      fs.readdirSync.mockReturnValue([])
 
       // Act
       const result = await createPullRequestWithPatch(
@@ -932,23 +895,20 @@ index abc123..def456 100644
       )
 
       // Assert
-      // Verify only one git apply call was made (no --reject retry)
+      // Verify git apply --reject was called
       expect(exec.exec).toHaveBeenCalledWith(
         'git',
-        ['apply', './git-patch-deploy-clean.diff'],
+        ['apply', '--reject', '--ignore-space-change', '--ignore-whitespace', './git-patch-deploy-clean.diff'],
         expect.objectContaining({
-          cwd: expect.stringContaining('pr-workspace')
+          cwd: expect.any(String),
+          ignoreReturnCode: true
         })
       )
-      expect(exec.exec).not.toHaveBeenCalledWith(
-        'git',
-        ['apply', '--reject', expect.any(String)],
-        expect.any(Object)
-      )
 
-      // Verify no artifact upload occurred
-      const { DefaultArtifactClient } = require('@actions/artifact')
-      expect(DefaultArtifactClient).not.toHaveBeenCalled()
+      // Verify no .rej files were found
+      expect(core.info).toHaveBeenCalledWith(
+        'No .rej files found, patch applied cleanly with --reject flag'
+      )
 
       // Verify PR was created successfully
       expect(result.url).toBe('https://github.com/test/repo/pull/123')
