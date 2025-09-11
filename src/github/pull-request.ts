@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import * as github from '@actions/github'
 import { Octokit } from '@octokit/rest'
@@ -88,8 +89,8 @@ async function applyPatchWithReject(
 
     core.info(`Found ${rejFiles.length} .rej files to collect as artifacts`)
 
-    // Create directory for reject files outside workspace
-    const rejectDir = path.join(process.cwd(), 'reject-files')
+    // Create directory for reject files outside workspace using os.tmpdir()
+    const rejectDir = path.join(os.tmpdir(), `reject-files-${deploymentId}`)
     if (!fs.existsSync(rejectDir)) {
       fs.mkdirSync(rejectDir, { recursive: true })
     }
@@ -125,6 +126,10 @@ async function applyPatchWithReject(
     core.info(
       `Uploaded ${rejFiles.length} reject files as artifact: patch-rejections-${deploymentId}`
     )
+
+    // Clean up temporary reject files directory
+    core.info('Cleaning up temporary reject files directory...')
+    fs.rmSync(rejectDir, { recursive: true, force: true })
   } catch (error) {
     core.error(`Failed to apply patch with --reject: ${error}`)
     throw new Error('Failed to apply git patch')
