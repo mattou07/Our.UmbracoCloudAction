@@ -14,7 +14,17 @@ jest.unstable_mockModule('@actions/exec', () => ({
 jest.unstable_mockModule('fs', () => ({
   writeFileSync: jest.fn(),
   unlinkSync: jest.fn(),
-  existsSync: jest.fn()
+  existsSync: jest.fn(),
+  readFileSync: jest.fn(),
+  readdirSync: jest.fn(),
+  mkdirSync: jest.fn(),
+  rmSync: jest.fn()
+}))
+
+jest.unstable_mockModule('@actions/artifact', () => ({
+  DefaultArtifactClient: jest.fn().mockImplementation(() => ({
+    uploadArtifact: jest.fn()
+  }))
 }))
 
 jest.unstable_mockModule('@actions/github', () => ({
@@ -571,4 +581,430 @@ index abc123..def456 100644
     expect(typeof validInputs.latestCompletedDeploymentId).toBe('string')
     expect(result).toEqual(validResponse)
   })
+
+  describe('git patch --reject functionality', () => {
+    beforeEach(() => {
+      // Reset all mocks for each test
+      jest.clearAllMocks()
+
+      // Setup default successful mocks
+      mockOctokit.repos.getBranch.mockResolvedValue({
+        data: {
+          commit: { sha: 'base-sha-123' }
+        }
+      })
+
+      mockOctokit.git.createRef.mockResolvedValue({
+        data: { ref: 'refs/heads/test-branch' }
+      })
+
+      mockOctokit.pulls.create.mockResolvedValue({
+        data: {
+          html_url: 'https://github.com/test/repo/pull/123',
+          number: 123
+        }
+      })
+    })
+
+    it('should retry with --reject when initial git apply fails', async () => {
+      // Arrange
+      const inputs = {
+        repoUrl: 'https://github.com/test/repo.git',
+        branch: 'main',
+        patchContent: createComplexFailingPatch(),
+        title: 'Test PR with Patch Rejections',
+        body: 'This PR contains patch rejections that need --reject flag',
+        latestCompletedDeploymentId: 'deploy-456'
+      }
+
+      // Mock file system operations
+      fs.writeFileSync.mockImplementation(() => {})
+      fs.readFileSync.mockImplementation((path: string) => {
+        if (path.includes('.rej')) {
+          return 'Mock rejection file content'
+        }
+        return 'Mock file content'
+      })
+      fs.readdirSync.mockImplementation((path: string, options?: unknown) => {
+        if (
+          typeof options === 'object' &&
+          options !== null &&
+          'withFileTypes' in options
+        ) {
+          // Return mock Dirent objects for recursive search
+          return [
+            {
+              name: 'file1.cs.rej',
+              isFile: () => true,
+              isDirectory: () => false
+            },
+            { name: 'subdir', isFile: () => false, isDirectory: () => true }
+          ]
+        }
+        return ['file1.cs.rej', 'file2.csproj.rej']
+      })
+      fs.existsSync.mockReturnValue(true)
+      fs.mkdirSync.mockImplementation(() => {})
+      fs.rmSync.mockImplementation(() => {})
+
+      // Mock exec calls - first git apply fails, second with --reject succeeds
+      exec.exec.mockImplementation((command: string, args?: string[]) => {
+        if (
+          command === 'git' &&
+          args &&
+          args.includes('apply') &&
+          !args.includes('--reject')
+        ) {
+          // First attempt without --reject fails
+          throw new Error('patch does not apply')
+        }
+        if (
+          command === 'git' &&
+          args &&
+          args.includes('apply') &&
+          args.includes('--reject')
+        ) {
+          // Second attempt with --reject succeeds and creates .rej files
+          return Promise.resolve(0)
+        }
+        return Promise.resolve(0)
+      })
+
+      // Mock GitHub artifact upload
+      const mockArtifactClient = {
+        uploadArtifact: jest.fn()
+      }
+      const { DefaultArtifactClient } = jest.requireActual(
+        '@actions/artifact'
+      ) as any
+      DefaultArtifactClient.mockImplementation(() => mockArtifactClient)
+
+      // Act
+      const result = await createPullRequestWithPatch(
+        inputs.patchContent,
+        inputs.branch,
+        inputs.title,
+        inputs.body,
+        inputs.latestCompletedDeploymentId
+      )
+
+      // Assert
+      // Verify initial git apply was attempted
+      expect(exec.exec).toHaveBeenCalledWith(
+        'git',
+        ['apply', './git-patch-deploy-456.diff'],
+        expect.objectContaining({
+          cwd: expect.stringContaining('pr-workspace')
+        })
+      )
+
+      // Verify retry with --reject flag
+      expect(exec.exec).toHaveBeenCalledWith(
+        'git',
+        ['apply', '--reject', './git-patch-deploy-456.diff'],
+        expect.objectContaining({
+          cwd: expect.stringContaining('pr-workspace')
+        })
+      )
+
+      // Verify .rej files were found and collected
+      expect(core.info).toHaveBeenCalledWith(
+        'Found 2 .rej files to collect as artifacts'
+      )
+
+      // Verify artifact upload was called
+      expect(mockArtifactClient.uploadArtifact).toHaveBeenCalledWith(
+        'patch-rejections-deploy-456',
+        expect.arrayContaining([
+          expect.stringContaining('file1.cs.rej'),
+          expect.stringContaining('file2.csproj.rej')
+        ]),
+        expect.stringContaining('reject-files'),
+        { retentionDays: 30 }
+      )
+
+      // Verify .rej files were cleaned up from workspace
+      expect(fs.rmSync).toHaveBeenCalledWith(
+        expect.stringContaining('file1.cs.rej')
+      )
+      expect(fs.rmSync).toHaveBeenCalledWith(
+        expect.stringContaining('file2.csproj.rej')
+      )
+
+      // Verify git add was called after cleanup
+      expect(exec.exec).toHaveBeenCalledWith(
+        'git',
+        ['add', '.'],
+        expect.objectContaining({
+          cwd: expect.stringContaining('pr-workspace')
+        })
+      )
+
+      // Verify PR was created successfully
+      expect(result.url).toBe('https://github.com/test/repo/pull/123')
+      expect(result.number).toBe(123)
+    })
+
+    it('should handle recursive .rej file discovery in nested directories', async () => {
+      // Arrange
+      const inputs = {
+        repoUrl: 'https://github.com/test/repo.git',
+        branch: 'main',
+        patchContent: createComplexFailingPatch(),
+        title: 'Test PR with Nested Rejections',
+        body: 'Testing nested .rej file handling',
+        latestCompletedDeploymentId: 'deploy-789'
+      }
+
+      // Mock nested directory structure with .rej files
+      fs.readdirSync.mockImplementation((path: string, options?: unknown) => {
+        if (
+          typeof options === 'object' &&
+          options !== null &&
+          'withFileTypes' in options
+        ) {
+          if (path.includes('pr-workspace')) {
+            return [
+              { name: 'src', isFile: () => false, isDirectory: () => true },
+              {
+                name: 'file1.rej',
+                isFile: () => true,
+                isDirectory: () => false
+              }
+            ]
+          }
+          if (path.includes('src')) {
+            return [
+              {
+                name: 'ProjectA',
+                isFile: () => false,
+                isDirectory: () => true
+              },
+              {
+                name: 'file2.cs.rej',
+                isFile: () => true,
+                isDirectory: () => false
+              }
+            ]
+          }
+          if (path.includes('ProjectA')) {
+            return [
+              {
+                name: 'project.csproj.rej',
+                isFile: () => true,
+                isDirectory: () => false
+              }
+            ]
+          }
+        }
+        return []
+      })
+
+      fs.existsSync.mockReturnValue(true)
+      fs.writeFileSync.mockImplementation(() => {})
+      fs.mkdirSync.mockImplementation(() => {})
+      fs.rmSync.mockImplementation(() => {})
+
+      // Mock git apply to fail first, succeed with --reject
+      exec.exec.mockImplementation((command: string, args?: string[]) => {
+        if (
+          command === 'git' &&
+          args &&
+          args.includes('apply') &&
+          !args.includes('--reject')
+        ) {
+          throw new Error('patch does not apply')
+        }
+        return Promise.resolve(0)
+      })
+
+      const mockArtifactClient = {
+        uploadArtifact: jest.fn()
+      }
+      const { DefaultArtifactClient } = jest.requireActual(
+        '@actions/artifact'
+      ) as any
+      DefaultArtifactClient.mockImplementation(() => mockArtifactClient)
+
+      // Act
+      const result = await createPullRequestWithPatch(
+        inputs.patchContent,
+        inputs.branch,
+        inputs.title,
+        inputs.body,
+        inputs.latestCompletedDeploymentId
+      )
+
+      // Assert
+      expect(core.info).toHaveBeenCalledWith(
+        'Found 3 .rej files to collect as artifacts'
+      )
+      expect(mockArtifactClient.uploadArtifact).toHaveBeenCalledWith(
+        'patch-rejections-deploy-789',
+        expect.arrayContaining([
+          expect.stringContaining('file1.rej'),
+          expect.stringContaining('file2.cs.rej'),
+          expect.stringContaining('project.csproj.rej')
+        ]),
+        expect.stringContaining('reject-files'),
+        { retentionDays: 30 }
+      )
+
+      // Verify PR was created successfully
+      expect(result.url).toBe('https://github.com/test/repo/pull/123')
+      expect(result.number).toBe(123)
+    })
+
+    it('should fail gracefully when both regular and --reject git apply fail', async () => {
+      // Arrange
+      const inputs = {
+        repoUrl: 'https://github.com/test/repo.git',
+        branch: 'main',
+        patchContent: createComplexFailingPatch(),
+        title: 'Test PR - Total Failure',
+        body: 'This should fail completely',
+        latestCompletedDeploymentId: 'deploy-fail'
+      }
+
+      fs.writeFileSync.mockImplementation(() => {})
+      fs.existsSync.mockReturnValue(true)
+
+      // Mock both git apply attempts to fail
+      exec.exec.mockImplementation((command: string, args?: string[]) => {
+        if (command === 'git' && args && args.includes('apply')) {
+          throw new Error('Cannot apply patch - too many conflicts')
+        }
+        return Promise.resolve(0)
+      })
+
+      // Act & Assert
+      await expect(
+        createPullRequestWithPatch(
+          inputs.patchContent,
+          inputs.branch,
+          inputs.title,
+          inputs.body,
+          inputs.latestCompletedDeploymentId
+        )
+      ).rejects.toThrow('Failed to apply git patch')
+
+      // Verify both attempts were made
+      expect(exec.exec).toHaveBeenCalledWith(
+        'git',
+        ['apply', './git-patch-deploy-fail.diff'],
+        expect.objectContaining({
+          cwd: expect.stringContaining('pr-workspace')
+        })
+      )
+      expect(exec.exec).toHaveBeenCalledWith(
+        'git',
+        ['apply', '--reject', './git-patch-deploy-fail.diff'],
+        expect.objectContaining({
+          cwd: expect.stringContaining('pr-workspace')
+        })
+      )
+    })
+
+    it('should proceed normally when git apply succeeds on first attempt', async () => {
+      // Arrange
+      const inputs = {
+        repoUrl: 'https://github.com/test/repo.git',
+        branch: 'main',
+        patchContent: createSimpleWorkingPatch(),
+        title: 'Test PR - Clean Apply',
+        body: 'This should work without --reject',
+        latestCompletedDeploymentId: 'deploy-clean'
+      }
+
+      fs.writeFileSync.mockImplementation(() => {})
+      fs.existsSync.mockReturnValue(true)
+
+      // Mock git apply to succeed on first attempt
+      exec.exec.mockResolvedValue(0)
+
+      // Act
+      const result = await createPullRequestWithPatch(
+        inputs.patchContent,
+        inputs.branch,
+        inputs.title,
+        inputs.body,
+        inputs.latestCompletedDeploymentId
+      )
+
+      // Assert
+      // Verify only one git apply call was made (no --reject retry)
+      expect(exec.exec).toHaveBeenCalledWith(
+        'git',
+        ['apply', './git-patch-deploy-clean.diff'],
+        expect.objectContaining({
+          cwd: expect.stringContaining('pr-workspace')
+        })
+      )
+      expect(exec.exec).not.toHaveBeenCalledWith(
+        'git',
+        ['apply', '--reject', expect.any(String)],
+        expect.any(Object)
+      )
+
+      // Verify no artifact upload occurred
+      const { DefaultArtifactClient } = require('@actions/artifact')
+      expect(DefaultArtifactClient).not.toHaveBeenCalled()
+
+      // Verify PR was created successfully
+      expect(result.url).toBe('https://github.com/test/repo/pull/123')
+    })
+  })
+
+  // Helper functions for test data
+  function createComplexFailingPatch(): string {
+    return `diff --git a/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda b/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
+index abc123..def456 100644
+--- a/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
++++ b/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
+@@ -13,7 +13,7 @@
+   "Name": "Content Block - Hero Section",
+   "EditorAlias": "Umbraco.BlockList",
+   "Configuration": {
+-    "blocks": []
++    "blocks": [{"contentElementTypeKey": "hero-block-123"}]
+   },
+   "Udi": "umb://data-type/918d93a589ab42ffba90ad0a8812b7f3"
+ }
+diff --git a/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj b/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj
+index 789abc..012def 100644
+--- a/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj
++++ b/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj
+@@ -41,7 +41,7 @@
+   </ItemGroup>
+ 
+   <ItemGroup>
+-    <PackageReference Include="Umbraco.Cms" Version="16.1.1" />
++    <PackageReference Include="Umbraco.Cms" Version="16.2.0" />
+     <PackageReference Include="Umbraco.Forms" Version="16.0.0" />
+   </ItemGroup>
+ 
+diff --git a/src/GlenstoneREIT.UmbracoExtensions/wwwroot/App_Plugins/GlenstoneREITUmbracoExtensions/glenstone-reit-umbraco-extensions.js b/src/GlenstoneREIT.UmbracoExtensions/wwwroot/App_Plugins/GlenstoneREITUmbracoExtensions/glenstone-reit-umbraco-extensions.js
+new file mode 100644
+index 0000000..1a2b3c4
+--- /dev/null
++++ b/src/GlenstoneREIT.UmbracoExtensions/wwwroot/App_Plugins/GlenstoneREITUmbracoExtensions/glenstone-reit-umbraco-extensions.js
+@@ -0,0 +1,5 @@
++// Glenstone REIT Umbraco Extensions
++angular.module('umbraco').controller('GlenstoneController', function($scope) {
++    $scope.model.value = $scope.model.value || {};
++    $scope.test = 'Glenstone REIT Extension Loaded';
++});`
+  }
+
+  function createSimpleWorkingPatch(): string {
+    return `diff --git a/README.md b/README.md
+index abc123..def456 100644
+--- a/README.md
++++ b/README.md
+@@ -1,3 +1,4 @@
+ # Test Repository
+ 
+ This is a test repository for patch application.
++Added a simple line that should apply cleanly.`
+  }
 })
