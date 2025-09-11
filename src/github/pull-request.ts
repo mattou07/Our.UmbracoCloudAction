@@ -45,21 +45,38 @@ async function applyPatchWithReject(
   deploymentId: string
 ): Promise<void> {
   try {
-    core.info('Run git apply with --reject flag...')
+    core.info(
+      'Run git apply with --reject, --ignore-space-change, and --ignore-whitespace flags...'
+    )
     const rejectExitCode = await exec.exec(
       'git',
-      ['apply', '--reject', patchFilePath],
+      [
+        'apply',
+        '--reject',
+        '--ignore-space-change',
+        '--ignore-whitespace',
+        patchFilePath
+      ],
       {
         ignoreReturnCode: true,
         cwd: workspaceDir
       }
     )
-
-    if (rejectExitCode !== 0) {
+    core.info('Exit code from git apply with --reject flag: ' + rejectExitCode)
+    // With --reject flag, exit code 1 means "applied with rejections" (normal)
+    // Exit code 0 means "applied cleanly"
+    // Only exit codes > 1 indicate actual failure
+    if (rejectExitCode > 1) {
       throw new Error('Failed to apply git patch with --reject flag')
     }
 
-    core.info('Git patch applied with --reject flag, looking for .rej files...')
+    if (rejectExitCode === 0) {
+      core.info('Git patch applied cleanly with --reject flag')
+    } else {
+      core.info('Git patch applied with --reject flag, some hunks rejected')
+    }
+
+    core.info('Looking for .rej files...')
 
     // Find all .rej files recursively
     const rejFiles = findFilesWithExtension(workspaceDir, '.rej')
