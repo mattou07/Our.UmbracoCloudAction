@@ -48,7 +48,7 @@
     "@octokit/rest": "^20.0.0",
     "glob": "^10.3.10",
     "jszip": "^3.10.1",
-    "xml2js": "^0.4.23"
+    "xml2js": "^0.6.2"
   },
   "devDependencies": {
     "@eslint/compat": "^1.2.9",
