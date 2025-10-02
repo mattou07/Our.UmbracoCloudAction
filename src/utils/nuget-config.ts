@@ -30,6 +30,8 @@ interface NuGetConfiguration {
   packageSourceCredentials?:
     | NuGetPackageSourceCredentials[]
     | NuGetPackageSourceCredentials
+  // Allow any other properties to preserve existing sections like activePackageSource
+  [key: string]: any
 }
 
 interface NuGetConfigXml {
