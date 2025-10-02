@@ -201,7 +201,22 @@ async function processArtifactWithNugetConfig(
   // Remove excluded paths
   removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
 
-  // Add or update NuGet.config in the root
+  // Check if NuGet.config already exists in the zip
+  let existingNugetConfig: string | undefined
+  const nugetConfigFile = zip.file('NuGet.config')
+  if (nugetConfigFile) {
+    core.info(
+      'NuGet Config: Found existing NuGet.config in zip, will preserve existing content'
+    )
+    existingNugetConfig = await nugetConfigFile.async('text')
+    core.debug(`NuGet Config: Existing content in zip:\n${existingNugetConfig}`)
+  } else {
+    core.info(
+      'NuGet Config: No existing NuGet.config found in zip, will create new one'
+    )
+  }
+
+  // Add or update NuGet.config using existing content if available
   const nugetConfig = {
     name: nugetSourceName,
     source: nugetSourceUrl,
@@ -209,15 +224,14 @@ async function processArtifactWithNugetConfig(
     password: nugetSourcePassword
   }
 
-  const result = await addOrUpdateNuGetConfigSource(nugetConfig)
+  const result = await addOrUpdateNuGetConfigSource(
+    nugetConfig,
+    existingNugetConfig || ''
+  )
   core.info(`NuGet.config ${result.message}`)
 
-  // Read the generated NuGet.config from disk and add to zip
-  const nugetConfigContent = fs.readFileSync('NuGet.config', 'utf8')
-  zip.file('NuGet.config', nugetConfigContent)
-
-  // Remove the temp NuGet.config file
-  fs.unlinkSync('NuGet.config')
+  // Add the updated NuGet.config content to zip
+  zip.file('NuGet.config', result.xmlContent)
 
   // Process .cloud_gitignore replacement if present
   await processCloudGitignoreInZip(zip)

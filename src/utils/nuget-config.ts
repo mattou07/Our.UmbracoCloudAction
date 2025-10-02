@@ -1,8 +1,5 @@
-import * as fs from 'fs'
-import * as path from 'path'
 import * as xml2js from 'xml2js'
 import * as core from '@actions/core'
-import { glob } from 'glob'
 import {
   NuGetSourceConfig,
   NuGetConfigModificationResult
@@ -40,148 +37,46 @@ interface NuGetConfigXml {
 }
 
 /**
- * Adds or updates a NuGet package source in the NuGet.config file in the repo.
- * If NuGet.config does not exist, it will be created.
+ * Adds or updates a NuGet package source in the NuGet.config content from a zip file.
+ *
+ * @param config - The NuGet source configuration
+ * @param existingXmlContent - The existing XML content from the zip file NuGet.config
+ * @returns Promise with the result and the updated XML content
  */
 export async function addOrUpdateNuGetConfigSource(
-  config: NuGetSourceConfig
-): Promise<NuGetConfigModificationResult> {
-  const cwd = process.cwd()
-  let nugetConfigPath: string | undefined
-
-  core.info(`NuGet Config: Searching for NuGet.config files in ${cwd}`)
-  core.info(
-    `NuGet Config: Platform: ${process.platform}, Node version: ${process.version}`
-  )
-
-  // First, let's check if the exact file exists in root
-  const exactRootPath = path.join(cwd, 'NuGet.config')
-  const exactRootExists = fs.existsSync(exactRootPath)
-  core.info(
-    `NuGet Config: Direct check for ${exactRootPath}: ${exactRootExists ? 'EXISTS' : 'NOT FOUND'}`
-  )
-
-  // Find NuGet.config (root or subfolders) - try multiple case variations
-  const searchPatterns = [
-    '**/NuGet.config', // Standard case
-    '**/nuget.config', // All lowercase
-    '**/Nuget.config', // Only first letter uppercase
-    '**/NUGET.CONFIG' // All uppercase
-  ]
-
-  let files: string[] = []
-  for (const pattern of searchPatterns) {
-    try {
-      const found = await glob(pattern, {
-        cwd,
-        nodir: true,
-        dot: false, // Don't include hidden files
-        follow: true // Follow symbolic links
-      })
-      core.info(
-        `NuGet Config: Pattern '${pattern}' found ${found.length} file(s): ${found.join(', ')}`
-      )
-      if (found.length > 0) {
-        files = found
-        break
-      }
-    } catch (error) {
-      core.info(`NuGet Config: Error with pattern '${pattern}': ${error}`)
-    }
-  }
-
-  if (files.length > 0) {
-    nugetConfigPath = path.join(cwd, files[0])
-    core.info(`NuGet Config: Using existing file: ${nugetConfigPath}`)
-  } else {
-    core.info(
-      `NuGet Config: No existing NuGet.config files found with any pattern`
-    )
-
-    // Linux-specific debugging
-    try {
-      // Check if we can read the directory at all
-      const dirStats = fs.statSync(cwd)
-      core.info(
-        `NuGet Config: Working directory stats - readable: ${dirStats.isDirectory()}, permissions: ${dirStats.mode}`
-      )
-
-      // Use fs.readdir to see what's actually in the root directory
-      const rootContents = fs.readdirSync(cwd)
-      core.info(
-        `NuGet Config: Root directory contents (${rootContents.length} items): ${rootContents.slice(0, 20).join(', ')}${rootContents.length > 20 ? '...' : ''}`
-      )
-
-      // Look specifically for any files containing 'nuget' (case-insensitive)
-      const nugetFiles = rootContents.filter((f) =>
-        f.toLowerCase().includes('nuget')
-      )
-      if (nugetFiles.length > 0) {
-        core.info(
-          `NuGet Config: Files containing 'nuget' in root: ${nugetFiles.join(', ')}`
-        )
-
-        // Check permissions on these files
-        for (const file of nugetFiles) {
-          const filePath = path.join(cwd, file)
-          try {
-            const fileStats = fs.statSync(filePath)
-            const isReadable =
-              fs.constants && fileStats.mode & fs.constants.S_IRUSR
-            core.info(
-              `NuGet Config: File ${file} - size: ${fileStats.size}, readable: ${isReadable}, isFile: ${fileStats.isFile()}`
-            )
-          } catch (fileError) {
-            core.info(`NuGet Config: Cannot stat file ${file}: ${fileError}`)
-          }
-        }
-      }
-
-      // Also try glob with more permissive options
-      const allFiles = await glob('**/*', {
-        cwd,
-        nodir: true,
-        dot: true,
-        follow: true,
-        maxDepth: 2 // Only go 2 levels deep for performance
-      })
-      const configFiles = allFiles.filter((f) =>
-        f.toLowerCase().includes('nuget')
-      )
-      if (configFiles.length > 0) {
-        core.info(
-          `NuGet Config: NuGet-related files found with permissive glob: ${configFiles.join(', ')}`
-        )
-      }
-    } catch (error) {
-      core.info(`NuGet Config: Error during Linux-specific debugging: ${error}`)
-    }
-
-    nugetConfigPath = path.join(cwd, 'NuGet.config')
-    core.info(`NuGet Config: Will create new file at: ${nugetConfigPath}`)
-  }
-
-  let nugetConfigXml: NuGetConfigXml = {
-    configuration: { packageSources: { add: [] } }
-  }
+  config: NuGetSourceConfig,
+  existingXmlContent: string
+): Promise<NuGetConfigModificationResult & { xmlContent: string }> {
+  let nugetConfigXml: NuGetConfigXml
   let isNew = false
-  if (fs.existsSync(nugetConfigPath)) {
-    core.info(`NuGet Config: Reading existing file from ${nugetConfigPath}`)
-    const xmlContent = fs.readFileSync(nugetConfigPath, 'utf8')
-    core.debug(`NuGet Config: Original file content:\n${xmlContent}`)
-    nugetConfigXml = (await xml2js.parseStringPromise(
-      xmlContent
-    )) as NuGetConfigXml
-    core.debug(
-      `NuGet Config: Parsed configuration sections: ${JSON.stringify(Object.keys(nugetConfigXml.configuration))}`
+
+  core.info('NuGet Config: Processing NuGet.config from zip file artifact')
+
+  if (!existingXmlContent.trim()) {
+    core.info(
+      'NuGet Config: No existing XML content provided, creating new config'
     )
-  } else {
-    core.info(`NuGet Config: Creating new file at ${nugetConfigPath}`)
     isNew = true
     nugetConfigXml = {
       configuration: {
-        packageSources: {
-          add: []
+        packageSources: { add: [] }
+      }
+    }
+  } else {
+    try {
+      nugetConfigXml = (await xml2js.parseStringPromise(
+        existingXmlContent
+      )) as NuGetConfigXml
+      core.debug(
+        `NuGet Config: Parsed configuration sections from existing content: ${JSON.stringify(Object.keys(nugetConfigXml.configuration))}`
+      )
+    } catch (error) {
+      core.info(`NuGet Config: Failed to parse existing XML content: ${error}`)
+      // Fall back to creating new config
+      isNew = true
+      nugetConfigXml = {
+        configuration: {
+          packageSources: { add: [] }
         }
       }
     }
@@ -329,15 +224,15 @@ export async function addOrUpdateNuGetConfigSource(
     renderOpts: { pretty: true }
   })
   const newXml = builder.buildObject(nugetConfigXml)
-  core.info(`NuGet Config: Writing updated configuration to ${nugetConfigPath}`)
+  core.info(`NuGet Config: Generated updated XML configuration`)
   core.debug(`NuGet Config: Final XML content:\n${newXml}`)
-  fs.writeFileSync(nugetConfigPath, newXml, 'utf8')
 
   return {
     success: true,
     message: isNew
       ? `Created new NuGet.config and added source '${config.name}'.`
       : `Updated NuGet.config and added/updated source '${config.name}'.`,
-    nugetConfigPath
+    nugetConfigPath: 'NuGet.config',
+    xmlContent: newXml
   }
 }
