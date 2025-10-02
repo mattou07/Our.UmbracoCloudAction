@@ -67,27 +67,41 @@ export async function addOrUpdateNuGetConfigSource(
     isNew = true
     nugetConfigXml = {
       configuration: {
-        packageSources: [
-          {
-            add: []
-          }
-        ]
+        packageSources: {
+          add: []
+        }
       }
     }
   }
 
-  // Ensure packageSources exists
+  // Ensure packageSources exists and normalize structure
   if (!nugetConfigXml.configuration.packageSources) {
-    nugetConfigXml.configuration.packageSources = [{ add: [] }]
+    nugetConfigXml.configuration.packageSources = { add: [] }
   }
-  if (!Array.isArray(nugetConfigXml.configuration.packageSources)) {
-    nugetConfigXml.configuration.packageSources = [
-      nugetConfigXml.configuration.packageSources
-    ]
+
+  // Handle both array and object formats from xml2js
+  let packageSources: NuGetPackageSources
+  if (Array.isArray(nugetConfigXml.configuration.packageSources)) {
+    // If it's an array, use the first element (should be the main packageSources)
+    packageSources = nugetConfigXml.configuration
+      .packageSources[0] as NuGetPackageSources
+  } else {
+    // If it's a single object, use it directly
+    packageSources = nugetConfigXml.configuration
+      .packageSources as NuGetPackageSources
   }
-  const sources = (
-    nugetConfigXml.configuration.packageSources[0] as NuGetPackageSources
-  ).add
+
+  // Ensure the add array exists
+  if (!packageSources.add) {
+    packageSources.add = []
+  }
+
+  // Ensure add is an array (xml2js might return a single object if there's only one source)
+  if (!Array.isArray(packageSources.add)) {
+    packageSources.add = [packageSources.add]
+  }
+
+  const sources = packageSources.add
 
   // Add or update the source
   const existingSource = sources.find((s) => s.$.key === config.name)
@@ -105,16 +119,19 @@ export async function addOrUpdateNuGetConfigSource(
   // Handle credentials
   if (config.username && config.password) {
     if (!nugetConfigXml.configuration.packageSourceCredentials) {
-      nugetConfigXml.configuration.packageSourceCredentials = [{}]
-    }
-    if (!Array.isArray(nugetConfigXml.configuration.packageSourceCredentials)) {
-      nugetConfigXml.configuration.packageSourceCredentials = [
-        nugetConfigXml.configuration.packageSourceCredentials
-      ]
+      nugetConfigXml.configuration.packageSourceCredentials = {}
     }
 
-    const credentialsSection = nugetConfigXml.configuration
-      .packageSourceCredentials[0] as NuGetPackageSourceCredentials
+    // Handle both array and object formats from xml2js
+    let credentialsSection: NuGetPackageSourceCredentials
+    if (Array.isArray(nugetConfigXml.configuration.packageSourceCredentials)) {
+      credentialsSection = nugetConfigXml.configuration
+        .packageSourceCredentials[0] as NuGetPackageSourceCredentials
+    } else {
+      credentialsSection = nugetConfigXml.configuration
+        .packageSourceCredentials as NuGetPackageSourceCredentials
+    }
+
     if (!credentialsSection[config.name]) {
       credentialsSection[config.name] = [{ add: [] }]
     }
