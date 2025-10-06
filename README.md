@@ -1,37 +1,41 @@
 # Our Umbraco Cloud Action
 
-:warning: This action is in Beta and caution is advised when using for Production. :warning: 
+:warning: This action is in Beta and caution is advised when using for
+Production :warning:
 
-This aims to be a comprehensive package for deploying to Umbraco Cloud
-with full deployment management capabilities. Based on the scripts from the
+This aims to be a comprehensive package for deploying to Umbraco Cloud with full
+deployment management capabilities. Based on the scripts from the
 [documentation](https://docs.umbraco.com/umbraco-cloud/build-and-customize-your-solution/handle-deployments-and-environments/umbraco-cicd/umbracocloudapi).
 
-The purpose is to have one centralised place to faciliate deployments without needing to copy scripts across your various Cloud Projects.
+The purpose is to have one centralised place to faciliate deployments without
+needing to copy scripts across your various Cloud Projects.
 
 ## Quick Start
 
-Use the following full YAML snippet below to get started. Everyone builds differently so pick and choose what you need from the snippet. However to minimise issues try not to change the Build or Publish sections too much! This is from a Production Cloud site.
+Use the following full YAML snippet below to get started. Everyone builds
+differently so pick and choose what you need from the snippet. However to
+minimise issues try not to change the Build or Publish sections too much! This
+is from a Production Cloud site.
 
 Comments have been added to help you pick and choose.
 
 ```yaml
-
 name: Build and deploy to Umbraco Cloud Staging
 
 # Tell Github to cancel an active build if a new commit is added
 concurrency:
-    group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
 
 # Only run this build if this branch is pushed too or if its manually triggered
 on:
   push:
-    branches: [ "release/cloud-production" ]
+    branches: ['release/cloud-production']
   workflow_dispatch:
 
 # Needed to generate PR's
 env:
   GH_TOKEN: ${{ github.token }}
-      
+
 jobs:
   setup:
     name: Setup
@@ -39,13 +43,15 @@ jobs:
     outputs:
       artifact-prefix: ${{ steps.set-artifact-prefix.outputs.ARTIFACT_PREFIX }}
       dotnet-base-path: ${{ steps.get-base-path.outputs.PATH_TO_BASE }}
-      cloudsource-artifact: ${{ steps.set-artifact-prefix.outputs.ARTIFACT_PREFIX }}.cloudsource-${{ github.run_number }}
+      cloudsource-artifact:
+        ${{ steps.set-artifact-prefix.outputs.ARTIFACT_PREFIX }}.cloudsource-${{
+        github.run_number }}
       # Remove semver if you remove git version steps
       semver: ${{ steps.gitversion.outputs.semVer }}
       commit-timestamp: ${{ steps.committimestamp.outputs.COMMIT_TIMESTAMP }}
 
     steps:
-# Don't remove
+      # Don't remove
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -59,8 +65,8 @@ jobs:
           echo "$output"
           echo "ARTIFACT_PREFIX=$output" >> "$GITHUB_OUTPUT"
 
-#=============================================================
-# Optional: GitVersion can be tricky to get right its used to automate semver
+      #=============================================================
+      # Optional: GitVersion can be tricky to get right its used to automate semver
 
       - name: Install GitVersion
         uses: gittools/actions/gitversion/setup@v3.1.1
@@ -75,12 +81,12 @@ jobs:
         id: committimestamp
         shell: bash
         run: |
-            timestamp=$(git log -1 --format=%cd --date=format:%Y%m%dh%H%M%S)
-            echo "COMMIT_TIMESTAMP=$timestamp" >> $GITHUB_OUTPUT
-          
-#=============================================================
+          timestamp=$(git log -1 --format=%cd --date=format:%Y%m%dh%H%M%S)
+          echo "COMMIT_TIMESTAMP=$timestamp" >> $GITHUB_OUTPUT
 
-# Don't remove this is used to determine the .NET project path from the .umbraco file
+      #=============================================================
+
+      # Don't remove this is used to determine the .NET project path from the .umbraco file
       - name: Get DotNet Base Project Path
         id: get-base-path
         shell: bash
@@ -89,8 +95,7 @@ jobs:
           echo "PATH_TO_BASE=$pathToBase" >> $GITHUB_OUTPUT
 
   build-fe:
-
-# Update where necessary this is very dependant on how your Front End build is configured
+    # Update where necessary this is very dependant on how your Front End build is configured
 
     name: Build and test front end
     needs: setup
@@ -100,9 +105,9 @@ jobs:
       - name: Setup Node.js environment
         uses: actions/setup-node@v4
         with:
-            node-version: 22
-            cache: 'npm'
-            cache-dependency-path: '${{vars.PATH_TO_FRONTEND}}/package-lock.json'
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: '${{vars.PATH_TO_FRONTEND}}/package-lock.json'
 
       - name: Install dependencies
         working-directory: ./${{vars.PATH_TO_FRONTEND}}
@@ -122,13 +127,15 @@ jobs:
           cd output
           zip ./frontend.zip ./ -r
 
-#This is used in the backend build process to merge compiled frontend and backend code together
+      #This is used in the backend build process to merge compiled frontend and backend code together
       - name: Create artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ needs.setup.outputs.artifact-prefix }}.frontend-${{ github.run_number }}
+          name:
+            ${{ needs.setup.outputs.artifact-prefix }}.frontend-${{
+            github.run_number }}
           path: |
-            ${{needs.setup.outputs.dotnet-base-path}}/output/frontend.zip   
+            ${{needs.setup.outputs.dotnet-base-path}}/output/frontend.zip
           retention-days: 5
 
   build-be:
@@ -140,17 +147,18 @@ jobs:
         with:
           fetch-depth: 0
 
-# Used for Github private nuget feed access during the build process
+      # Used for Github private nuget feed access during the build process
       - name: Add GitHub Package Registry
         run: |
-            dotnet nuget add source --username USERNAME --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github ${{vars.CRUMPLED_PACKAGE_FEED_URL}}
+          dotnet nuget add source --username USERNAME --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github ${{vars.CRUMPLED_PACKAGE_FEED_URL}}
 
       - name: Cache NuGet
         id: nuget-packages
         uses: actions/cache@v4
         with:
           path: ~/.nuget/packages
-          key: nuget-cache-${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj*') }}
+          key:
+            nuget-cache-${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj*') }}
           restore-keys: |
             nuget-cache-${{ runner.os }}-nuget-
 
@@ -158,15 +166,17 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '9.0.x'
-         
+
       - name: Install Dependencies
         run: dotnet restore ${{ needs.setup.outputs.dotnet-base-path }}
-      
-      - name: Build
-        run: dotnet build ${{ needs.setup.outputs.dotnet-base-path }} --configuration Release --no-restore
 
-# Dependant on how you build your front end. This Action will wait for the Front end build to finish before continuing
-# Most cases the Front end build will finish before .NET build
+      - name: Build
+        run:
+          dotnet build ${{ needs.setup.outputs.dotnet-base-path }}
+          --configuration Release --no-restore
+
+      # Dependant on how you build your front end. This Action will wait for the Front end build to finish before continuing
+      # Most cases the Front end build will finish before .NET build
       - name: Wait for Frontend
         uses: yogeshlonkar/wait-for-jobs@v0
         with:
@@ -175,22 +185,24 @@ jobs:
       - name: Download Frontend artifact
         uses: actions/download-artifact@v4
         with:
-          name: ${{ needs.setup.outputs.artifact-prefix }}.frontend-${{ github.run_number }}
+          name:
+            ${{ needs.setup.outputs.artifact-prefix }}.frontend-${{
+            github.run_number }}
           path: ${{ github.workspace }}/built_frontend
 
-# Combine front end files with Umbraco
+      # Combine front end files with Umbraco
       - name: Combine files
         shell: bash
         run: |
           unzip -o -d ${{ needs.setup.outputs.dotnet-base-path }} ${{ github.workspace }}/built_frontend/frontend.zip
           rm ${{ github.workspace }}/built_frontend/frontend.zip
 
-# Clean out node_modules folders since RCL's are more in use
+      # Clean out node_modules folders since RCL's are more in use
       - name: Clear NPM Modules
         shell: bash
         run: find . -name "node_modules" -type d -prune -exec rm -rf '{}' +
 
-#Important to keep as is, to ensure the action has the correct structure when loading the zip
+      #Important to keep as is, to ensure the action has the correct structure when loading the zip
       - name: Zip solution for deployment
         working-directory: ${{ github.workspace }}/
         run: zip ${{ github.workspace }}/cloudsite.zip ./ -r
@@ -203,8 +215,7 @@ jobs:
           path: ${{ github.workspace }}/cloudsite.zip
           retention-days: 1
 
-
-#Avoid changing this section too much
+  #Avoid changing this section too much
   publish:
     name: Publish to Umbraco Cloud
     needs: [setup, build-fe, build-be]
@@ -215,7 +226,7 @@ jobs:
         with:
           name: final-website-cloudsource-${{ github.run_number }}
 
-# This step will modify and upload the cloudsource zip to Umbraco Cloud
+      # This step will modify and upload the cloudsource zip to Umbraco Cloud
       - name: Upload Deployment Artifact
         id: upload-artifact
         uses: mattou07/Our.UmbracoCloudAction@main
@@ -226,20 +237,20 @@ jobs:
           filePath: './cloudsite.zip'
           description: 'Website deployment package'
           version: ${{ needs.setup.outputs.semver }}
-#==============================================================================
-# Declare a single private nuget feed here. Multiple private feeds are not supported - yet.
+          #==============================================================================
+          # Declare a single private nuget feed here. Multiple private feeds are not supported - yet.
           nuget-source-name: 'github'
           nuget-source-url: ${{ vars.PACKAGE_FEED_URL }}
           #This can be left as is for Github Private feeds
           nuget-source-username: 'USERNAME'
           #Here we are using secrets set on Umbraco Cloud - Create a secret called PACKAGE_VIEW_TOKEN with a PAT token inside with read access to packages
           nuget-source-password: '%PACKAGE_VIEW_TOKEN%'
-#==============================================================================
-#Option to remove items in the zip file. This keeps the Umbraco Cloud repo clean. Typical things to remove are RCL bin or obj folders and unbuilt front end files such as sass.
+          #==============================================================================
+          #Option to remove items in the zip file. This keeps the Umbraco Cloud repo clean. Typical things to remove are RCL bin or obj folders and unbuilt front end files such as sass.
           excluded-paths: '.git/,.github/,src/Client.RCLProject/bin,src/Client.RCLProject/obj,src/Client.FrontEnd'
 
-#==============================================================================
-#Optional step to upload the Umbraco Cloud Artifact after its been modified
+      #==============================================================================
+      #Optional step to upload the Umbraco Cloud Artifact after its been modified
 
       - name: Debug Cloud Source Artifact
         id: upload-solution-debug
@@ -248,7 +259,7 @@ jobs:
           name: final-website-cloudsource-debug-${{ github.run_number }}
           path: './cloudsite.zip'
           retention-days: 1
-#==============================================================================
+      #==============================================================================
 
       - name: Start Umbraco Cloud Deployment
         id: start-deployment
@@ -262,8 +273,8 @@ jobs:
           skipVersionCheck: false
           targetEnvironmentAlias: 'stage'
 
-#==============================================================================
-#Optional Step will check the status of the deployment once complete and generate a PR if we can obtain a Git Patch file
+      #==============================================================================
+      #Optional Step will check the status of the deployment once complete and generate a PR if we can obtain a Git Patch file
       - name: Check Deployment Status
         uses: mattou07/Our.UmbracoCloudAction@main
         with:
@@ -274,19 +285,21 @@ jobs:
           timeoutSeconds: 1800
           targetEnvironmentAlias: 'stage'
 #==============================================================================
-
 ```
 
 ## Feature set
 
-- **Built with Flexible Environments in mind**: Use this action utilse the v2 api for separate deployment processes between your flexbible environment and the mainline (Stage and Prod).
+- **Built with Flexible Environments in mind**: Use this action utilse the v2
+  API for separate deployment processes between your flexbible environment and
+  the mainline (Stage and Prod).
 - **Upload Artifacts**: Upload deployment artifacts to Umbraco Cloud
 - **Start Deployments**: Initiate deployments to any Umbraco Cloud environments
 - **Monitor Deployment Status**: Monitor the logs of the deployment process in
   your workflow
-- **Automatic PR creation**: Retrieve and apply changes from Umbraco Cloud between repos
-  with pull requests
-- **Private Nuget Feed Injection**: NuGet.Config is searched and private feed is injected into the config
+- **Automatic PR creation**: Retrieve and apply changes from Umbraco Cloud
+  between repos with pull requests
+- **Private Nuget Feed Injection**: NuGet.Config is searched and private feed is
+  injected into the config
 - **Built-in Git ignore replacement**: Action will automatically look for
   .cloud_gitignore and replace all .gitignore files in the artifact sent to
   cloud
@@ -298,7 +311,8 @@ jobs:
 
 ## Error Handling
 
-The action attempts to handle most common errors during a build process and continue if possible:
+The action attempts to handle most common errors during a build process and
+continue if possible:
 
 - **API Errors**: Detailed error messages from Umbraco Cloud API
 - **Timeout Handling**: Configurable timeouts for long-running operations
@@ -307,30 +321,30 @@ The action attempts to handle most common errors during a build process and cont
 
 ## Inputs
 
-| Input                    | Description                                                                                                                    | Required | Default                          |
-| ------------------------ | ------------------------------------------------------------------------------------------------------------------------------ | -------- | -------------------------------- |
-| `projectId`              | The Umbraco Cloud project ID                                                                                                   | Yes      | -                                |
-| `apiKey`                 | The Umbraco Cloud API key                                                                                                      | Yes      | -                                |
-| `action`                 | The action to perform (`start-deployment`, `check-status`, `add-artifact`)                                                     | Yes      |`start-deployment`               |
-| `artifactId`             | The artifact ID for deployment (required for `start-deployment`)                                                               | No       | -                                |
-| `targetEnvironmentAlias` | The target environment alias (required for several actions)                                                                    | Yes      | -                                |
-| `commitMessage`          | Custom commit message for the deployment                                                                                       | No       | `Deployment from GitHub Actions` |
-| `noBuildAndRestore`      | Skip build and restore steps                                                                                                   | No       | `false`                          |
-| `skipVersionCheck`       | Skip version check                                                                                                             | No       | `false`                          |
-| `deploymentId`           | The deployment ID (required for some actions)                                                                                  | No       | -                                |
-| `timeoutSeconds`         | Timeout in seconds for status checks                                                                                           | No       | `1200`                           |
-| `filePath`               | Path to the file to upload as artifact (required for `add-artifact`)                                                           | Yes/No   | -                                |
-| `description`            | Description for the artifact                                                                                                   | No       | -                                |
-| `version`                | Version for the artifact                                                                                                       | No       | -                                |
-| `baseUrl`                | Base URL for Umbraco Cloud API                                                                                                 | No       | `https://api.cloud.umbraco.com`  |
-| `base-branch`            | Base branch for pull request creation (defaults to main)                                                                       | No       | `*main`                          |
-| `upload-retries`         | Number of retry attempts for artifact upload                                                                                   | No       | `3`                              |
-| `upload-retry-delay`     | Base delay in milliseconds between upload retries                                                                              | No       | `10000`                          |
-| `upload-timeout`         | Timeout in milliseconds for artifact upload                                                                                    | No       | `60000`                          |
-| `nuget-source-name`      | Name for the NuGet package source (optional for `add-artifact`)                                                                | No       | -                                |
-| `nuget-source-url`       | URL for the NuGet package source (optional for `add-artifact`)                                                                 | No       | -                                |
-| `nuget-source-username`  | Username for NuGet package source authentication (optional for `add-artifact`)                                                 | No       | -                                |
-| `nuget-source-password`  | Password for NuGet package source authentication (optional for `add-artifact`)                                                 | No       | -                                |
+| Input                    | Description                                                                    | Required | Default                          |
+| ------------------------ | ------------------------------------------------------------------------------ | -------- | -------------------------------- |
+| `projectId`              | The Umbraco Cloud project ID                                                   | Yes      | -                                |
+| `apiKey`                 | The Umbraco Cloud API key                                                      | Yes      | -                                |
+| `action`                 | The action to perform (`start-deployment`, `check-status`, `add-artifact`)     | Yes      | `start-deployment`               |
+| `artifactId`             | The artifact ID for deployment (required for `start-deployment`)               | No       | -                                |
+| `targetEnvironmentAlias` | The target environment alias (required for several actions)                    | Yes      | -                                |
+| `commitMessage`          | Custom commit message for the deployment                                       | No       | `Deployment from GitHub Actions` |
+| `noBuildAndRestore`      | Skip build and restore steps                                                   | No       | `false`                          |
+| `skipVersionCheck`       | Skip version check                                                             | No       | `false`                          |
+| `deploymentId`           | The deployment ID (required for some actions)                                  | No       | -                                |
+| `timeoutSeconds`         | Timeout in seconds for status checks                                           | No       | `1200`                           |
+| `filePath`               | Path to the file to upload as artifact (required for `add-artifact`)           | Yes/No   | -                                |
+| `description`            | Description for the artifact                                                   | No       | -                                |
+| `version`                | Version for the artifact                                                       | No       | -                                |
+| `baseUrl`                | Base URL for Umbraco Cloud API                                                 | No       | `https://api.cloud.umbraco.com`  |
+| `base-branch`            | Base branch for pull request creation (defaults to main)                       | No       | `*main`                          |
+| `upload-retries`         | Number of retry attempts for artifact upload                                   | No       | `3`                              |
+| `upload-retry-delay`     | Base delay in milliseconds between upload retries                              | No       | `10000`                          |
+| `upload-timeout`         | Timeout in milliseconds for artifact upload                                    | No       | `60000`                          |
+| `nuget-source-name`      | Name for the NuGet package source (optional for `add-artifact`)                | No       | -                                |
+| `nuget-source-url`       | URL for the NuGet package source (optional for `add-artifact`)                 | No       | -                                |
+| `nuget-source-username`  | Username for NuGet package source authentication (optional for `add-artifact`) | No       | -                                |
+| `nuget-source-password`  | Password for NuGet package source authentication (optional for `add-artifact`) | No       | -                                |
 
 \*Required for specific actions
 
@@ -407,9 +421,11 @@ Obtains the status of the deployment.
 ```
 
 ## Contributing
+
 Thank you for getting this far and considering contributing to the project!
 
 To contribute:
+
 1. Create an issue first! Depending on your circumstance your contribution might
    only be ideal for your usecase only.
 2. Fork the repository
@@ -420,15 +436,21 @@ To contribute:
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
-for details. Feel free to fork and use it for your usecases. Adding a credit back to this repo is apperciated.
+for details. Feel free to fork and use it for your usecases. Adding a credit
+back to this repository is apperciated.
 
 ## Support
 
 For issues and questions about this Action, please use the
 [GitHub Issues](https://github.com/mattou07/Our.UmbracoCloudAction/issues) page.
 
-This action has been tested with various Cloud Projects types and has been used for Production websites. If possible avoid deploying to `live` environments directly to avoid outages, unless you are on starter as there is no other choice. 
+This action has been tested with various Cloud Projects types and has been used
+for Production sites. If possible avoid deploying to `live` environments
+directly to avoid outages, unless you are on starter as there is no other
+choice.
 
-Please use [Umbraco Cloud support](https://umbraco.com/products/support/) if you have issues with your site.
+Please use [Umbraco Cloud support](https://umbraco.com/products/support/) if you
+have issues with your site.
 
-Made with :heart: & Copilot :robot: at [Crumpled Dog](https://www.crumpled-dog.com/) :dog:
+Made with :heart: & Copilot :robot: at
+[Crumpled Dog](https://www.crumpled-dog.com/) :dog:
