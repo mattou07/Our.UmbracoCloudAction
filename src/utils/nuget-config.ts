@@ -1,5 +1,8 @@
 import * as xml2js from 'xml2js'
 import * as core from '@actions/core'
+import * as path from 'path'
+import * as fs from 'fs'
+import { glob } from 'glob'
 import {
   NuGetSourceConfig,
   NuGetConfigModificationResult
@@ -50,39 +53,65 @@ interface NuGetConfigXml {
  */
 export async function addOrUpdateNuGetConfigSource(
   config: NuGetSourceConfig,
-  existingXmlContent: string
+  existingXmlContent?: string
 ): Promise<NuGetConfigModificationResult & { xmlContent: string }> {
   let nugetConfigXml: NuGetConfigXml
   let isNew = false
+  const cwd = process.cwd()
 
   core.info('NuGet Config: Processing NuGet.config from zip file artifact')
 
-  if (!existingXmlContent.trim()) {
-    core.info(
-      'NuGet Config: No existing XML content provided, creating new config'
+  // Determine the NuGet.config path - check if it exists in the current directory
+  let nugetConfigPath: string
+  const matches = await glob('**/NuGet.config', {
+    cwd,
+    nodir: true
+  })
+
+  if (matches.length > 0) {
+    // Found existing file
+    nugetConfigPath = path.join(cwd, matches[0])
+  } else {
+    // Will create new file in cwd
+    nugetConfigPath = path.join(cwd, 'NuGet.config')
+  }
+
+  if (!existingXmlContent || !existingXmlContent.trim()) {
+    // Check if file exists and load it
+    if (matches.length > 0) {
+      core.info(
+        `NuGet Config: Found existing NuGet.config at ${nugetConfigPath}`
+      )
+      try {
+        existingXmlContent = fs.readFileSync(nugetConfigPath, 'utf8')
+      } catch {
+        core.info(
+          `NuGet Config: Found NuGet.config path but file not present; creating new config`
+        )
+        isNew = true
+        existingXmlContent = ''
+      }
+    } else {
+      core.info(
+        'NuGet Config: No existing XML content provided, creating new config'
+      )
+      isNew = true
+      existingXmlContent = ''
+    }
+  }
+
+  if (!isNew && existingXmlContent && existingXmlContent.trim()) {
+    nugetConfigXml = (await xml2js.parseStringPromise(
+      existingXmlContent
+    )) as NuGetConfigXml
+    core.debug(
+      `NuGet Config: Parsed configuration sections from existing content: ${JSON.stringify(Object.keys(nugetConfigXml.configuration))}`
     )
+  } else {
     isNew = true
     nugetConfigXml = {
       configuration: {
         packageSources: { add: [] }
-      }
-    }
-  } else {
-    try {
-      nugetConfigXml = (await xml2js.parseStringPromise(
-        existingXmlContent
-      )) as NuGetConfigXml
-      core.debug(
-        `NuGet Config: Parsed configuration sections from existing content: ${JSON.stringify(Object.keys(nugetConfigXml.configuration))}`
-      )
-    } catch (error) {
-      core.info(`NuGet Config: Failed to parse existing XML content: ${error}`)
-      // Fall back to creating new config
-      isNew = true
-      nugetConfigXml = {
-        configuration: {
-          packageSources: { add: [] }
-        }
       }
     }
   }
@@ -232,12 +261,21 @@ export async function addOrUpdateNuGetConfigSource(
   core.info(`NuGet Config: Generated updated XML configuration`)
   core.debug(`NuGet Config: Final XML content:\n${newXml}`)
 
+  try {
+    fs.writeFileSync(nugetConfigPath, newXml, 'utf8')
+  } catch (error) {
+    core.error(
+      `NuGet Config: Failed to write NuGet.config to ${nugetConfigPath}: ${error}`
+    )
+    throw error
+  }
+
   return {
     success: true,
     message: isNew
       ? `Created new NuGet.config and added source '${config.name}'.`
       : `Updated NuGet.config and added/updated source '${config.name}'.`,
-    nugetConfigPath: 'NuGet.config',
+    nugetConfigPath,
     xmlContent: newXml
   }
 }
