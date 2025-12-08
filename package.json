@@ -51,7 +51,7 @@
     "xml2js": "^0.4.23"
   },
   "devDependencies": {
-    "@eslint/compat": "^1.2.9",
+    "@eslint/compat": "^2.0.0",
     "@github/local-action": "^3.2.1",
     "@jest/globals": "^30.0.0",
     "@rollup/plugin-commonjs": "^28.0.1",
