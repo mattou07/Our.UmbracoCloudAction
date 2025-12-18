@@ -27,10 +27,12 @@ export async function handleCheckStatus(
   )
 
   // Poll until completed/failed, then use the result for the rest of the logic
+  const timeoutMs = (inputs.timeoutSeconds || 1200) * 1000
   const deploymentStatus = await pollDeploymentStatus(
     api.getApiKey(),
     api.getProjectId(),
-    inputs.deploymentId!
+    inputs.deploymentId!,
+    timeoutMs
   )
 
   core.setOutput('deploymentState', deploymentStatus.deploymentState)
