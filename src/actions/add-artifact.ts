@@ -69,7 +69,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
 
   core.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`)
 
-  let removedCount = 0
+  const removedFiles: string[] = []
   const foundPaths: string[] = []
   const notFoundPaths: string[] = [...pathsToExclude]
 
@@ -77,7 +77,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
     for (const excludePath of pathsToExclude) {
       if (filename.startsWith(excludePath)) {
         zip.remove(filename)
-        removedCount++
+        removedFiles.push(filename)
         if (!foundPaths.includes(excludePath)) {
           foundPaths.push(excludePath)
           // Remove from not found list
@@ -91,10 +91,19 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
     }
   })
 
-  if (removedCount > 0) {
-    core.info(
-      `Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`
+  if (removedFiles.length > 0) {
+    // ANSI escape codes for styling
+    const red = '\x1b[31m'
+    const dim = '\x1b[2m'
+    const reset = '\x1b[0m'
+
+    core.startGroup(
+      `${red}Removed ${removedFiles.length} file(s)${reset} matching excluded paths: ${foundPaths.join(', ')}`
     )
+    for (const file of removedFiles) {
+      core.info(`${dim}- ${reset}${red}${file}${reset}`)
+    }
+    core.endGroup()
   }
 
   // Error if any paths weren't found - stop the action
@@ -104,7 +113,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
     )
   }
 
-  if (removedCount === 0 && pathsToExclude.length > 0) {
+  if (removedFiles.length === 0 && pathsToExclude.length > 0) {
     throw new ExcludedPathsValidationError(
       'No files were removed. Verify that the excluded paths match the structure of your artifact.'
     )
