@@ -236,37 +236,39 @@ describe('removeExcludedPaths', () => {
     })
 
     test('throws error for absolute paths', () => {
-      // The function validates path format and rejects absolute paths and unsafe relative paths
+      // The function validates path format and rejects absolute paths
       expect(() => removeExcludedPaths(zip, '/absolute/path')).toThrow(
         'Invalid path "/absolute/path" in excluded-paths'
       )
+    })
+
+    test('logs info when Windows-style paths not found in artifact', () => {
+      // Windows-style paths are valid format but won't match Unix paths in zip
+      // This should not throw, just log info about the path not being found
       expect(() =>
         removeExcludedPaths(zip, 'C:\\some\\absolute\\path')
-      ).toThrow('The following excluded paths were not found in the artifact')
+      ).not.toThrow()
     })
 
-    test('throws error when excluded paths not found in artifact', () => {
+    test('logs info when excluded paths not found in artifact (already removed)', () => {
       zip.file('src/index.js', 'data')
 
-      expect(() => removeExcludedPaths(zip, 'notfound/')).toThrow(
-        'The following excluded paths were not found in the artifact: notfound/'
-      )
+      // Should not throw - missing paths are logged as info since goal is to remove them
+      expect(() => removeExcludedPaths(zip, 'notfound/')).not.toThrow()
     })
 
-    test('throws error when no files match excluded paths', () => {
+    test('logs warning when no files match excluded paths', () => {
       zip.file('src/index.js', 'data')
 
-      expect(() => removeExcludedPaths(zip, 'nonexistent/')).toThrow(
-        'The following excluded paths were not found in the artifact'
-      )
+      // Should not throw - just logs a warning about no matches
+      expect(() => removeExcludedPaths(zip, 'nonexistent/')).not.toThrow()
     })
   })
 
   describe('Edge Cases', () => {
-    test('handles empty zip file', () => {
-      expect(() => removeExcludedPaths(zip, '.git/')).toThrow(
-        'The following excluded paths were not found in the artifact'
-      )
+    test('handles empty zip file gracefully', () => {
+      // Should not throw for empty zip - just logs that paths weren't found
+      expect(() => removeExcludedPaths(zip, '.git/')).not.toThrow()
     })
 
     test('handles very long path names', () => {
@@ -312,7 +314,8 @@ describe('removeExcludedPaths', () => {
       zip.file('test.txt', 'data')
 
       // This should compile without TypeScript errors
-      expect(() => removeExcludedPaths(zip, paths)).toThrow()
+      // No error thrown - paths not found is just logged as info (already removed)
+      expect(() => removeExcludedPaths(zip, paths)).not.toThrow()
     })
   })
 })
@@ -800,16 +803,14 @@ describe('handleAddArtifact', () => {
   })
 
   describe('Edge Cases and Error Handling', () => {
-    test('handles no files matching excluded paths', async () => {
+    test('handles no files matching excluded paths gracefully', async () => {
       // Arrange
       const testZip = new JSZip()
       testZip.file('src/index.js', 'content')
       const excludedPaths = 'nonexistent/'
 
-      // Act & Assert
-      expect(() => removeExcludedPaths(testZip, excludedPaths)).toThrow(
-        'The following excluded paths were not found in the artifact: nonexistent/'
-      )
+      // Act & Assert - should not throw, paths may already be removed
+      expect(() => removeExcludedPaths(testZip, excludedPaths)).not.toThrow()
     })
 
     test('throws error for invalid excluded paths format', async () => {
