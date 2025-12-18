@@ -14,6 +14,11 @@ export async function pollDeploymentStatus(
   const start = Date.now()
   let lastModifiedUtc: string | undefined = undefined
 
+  const timeoutMinutes = Math.round(maxDurationMs / 60000)
+  core.info(
+    `Polling deployment status (timeout: ${timeoutMinutes} minutes / ${maxDurationMs}ms, interval: ${intervalMs}ms)`
+  )
+
   while (Date.now() - start < maxDurationMs) {
     const url =
       `https://api.cloud.umbraco.com/v2/projects/${projectId}/deployments/${deploymentId}` +

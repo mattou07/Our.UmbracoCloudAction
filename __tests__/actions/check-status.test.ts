@@ -72,9 +72,7 @@ describe('handleCheckStatus', () => {
   }
 
   beforeAll(async () => {
-    const checkStatusModule = await import(
-      '../../src/actions/check-status.js'
-    )
+    const checkStatusModule = await import('../../src/actions/check-status.js')
     handleCheckStatus = checkStatusModule.handleCheckStatus
   })
 
