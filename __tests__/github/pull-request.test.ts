@@ -1111,10 +1111,10 @@ index abc123..def456 100644
 
   // Helper functions for test data
   function createComplexFailingPatch(): string {
-    return `diff --git a/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda b/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
+    return `diff --git a/src/MyProject.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda b/src/MyProject.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
 index abc123..def456 100644
---- a/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
-+++ b/src/GlenStoneREIT.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
+--- a/src/MyProject.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
++++ b/src/MyProject.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
 @@ -13,7 +13,7 @@
    "Name": "Content Block - Hero Section",
    "EditorAlias": "Umbraco.BlockList",
@@ -1124,10 +1124,10 @@ index abc123..def456 100644
    },
    "Udi": "umb://data-type/918d93a589ab42ffba90ad0a8812b7f3"
  }
-diff --git a/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj b/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj
+diff --git a/src/MyProject.Extensions/MyProject.Extensions.csproj b/src/MyProject.Extensions/MyProject.Extensions.csproj
 index 789abc..012def 100644
---- a/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj
-+++ b/src/GlenstoneREIT.UmbracoExtensions/GlenstoneREIT.UmbracoExtensions.csproj
+--- a/src/MyProject.Extensions/MyProject.Extensions.csproj
++++ b/src/MyProject.Extensions/MyProject.Extensions.csproj
 @@ -41,7 +41,7 @@
    </ItemGroup>
  
@@ -1137,16 +1137,16 @@ index 789abc..012def 100644
      <PackageReference Include="Umbraco.Forms" Version="16.0.0" />
    </ItemGroup>
  
-diff --git a/src/GlenstoneREIT.UmbracoExtensions/wwwroot/App_Plugins/GlenstoneREITUmbracoExtensions/glenstone-reit-umbraco-extensions.js b/src/GlenstoneREIT.UmbracoExtensions/wwwroot/App_Plugins/GlenstoneREITUmbracoExtensions/glenstone-reit-umbraco-extensions.js
+diff --git a/src/MyProject.Extensions/wwwroot/App_Plugins/MyProjectExtensions/my-project-extensions.js b/src/MyProject.Extensions/wwwroot/App_Plugins/MyProjectExtensions/my-project-extensions.js
 new file mode 100644
 index 0000000..1a2b3c4
 --- /dev/null
-+++ b/src/GlenstoneREIT.UmbracoExtensions/wwwroot/App_Plugins/GlenstoneREITUmbracoExtensions/glenstone-reit-umbraco-extensions.js
++++ b/src/MyProject.Extensions/wwwroot/App_Plugins/MyProjectExtensions/my-project-extensions.js
 @@ -0,0 +1,5 @@
-+// Glenstone REIT Umbraco Extensions
-+angular.module('umbraco').controller('GlenstoneController', function($scope) {
++// MyProject Umbraco Extensions
++angular.module('umbraco').controller('MyProjectController', function($scope) {
 +    $scope.model.value = $scope.model.value || {};
-+    $scope.test = 'Glenstone REIT Extension Loaded';
++    $scope.test = 'MyProject Extension Loaded';
 +});`
   }
 

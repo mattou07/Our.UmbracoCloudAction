@@ -3,7 +3,8 @@ import { jest } from '@jest/globals'
 // ESM mock setup
 jest.unstable_mockModule('@actions/core', () => ({
   info: jest.fn(),
-  warning: jest.fn()
+  warning: jest.fn(),
+  error: jest.fn()
 }))
 
 // Helper to create a mock Response object
@@ -80,7 +81,9 @@ describe('pollDeploymentStatus', () => {
     jest.advanceTimersByTime(10)
     const result = await promise
     expect(result.deploymentState).toBe('Completed')
-    expect(core.info).toHaveBeenCalledWith('Deployment status: Completed')
+    expect(core.info).toHaveBeenCalledWith(
+      expect.stringContaining('Deployment status: Completed')
+    )
   })
 
   test('retries on 401 Unauthorized', async () => {

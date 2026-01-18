@@ -9,16 +9,6 @@ import * as exec from '@actions/exec'
 import JSZip from 'jszip'
 
 /**
- * Custom error class for excluded paths validation failures
- */
-class ExcludedPathsValidationError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'ExcludedPathsValidationError'
-  }
-}
-
-/**
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
  */
@@ -69,7 +59,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
 
   core.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`)
 
-  let removedCount = 0
+  const removedFiles: string[] = []
   const foundPaths: string[] = []
   const notFoundPaths: string[] = [...pathsToExclude]
 
@@ -77,7 +67,7 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
     for (const excludePath of pathsToExclude) {
       if (filename.startsWith(excludePath)) {
         zip.remove(filename)
-        removedCount++
+        removedFiles.push(filename)
         if (!foundPaths.includes(excludePath)) {
           foundPaths.push(excludePath)
           // Remove from not found list
@@ -91,22 +81,40 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
     }
   })
 
-  if (removedCount > 0) {
-    core.info(
-      `Removed ${removedCount} file(s) matching excluded paths: ${foundPaths.join(', ')}`
+  if (removedFiles.length > 0) {
+    // ANSI escape codes for styling
+    const red = '\x1b[31m'
+    const dim = '\x1b[2m'
+    const reset = '\x1b[0m'
+
+    core.startGroup(
+      `${red}Removed ${removedFiles.length} file(s)${reset} matching excluded paths: ${foundPaths.join(', ')}`
     )
+    for (const file of removedFiles) {
+      core.info(`${dim}- ${reset}${red}${file}${reset}`)
+    }
+    core.endGroup()
   }
 
-  // Error if any paths weren't found - stop the action
+  // Log info about paths that weren't found (already removed or never existed)
+  // This is not an error since the goal is to ensure they're not in the artifact
   if (notFoundPaths.length > 0) {
-    throw new ExcludedPathsValidationError(
-      `The following excluded paths were not found in the artifact: ${notFoundPaths.join(', ')}. Verify that the paths exist in your artifact.`
+    const yellow = '\x1b[33m'
+    const reset = '\x1b[0m'
+    core.info(
+      `${yellow}Excluded paths already removed or not present in artifact:${reset} ${notFoundPaths.join(', ')}`
     )
   }
 
-  if (removedCount === 0 && pathsToExclude.length > 0) {
-    throw new ExcludedPathsValidationError(
-      'No files were removed. Verify that the excluded paths match the structure of your artifact.'
+  // Only warn if no paths were found at all and no files were removed
+  // This might indicate a configuration issue, but is not a hard error
+  if (
+    removedFiles.length === 0 &&
+    foundPaths.length === 0 &&
+    pathsToExclude.length > 0
+  ) {
+    core.warning(
+      'No excluded paths were found in the artifact. This may be expected if they were already removed, or may indicate a misconfiguration.'
     )
   }
 }
@@ -137,11 +145,6 @@ export async function handleAddArtifact(
       )
       nugetSourceStatus = 'NuGet.config successfully injected into artifact'
     } catch (error) {
-      // Re-throw excluded paths validation errors as they should stop the action
-      if (error instanceof ExcludedPathsValidationError) {
-        throw error
-      }
-
       const errorMessage = `Failed to configure NuGet source: ${error}`
       core.warning(errorMessage)
       nugetSourceStatus = errorMessage
@@ -155,11 +158,6 @@ export async function handleAddArtifact(
       )
       core.info('Successfully processed .cloud_gitignore')
     } catch (error) {
-      // Re-throw excluded paths validation errors as they should stop the action
-      if (error instanceof ExcludedPathsValidationError) {
-        throw error
-      }
-
       core.warning(`Failed to process .cloud_gitignore: ${error}`)
     }
 

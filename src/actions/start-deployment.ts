@@ -25,7 +25,13 @@ export async function handleStartDeployment(
   core.setOutput('deploymentId', deploymentId)
 
   // Poll deployment status until completion
-  await pollDeploymentStatus(api.getApiKey(), api.getProjectId(), deploymentId)
+  const timeoutMs = (inputs.timeoutSeconds || 1200) * 1000
+  await pollDeploymentStatus(
+    api.getApiKey(),
+    api.getProjectId(),
+    deploymentId,
+    timeoutMs
+  )
 
   return {
     deploymentId
