@@ -42,7 +42,7 @@ API. The action automates CI/CD by eliminating manual Cloud Portal steps.
      - `checkDeploymentStatus(deploymentId: string): Promise<DeploymentResponse>` -
        Fetches deployment state
      - `uploadArtifact(filePath: string, ...): Promise<ArtifactResponse>` -
-       Uploads `.cloudsource` zip files
+       Uploads `.cloudsource` ZIP files
      - `getChangesById(deploymentId: string, targetAlias: string): Promise<ChangesResponse>` -
        Retrieves diff/patch
      - `applyPatch(changeId: string, targetAlias: string): Promise<void>` -
@@ -64,7 +64,7 @@ API. The action automates CI/CD by eliminating manual Cloud Portal steps.
        upgrades)
      - Outputs: `deploymentState`, `deploymentStatus`, optional `pullRequestUrl`
    - **`add-artifact.ts`**:
-     - Packages `.cloudsource` zip from `filePath` input
+     - Packages `.cloudsource` ZIP from `filePath` input
      - Removes excluded paths (`.git/`, `.github/` by default) to reduce upload
        size
      - Optionally modifies NuGet.config if custom package sources provided
@@ -130,7 +130,7 @@ API. The action automates CI/CD by eliminating manual Cloud Portal steps.
 
 **Start Deployment Workflow**:
 
-```markdown
+```text
 GitHub Action Inputs (action.yml)
   ↓ getActionInputs() [main.ts] → type-safe ActionInputs object
   ↓ handleStartDeployment() [actions/start-deployment.ts]
@@ -149,7 +149,7 @@ GitHub Actions workflow continues with deployment outputs available
 
 **Artifact Upload Workflow**:
 
-```markdown
+```text
 add-artifact action
   ├─ Validate: filePath required
   ├─ Load .cloudsource zip from filePath
@@ -170,10 +170,10 @@ artifactId then used in subsequent start-deployment action
 - **`npm run package`**: Compiles TypeScript (tsconfig.json) → bundles with
   Rollup (`rollup.config.ts`) → outputs `dist/index.js`
   - Input: `src/index.ts` (simple entry point importing `main.js`)
-  - Output: `dist/index.js` (minified ESM with sourcemaps)
+  - Output: `dist/index.js` (minified ESM with source maps)
   - **Critical**: GitHub Actions runtime executes this bundled file, not
     TypeScript directly
-  - Plugins: typescript, node-resolve, commonjs, json (for NuGet XML parsing)
+  - Plugins: TypeScript, node-resolve, CommonJS, json (for NuGet XML parsing)
 - **`npm run package:watch`**: Watches for changes in `src/`, rebuilds
   `dist/index.js` on save
   - Useful during active development to validate bundling
@@ -198,7 +198,7 @@ artifactId then used in subsequent start-deployment action
   `make-coverage-badge`
 - **Test files**: Located in `__tests__/` matching pattern `*.test.ts`
   - `main.test.ts`: Tests `getActionInputs()` parsing, action routing
-  - `add-artifact.test.ts`: Tests zip manipulation, path exclusion, NuGet config
+  - `add-artifact.test.ts`: Tests ZIP manipulation, path exclusion, NuGet config
     modifications
   - `deployment-polling.test.ts`: Tests status polling loop, state transitions,
     error handling
@@ -227,7 +227,7 @@ artifactId then used in subsequent start-deployment action
   responses
   - Example fixtures: `__fixtures__/core.ts` (mock deployment responses),
     `__fixtures__/wait.ts` (mock timers)
-- **File I/O Testing**: Use temporary directories or in-memory zip operations
+- **File I/O Testing**: Use temporary directories or in-memory ZIP operations
   (JSZip)
 - **beforeEach cleanup**: Reset `process.env` keys starting with `INPUT_`
   between tests to prevent cross-test pollution
@@ -348,7 +348,7 @@ artifactId then used in subsequent start-deployment action
      `JSON.stringify(status)` to avoid multi-line issues
 
 3. **Environment Access**
-   - GitHub provides context via `@actions/github`: `github.context` has repo,
+   - GitHub provides context via `@actions/github`: `github.context` has repository,
      ref, actor, payload
    - Used in `check-status.ts` to create PRs with deployment results
    - OAuth token available via `github.context.token` for authenticated API
@@ -369,7 +369,7 @@ artifactId then used in subsequent start-deployment action
    - Relative paths from current file: `./file.js`, `../api/module.js`
    - Absolute paths: Avoid (use relative instead)
    - Example structure:
-     ```markdown
+     ```text
      src/actions/start-deployment.ts
        ├─ import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
        ├─ import { ActionInputs } from '../types/index.js'
@@ -432,7 +432,9 @@ artifactId then used in subsequent start-deployment action
 
 ## Integration Points & External Dependencies
 
-### Umbraco Cloud API (https://api.cloud.umbraco.com)
+### Umbraco Cloud API
+
+**Base URL**: <https://api.cloud.umbraco.com>
 
 **Authentication**: All requests include header
 `Umbraco-Cloud-Api-Key: <apiKey>`
@@ -446,7 +448,7 @@ artifactId then used in subsequent start-deployment action
   - `GET /v2/projects/{projectId}/deployments/{deploymentId}/changes` - Retrieve
     diff
 - **Artifacts**:
-  - `POST /v2/projects/{projectId}/artifacts` - Upload `.cloudsource` zip
+  - `POST /v2/projects/{projectId}/artifacts` - Upload `.cloudsource` ZIP
 - **Patches**:
   - `POST /v2/projects/{projectId}/environments/{environmentAlias}/changes/{changeId}/apply` -
     Apply patch
@@ -506,8 +508,8 @@ exponential backoff
 
 **Artifact Upload** (`add-artifact.ts`):
 
-- Reads `.cloudsource` zip from `filePath` input
-- Uses JSZip library to manipulate zip contents in memory
+- Reads `.cloudsource` ZIP from `filePath` input
+- Uses JSZip library to manipulate ZIP contents in memory
 - Removes excluded paths to reduce upload size
 
 **Git Operations** (`utils/helpers.ts`):
@@ -519,7 +521,7 @@ exponential backoff
 
 ### Environment Flow
 
-```markdown
+```text
 Development → Staging → Production
 ```
 
