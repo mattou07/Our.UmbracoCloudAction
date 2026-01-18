@@ -348,8 +348,8 @@ artifactId then used in subsequent start-deployment action
      `JSON.stringify(status)` to avoid multi-line issues
 
 3. **Environment Access**
-   - GitHub provides context via `@actions/github`: `github.context` has repository,
-     ref, actor, payload
+   - GitHub provides context via `@actions/github`: `github.context` has
+     repository, ref, actor, payload
    - Used in `check-status.ts` to create PRs with deployment results
    - OAuth token available via `github.context.token` for authenticated API
      calls
