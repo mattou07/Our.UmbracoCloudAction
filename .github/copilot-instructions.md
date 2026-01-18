@@ -130,7 +130,7 @@ API. The action automates CI/CD by eliminating manual Cloud Portal steps.
 
 **Start Deployment Workflow**:
 
-```
+```markdown
 GitHub Action Inputs (action.yml)
   ↓ getActionInputs() [main.ts] → type-safe ActionInputs object
   ↓ handleStartDeployment() [actions/start-deployment.ts]
@@ -149,7 +149,7 @@ GitHub Actions workflow continues with deployment outputs available
 
 **Artifact Upload Workflow**:
 
-```
+```markdown
 add-artifact action
   ├─ Validate: filePath required
   ├─ Load .cloudsource zip from filePath
@@ -369,7 +369,7 @@ artifactId then used in subsequent start-deployment action
    - Relative paths from current file: `./file.js`, `../api/module.js`
    - Absolute paths: Avoid (use relative instead)
    - Example structure:
-     ```
+     ```markdown
      src/actions/start-deployment.ts
        ├─ import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
        ├─ import { ActionInputs } from '../types/index.js'
@@ -519,7 +519,7 @@ exponential backoff
 
 ### Environment Flow
 
-```
+```markdown
 Development → Staging → Production
 ```
 
