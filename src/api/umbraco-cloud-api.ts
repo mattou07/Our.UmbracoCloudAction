@@ -357,7 +357,9 @@ export class UmbracoCloudAPI {
 
   async getChangesById(
     deploymentId: string,
-    targetEnvironmentAlias: string
+    targetEnvironmentAlias: string,
+    maxRetries: number = 5,
+    retryDelayMs: number = 10000
   ): Promise<ChangesResponse> {
     const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
 
@@ -365,8 +367,21 @@ export class UmbracoCloudAPI {
       `Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`
     )
 
-    const originalRequest = async (): Promise<ChangesResponse> => {
-      const response = await fetch(url, {
+    // Helper to check if error is a transient "SiteExtensionNotResponding" error
+    const isTransientSiteExtensionError = (errorText: string): boolean => {
+      return (
+        errorText.includes('SiteExtensionNotResponding') ||
+        errorText.includes('Service unavailable') ||
+        (errorText.includes('500') && errorText.includes('Try again'))
+      )
+    }
+
+    // Helper to make a single request attempt
+    const makeRequest = async (
+      requestUrl: string,
+      label: string
+    ): Promise<ChangesResponse> => {
+      const response = await fetch(requestUrl, {
         method: 'GET',
         headers: this.getHeaders()
       })
@@ -378,7 +393,7 @@ export class UmbracoCloudAPI {
       if (!response.ok) {
         const errorText = await response.text()
         throw new Error(
-          `Failed to get changes: ${response.status} ${response.statusText} - ${errorText}`
+          `Failed to get changes${label}: ${response.status} ${response.statusText} - ${errorText}`
         )
       }
 
@@ -386,27 +401,44 @@ export class UmbracoCloudAPI {
       return { changes }
     }
 
+    // Helper to make request with transient error retries
+    const makeRequestWithRetries = async (
+      requestUrl: string,
+      label: string
+    ): Promise<ChangesResponse> => {
+      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+          return await makeRequest(requestUrl, label)
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : String(error)
+
+          // Check if this is a transient error that we should retry
+          if (
+            isTransientSiteExtensionError(errorMessage) &&
+            attempt < maxRetries
+          ) {
+            core.warning(
+              `Site extension not responding (attempt ${attempt}/${maxRetries}). ` +
+                `Retrying in ${retryDelayMs / 1000} seconds...`
+            )
+            await sleep(retryDelayMs)
+            continue
+          }
+
+          throw error
+        }
+      }
+      throw new Error(`Failed to get changes after ${maxRetries} attempts`)
+    }
+
+    const originalRequest = async (): Promise<ChangesResponse> => {
+      return makeRequestWithRetries(url, '')
+    }
+
     const retryRequest = async (): Promise<ChangesResponse> => {
       const retryUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`
-
-      const response = await fetch(retryUrl, {
-        method: 'GET',
-        headers: this.getHeaders()
-      })
-
-      if (response.status === 204) {
-        return { changes: '' } // No changes
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(
-          `Failed to get changes (retry with lowercase): ${response.status} ${response.statusText} - ${errorText}`
-        )
-      }
-
-      const changes = await response.text()
-      return { changes }
+      return makeRequestWithRetries(retryUrl, ' (retry with lowercase)')
     }
 
     try {
