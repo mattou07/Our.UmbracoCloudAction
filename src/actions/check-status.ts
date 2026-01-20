@@ -96,8 +96,14 @@ async function handleCompletedDeployment(
       inputs.deploymentId!,
       inputs.targetEnvironmentAlias!
     )
-    core.info('Deployment completed. Here is the diff/patch:')
-    core.info(changes.changes)
+
+    if (changes.changes && changes.changes.trim().length > 0) {
+      core.info('Deployment completed. Here is the diff/patch:')
+      core.info(changes.changes)
+    } else {
+      core.info('Deployment completed. No changes/diff available.')
+    }
+
     core.setOutput('changes', JSON.stringify(changes))
 
     return {

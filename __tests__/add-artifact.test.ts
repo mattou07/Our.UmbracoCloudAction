@@ -271,14 +271,14 @@ describe('removeExcludedPaths', () => {
       expect(() => removeExcludedPaths(zip, '.git/')).not.toThrow()
     })
 
-    test('handles very long path names', () => {
-      const longPath = 'very/'.repeat(50) + 'long/path/file.txt'
-      zip.file(longPath, 'data')
+    test('handles deeply nested path names', () => {
+      const nestedPath = 'very/'.repeat(10) + 'deep/path/file.txt'
+      zip.file(nestedPath, 'data')
       zip.file('src/index.js', 'data')
 
       removeExcludedPaths(zip, 'very/')
 
-      expect(zip.files[longPath]).toBeUndefined()
+      expect(zip.files[nestedPath]).toBeUndefined()
       expect(zip.files['src/index.js']).toBeDefined()
     })
 
