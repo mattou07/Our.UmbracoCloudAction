@@ -24,12 +24,14 @@ describe('main.ts', () => {
       // Arrange
       const expectedProjectId = 'test-project-123'
       const expectedApiKey = 'sk_test_key_abc123'
-      const expectedAction = 'start-deployment'
+      const expectedFilePath = './artifact.zip'
+      const expectedTargetEnv = 'dev'
 
       defineEnv({
         projectId: expectedProjectId,
         apiKey: expectedApiKey,
-        action: expectedAction,
+        filePath: expectedFilePath,
+        targetEnvironmentAlias: expectedTargetEnv,
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
       })
@@ -40,11 +42,13 @@ describe('main.ts', () => {
       // Assert
       expect(result.projectId).toBe(expectedProjectId)
       expect(result.apiKey).toBe(expectedApiKey)
-      expect(result.action).toBe(expectedAction)
+      expect(result.filePath).toBe(expectedFilePath)
+      expect(result.targetEnvironmentAlias).toBe(expectedTargetEnv)
       expect(result).toMatchObject<Partial<ActionInputs>>({
         projectId: expect.any(String),
         apiKey: expect.any(String),
-        action: expect.any(String)
+        filePath: expect.any(String),
+        targetEnvironmentAlias: expect.any(String)
       })
     })
 
@@ -53,19 +57,15 @@ describe('main.ts', () => {
       const inputValues = {
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
-        baseUrl: 'https://custom-api.umbraco.com',
-        artifactId: 'art-123',
+        filePath: '/custom/path/artifact.zip',
         targetEnvironmentAlias: 'staging',
+        baseUrl: 'https://custom-api.umbraco.com',
         commitMessage: 'Custom deploy message',
         timeoutSeconds: '2400',
         noBuildAndRestore: 'true',
         skipVersionCheck: 'true',
-        deploymentId: 'deploy-456',
-        filePath: '/custom/path/artifact.zip',
         description: 'Custom artifact description',
         version: '2.1.0',
-        changeId: 'change-789',
         baseBranch: 'develop',
         'upload-retries': '5',
         'upload-retry-delay': '15000',
@@ -85,19 +85,15 @@ describe('main.ts', () => {
       // Assert
       expect(result.projectId).toBe('pid')
       expect(result.apiKey).toBe('key')
-      expect(result.action).toBe('start-deployment')
-      expect(result.baseUrl).toBe('https://custom-api.umbraco.com')
-      expect(result.artifactId).toBe('art-123')
+      expect(result.filePath).toBe('/custom/path/artifact.zip')
       expect(result.targetEnvironmentAlias).toBe('staging')
+      expect(result.baseUrl).toBe('https://custom-api.umbraco.com')
       expect(result.commitMessage).toBe('Custom deploy message')
       expect(result.timeoutSeconds).toBe(2400)
       expect(result.noBuildAndRestore).toBe(true)
       expect(result.skipVersionCheck).toBe(true)
-      expect(result.deploymentId).toBe('deploy-456')
-      expect(result.filePath).toBe('/custom/path/artifact.zip')
       expect(result.description).toBe('Custom artifact description')
       expect(result.version).toBe('2.1.0')
-      expect(result.changeId).toBe('change-789')
       expect(result.baseBranch).toBe('develop')
       expect(result.uploadRetries).toBe(5)
       expect(result.uploadRetryDelay).toBe(15000)
@@ -116,7 +112,8 @@ describe('main.ts', () => {
       const minimalInputs = {
         projectId: 'pid',
         apiKey: 'key',
-        action: 'add-artifact',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
       }
@@ -147,13 +144,8 @@ describe('main.ts', () => {
       expect(result.excludedPaths).toBe(expectedDefaults.excludedPaths)
 
       // Verify optional inputs are empty when not provided
-      expect(result.artifactId).toBe('')
-      expect(result.targetEnvironmentAlias).toBe('')
-      expect(result.deploymentId).toBe('')
-      expect(result.filePath).toBe('')
       expect(result.description).toBe('')
       expect(result.version).toBe('')
-      expect(result.changeId).toBe('')
       expect(result.baseBranch).toBe('')
     })
   })
@@ -164,7 +156,8 @@ describe('main.ts', () => {
       const inputsWithTrueBooleans = {
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'true',
         skipVersionCheck: 'true'
       }
@@ -184,7 +177,8 @@ describe('main.ts', () => {
       const inputsWithFalseBooleans = {
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
       }
@@ -203,7 +197,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
       })
@@ -219,7 +214,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false',
         timeoutSeconds: '3600',
@@ -241,7 +237,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false',
         timeoutSeconds: 'not-a-number',
@@ -258,7 +255,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
       })
@@ -272,11 +270,12 @@ describe('main.ts', () => {
   })
 
   describe('getActionInputs - Edge Cases', () => {
-    test('handles empty string inputs for required fields', () => {
+    test('handles empty string inputs for optional fields', () => {
       defineEnv({
-        projectId: 'test-project', // Can't be empty for required field
-        apiKey: 'test-key', // Can't be empty for required field
-        action: 'test-action', // Can't be empty for required field
+        projectId: 'test-project',
+        apiKey: 'test-key',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         baseUrl: '',
         commitMessage: '',
         noBuildAndRestore: 'false',
@@ -286,7 +285,8 @@ describe('main.ts', () => {
       const inputs = getActionInputs()
       expect(inputs.projectId).toBe('test-project')
       expect(inputs.apiKey).toBe('test-key')
-      expect(inputs.action).toBe('test-action')
+      expect(inputs.filePath).toBe('./artifact.zip')
+      expect(inputs.targetEnvironmentAlias).toBe('dev')
       expect(inputs.baseUrl).toBe('https://api.cloud.umbraco.com') // Should use default
       expect(inputs.commitMessage).toBe('Deployment from GitHub Actions') // Should use default
     })
@@ -295,7 +295,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: '  test-project  ', // @actions/core trims whitespace
         apiKey: '  test-key  ',
-        action: '  test-action  ',
+        filePath: '  ./artifact.zip  ',
+        targetEnvironmentAlias: '  dev  ',
         description: '\t\n', // This might also get trimmed
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
@@ -304,7 +305,8 @@ describe('main.ts', () => {
       const inputs = getActionInputs()
       expect(inputs.projectId).toBe('test-project') // Trimmed by @actions/core
       expect(inputs.apiKey).toBe('test-key') // Trimmed by @actions/core
-      expect(inputs.action).toBe('test-action') // Trimmed by @actions/core
+      expect(inputs.filePath).toBe('./artifact.zip') // Trimmed by @actions/core
+      expect(inputs.targetEnvironmentAlias).toBe('dev') // Trimmed by @actions/core
       expect(inputs.description).toBe('') // Trimmed to empty by @actions/core
     })
 
@@ -312,7 +314,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false',
         timeoutSeconds: '0',
@@ -328,7 +331,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false',
         timeoutSeconds: '999999',
@@ -346,7 +350,8 @@ describe('main.ts', () => {
       defineEnv({
         projectId: 'pid',
         apiKey: 'key',
-        action: 'start-deployment',
+        filePath: './artifact.zip',
+        targetEnvironmentAlias: 'dev',
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
       })
@@ -360,7 +365,8 @@ describe('main.ts', () => {
       // Verify required fields exist and are strings
       expect(typeof inputs.projectId).toBe('string')
       expect(typeof inputs.apiKey).toBe('string')
-      expect(typeof inputs.action).toBe('string')
+      expect(typeof inputs.filePath).toBe('string')
+      expect(typeof inputs.targetEnvironmentAlias).toBe('string')
 
       // Verify boolean fields are boolean (not undefined since we set them explicitly)
       expect(typeof inputs.noBuildAndRestore).toBe('boolean')

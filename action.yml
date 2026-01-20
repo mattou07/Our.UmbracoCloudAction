@@ -1,5 +1,7 @@
 name: Umbraco Cloud Deployment Action
-description: Deploy to Umbraco Cloud with comprehensive deployment management
+description:
+  Deploy to Umbraco Cloud - uploads artifact, starts deployment, and monitors
+  status in a single step
 author: Matthew Hart
 
 # Add your action's branding here. This will appear on the GitHub Marketplace.
@@ -15,21 +17,13 @@ inputs:
   apiKey:
     description: 'The Umbraco Cloud API key'
     required: true
-  action:
-    description:
-      'The action to perform (start-deployment, check-status, add-artifact,
-      get-changes, get-latest-changes, apply-patch)'
+  filePath:
+    description: 'Path to the .cloudsource ZIP file to upload and deploy'
     required: true
-    default: 'start-deployment'
-  artifactId:
-    description:
-      'The artifact ID for deployment (required for start-deployment)'
-    required: false
   targetEnvironmentAlias:
     description:
-      'The target environment alias to deploy to (required for start-deployment,
-      get-changes, get-latest-changes, apply-patch)'
-    required: false
+      'The target environment alias to deploy to (e.g., dev, staging, prod)'
+    required: true
   commitMessage:
     description: 'Commit message for the deployment'
     required: false
@@ -42,17 +36,10 @@ inputs:
     description: 'Skip version check'
     required: false
     default: 'false'
-  deploymentId:
-    description: 'The deployment ID (required for check-status, get-changes)'
-    required: false
   timeoutSeconds:
-    description: 'Timeout in seconds for status checks'
+    description: 'Timeout in seconds for deployment status checks'
     required: false
     default: '1200'
-  filePath:
-    description:
-      'Path to the file to upload as artifact (required for add-artifact)'
-    required: false
   description:
     description: 'Description for the artifact'
     required: false
@@ -81,20 +68,16 @@ inputs:
     required: false
     default: '60000'
   nuget-source-name:
-    description: 'Name for the NuGet package source (optional for add-artifact)'
+    description: 'Name for the NuGet package source (optional)'
     required: false
   nuget-source-url:
-    description: 'URL for the NuGet package source (optional for add-artifact)'
+    description: 'URL for the NuGet package source (optional)'
     required: false
   nuget-source-username:
-    description:
-      'Username for NuGet package source authentication (optional for
-      add-artifact)'
+    description: 'Username for NuGet package source authentication (optional)'
     required: false
   nuget-source-password:
-    description:
-      'Password for NuGet package source authentication (optional for
-      add-artifact)'
+    description: 'Password for NuGet package source authentication (optional)'
     required: false
   excluded-paths:
     description:
@@ -106,16 +89,16 @@ inputs:
 
 # Define your outputs here.
 outputs:
-  deploymentId:
-    description: 'The deployment ID returned from start-deployment'
   artifactId:
-    description: 'The artifact ID returned from add-artifact'
+    description: 'The artifact ID returned from the upload step'
+  deploymentId:
+    description: 'The deployment ID returned from the deployment step'
   deploymentState:
-    description: 'The current deployment state'
+    description: 'The final deployment state (Completed, Failed, etc.)'
   deploymentStatus:
-    description: 'The deployment status response'
+    description: 'The full deployment status response as JSON'
   changes:
-    description: 'The changes (diff/patch) returned from get-changes'
+    description: 'The changes (diff/patch) from the deployment'
   latest-completed-deployment-id:
     description: 'The latest completed deployment ID (when deployment fails)'
   pr-url:
