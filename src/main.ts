@@ -94,7 +94,17 @@ export async function runDeployPipeline(
   core.info(
     `${green}Deployment pipeline to Umbraco Cloud complete #h5yr 🎉 ${reset}`
   )
-  core.info('Find me at: https://mu7.dev/')
+  core.info(
+    'Made at: https://www.crumpled-dog.com/ thank them for providing me the resources to put this together 🐕!'
+  )
+  core.info('You can find me at: https://mu7.dev/')
+  core.info(
+    'Contact Umbraco Cloud support for website issues: https://www.s1.umbraco.io/projects'
+  )
+  core.info(
+    'Raise issues with the action here: https://github.com/mattou07/Our.UmbracoCloudAction/issues'
+  )
+
   core.endGroup()
 
   // Return combined outputs
