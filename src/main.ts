@@ -56,17 +56,19 @@ export async function runDeployPipeline(
     'targetEnvironmentAlias'
   ])
 
-  core.info('Step 1/3: Uploading artifact...')
+  core.startGroup('Step 1/3: Uploading artifact...')
   const artifactOutputs = await handleAddArtifact(api, inputs)
   const artifactId = artifactOutputs.artifactId
 
   if (!artifactId) {
+    core.endGroup()
     throw new Error('Artifact upload failed: no artifactId returned')
   }
 
   core.info(`Artifact uploaded successfully: ${artifactId}`)
+  core.endGroup()
 
-  core.info('Step 2/3: Starting deployment...')
+  core.startGroup('Step 2/3: Starting deployment...')
   const deployInputs: ActionInputs = {
     ...inputs,
     artifactId
@@ -75,12 +77,14 @@ export async function runDeployPipeline(
   const deploymentId = deploymentOutputs.deploymentId
 
   if (!deploymentId) {
+    core.endGroup()
     throw new Error('Deployment start failed: no deploymentId returned')
   }
 
   core.info(`Deployment started successfully: ${deploymentId}`)
+  core.endGroup()
 
-  core.info('Step 3/3: Verifying deployment status...')
+  core.startGroup('Step 3/3: Verifying deployment status...')
   const statusInputs: ActionInputs = {
     ...inputs,
     deploymentId
@@ -88,6 +92,7 @@ export async function runDeployPipeline(
   const statusOutputs = await handleCheckStatus(api, statusInputs)
 
   core.info(`Deployment pipeline complete`)
+  core.endGroup()
 
   // Return combined outputs
   return {
