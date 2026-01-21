@@ -56,17 +56,15 @@ export async function runDeployPipeline(
     'targetEnvironmentAlias'
   ])
 
-  core.startGroup('Step 1/3: Uploading artifact...')
+  core.info('Step 1/3: Uploading artifact...')
   const artifactOutputs = await handleAddArtifact(api, inputs)
   const artifactId = artifactOutputs.artifactId
 
   if (!artifactId) {
-    core.endGroup()
     throw new Error('Artifact upload failed: no artifactId returned')
   }
 
   core.info(`Artifact uploaded successfully: ${artifactId}`)
-  core.endGroup()
 
   core.startGroup('Step 2/3: Starting deployment...')
   const deployInputs: ActionInputs = {
