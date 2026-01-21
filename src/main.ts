@@ -89,7 +89,12 @@ export async function runDeployPipeline(
   }
   const statusOutputs = await handleCheckStatus(api, statusInputs)
 
-  core.info(`Deployment pipeline complete`)
+  const green = '\x1b[32m'
+  const reset = '\x1b[0m'
+  core.info(
+    `${green}Deployment pipeline to Umbraco Cloud complete #h5yr 🎉 ${reset}`
+  )
+  core.info('Find me at: https://mu7.dev/')
   core.endGroup()
 
   // Return combined outputs
