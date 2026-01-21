@@ -66,7 +66,7 @@ export async function runDeployPipeline(
 
   core.info(`Artifact uploaded successfully: ${artifactId}`)
 
-  core.info('Step 2/3: Starting deployment...')
+  core.startGroup('Step 2/3: Starting deployment...')
   const deployInputs: ActionInputs = {
     ...inputs,
     artifactId
@@ -75,19 +75,37 @@ export async function runDeployPipeline(
   const deploymentId = deploymentOutputs.deploymentId
 
   if (!deploymentId) {
+    core.endGroup()
     throw new Error('Deployment start failed: no deploymentId returned')
   }
 
   core.info(`Deployment started successfully: ${deploymentId}`)
+  core.endGroup()
 
-  core.info('Step 3/3: Verifying deployment status...')
+  core.startGroup('Step 3/3: Verifying deployment status...')
   const statusInputs: ActionInputs = {
     ...inputs,
     deploymentId
   }
   const statusOutputs = await handleCheckStatus(api, statusInputs)
 
-  core.info(`Deployment pipeline complete`)
+  const green = '\x1b[32m'
+  const reset = '\x1b[0m'
+  core.info(
+    `${green}Deployment pipeline to Umbraco Cloud complete #h5yr 🎉 ${reset}`
+  )
+  core.info(
+    'Made at: https://www.crumpled-dog.com/ thank them for providing me the resources to put this together 🐕!'
+  )
+  core.info('You can find me at: https://mu7.dev/')
+  core.info(
+    'Contact Umbraco Cloud support for website issues: https://www.s1.umbraco.io/projects'
+  )
+  core.info(
+    'Raise issues with the action here: https://github.com/mattou07/Our.UmbracoCloudAction/issues'
+  )
+
+  core.endGroup()
 
   // Return combined outputs
   return {
