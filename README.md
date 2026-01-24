@@ -1,7 +1,8 @@
 # Our Umbraco Cloud Action
 
-This aims to be a comprehensive package for deploying to Umbraco Cloud API CI/CD with full
-deployment management capabilities. Based on the scripts from the
+This aims to be a comprehensive GitHub action for deploying to Umbraco Cloud API
+v2 CI/CD with full deployment management capabilities. Based on the scripts from
+the
 [documentation](https://docs.umbraco.com/umbraco-cloud/build-and-customize-your-solution/handle-deployments-and-environments/umbraco-cicd/umbracocloudapi).
 
 The purpose is to have one centralised place to faciliate deployments without
@@ -10,16 +11,17 @@ set out of the box!
 
 ## Quick Start
 
-Use the following full YAML snippet below to get started. Everyone builds
-differently so pick and choose what you need from the snippet. However to
-minimise issues try not to change the Build or Publish sections too much!
+Use the full YAML snippet below to get started. Everyone builds differently so
+pick and choose what you need from the snippet. However to minimise issues try
+not to change the Build or Publish sections too much!
 
 Comments have been added to help you pick and choose.
 
 ```yaml
 name: Build and deploy to Umbraco Cloud Staging
 
-# Tell Github to cancel an active build if a new commit is added
+# Tell GitHub to cancel an active build if a new commit is added
+# Please note Umbraco CI/CD does not support stopping active deployments
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
 
@@ -43,7 +45,7 @@ jobs:
       cloudsource-artifact:
         ${{ steps.set-artifact-prefix.outputs.ARTIFACT_PREFIX }}.cloudsource-${{
         github.run_number }}
-      # Remove semver if you remove git version steps
+      # Remove semver if you don't need gitversion
       semver: ${{ steps.gitversion.outputs.semVer }}
       commit-timestamp: ${{ steps.committimestamp.outputs.COMMIT_TIMESTAMP }}
 
@@ -83,7 +85,7 @@ jobs:
 
       #=============================================================
 
-      # Don't remove this is used to determine the .NET project path from the .umbraco file
+      # Don't remove this. Its used to determine the .NET project path from the .umbraco file
       - name: Get DotNet Base Project Path
         id: get-base-path
         shell: bash
@@ -124,7 +126,7 @@ jobs:
           cd output
           zip ./frontend.zip ./ -r
 
-      #This is used in the backend build process to merge compiled frontend and backend code together
+      #This is used by the build backend process to merge compiled frontend and backend code together
       - name: Create artifact
         uses: actions/upload-artifact@v4
         with:
@@ -133,7 +135,7 @@ jobs:
             github.run_number }}
           path: |
             ${{needs.setup.outputs.dotnet-base-path}}/output/frontend.zip
-          retention-days: 5
+          retention-days: 1
 
   build-be:
     name: Build and test back end
@@ -144,10 +146,10 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Used for Github private nuget feed access during the build process
+      # Used for GitHub private nuget feed access during the build process
       - name: Add GitHub Package Registry
         run: |
-          dotnet nuget add source --username USERNAME --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github ${{vars.CRUMPLED_PACKAGE_FEED_URL}}
+          dotnet nuget add source --username USERNAME --password ${{ secrets.GITHUB_TOKEN }} --store-password-in-clear-text --name github ${{vars.PACKAGE_FEED_URL}}
 
       - name: Cache NuGet
         id: nuget-packages
@@ -194,7 +196,7 @@ jobs:
           unzip -o -d ${{ needs.setup.outputs.dotnet-base-path }} ${{ github.workspace }}/built_frontend/frontend.zip
           rm ${{ github.workspace }}/built_frontend/frontend.zip
 
-      # Clean out node_modules folders since RCL's are more in use
+      # Clean out node_modules folders from RCL's (Razor Class Libraries)
       - name: Clear NPM Modules
         shell: bash
         run: find . -name "node_modules" -type d -prune -exec rm -rf '{}' +
@@ -224,9 +226,9 @@ jobs:
           name: final-website-cloudsource-${{ github.run_number }}
 
       # This step will modify and upload the cloudsource zip to Umbraco Cloud
-      - name: Upload Deployment Artifact
-        id: upload-artifact
-        uses: mattou07/Our.UmbracoCloudAction@main
+      - name: Start Deployment to Umbraco Cloud
+        id: deploy-umbraco
+        uses: mattou07/Our.UmbracoCloudAction@v1
         with:
           projectId: ${{ vars.UMBRACO_CLOUD_PROJECT_ID }}
           apiKey: ${{ secrets.UMBRACO_CLOUD_API_KEY }}
@@ -237,15 +239,16 @@ jobs:
           # Declare a single private nuget feed here. Multiple private feeds are not supported - yet.
           nuget-source-name: 'github'
           nuget-source-url: ${{ vars.PACKAGE_FEED_URL }}
-          #This can be left as is for Github Private feeds
+          #This can be left as is for GitHub Private feeds
           nuget-source-username: 'USERNAME'
           #Here we are using secrets set on Umbraco Cloud - Create a secret called PACKAGE_VIEW_TOKEN with a PAT token inside with read access to packages
           nuget-source-password: '%PACKAGE_VIEW_TOKEN%'
           #==============================================================================
-          #Option to remove items in the zip file. This keeps the Umbraco Cloud repo clean. Typical things to remove are RCL bin or obj folders and unbuilt front end files such as sass.
+          #Option to remove items in the zip file. This keeps the Umbraco Cloud repo cleaner. Typical things to remove are RCL bin or obj folders and unbuilt front end files such as sass/scss.
           excluded-paths: '.git/,.github/,src/Client.RCLProject/bin,src/Client.RCLProject/obj,src/Client.FrontEnd'
           #Possible alias are: dev, stage or live
           targetEnvironmentAlias: 'dev'
+          # Setting this to true can speed up deployments but disables Umbraco's build validation
           noBuildAndRestore: false
           skipVersionCheck: false
           timeoutSeconds: 3200
@@ -253,13 +256,15 @@ jobs:
 
 ## Feature set
 
-- **Built with Flexible Environments in mind**: Use this action utilse the v2
+- **Built with Flexible Environments in mind**: Use this action utilses the v2
   API for separate deployment processes between your flexbible environment and
-  the mainline (Stage and Prod).
+  the mainline (Stage and Prod). Use `targetEnvironmentAlias: 'dev'` to
+  selecitively pick where you want to deploy to based on your critera such as
+  branch name.
 - **Automatic PR creation**: Retrieve and apply changes from Umbraco Cloud
-  between repos with automated pull requests
+  between repos with automated pull requests.
 - **Private Nuget Feed Injection**: NuGet.Config is searched and your private
-  feed is injected into the config.
+  feed is injected into the config for Umbraco's build agent to use.
 - **Built-in Git ignore replacement**: Action will automatically look for
   .cloud_gitignore and replace all .gitignore files in the artifact sent to
   cloud
@@ -353,5 +358,5 @@ for Production sites. If possible avoid deploying to `live` environments
 directly to avoid outages, unless you are on starter as there is no other
 option.
 
-Made with :heart: & with help from Github Copilot :robot: at
+Made with :heart: & with help from GitHub Copilot :robot: at
 [Crumpled Dog](https://www.crumpled-dog.com/) :dog:
