@@ -1,6 +1,6 @@
 # Our Umbraco Cloud Action
 
-This aims to be a comprehensive GitHub action for deploying to Umbraco Cloud API
+This aims to be a comprehensive GitHub Action for deploying to Umbraco Cloud API
 v2 CI/CD with full deployment management capabilities. Based on the scripts from
 the
 [documentation](https://docs.umbraco.com/umbraco-cloud/build-and-customize-your-solution/handle-deployments-and-environments/umbraco-cicd/umbracocloudapi).
