@@ -83,15 +83,14 @@ export interface DeploymentListResponse {
 export interface ActionInputs {
   projectId: string
   apiKey: string
-  action: string
+  filePath: string
+  targetEnvironmentAlias: string
   artifactId?: string
-  targetEnvironmentAlias?: string
   commitMessage?: string
   noBuildAndRestore?: boolean
   skipVersionCheck?: boolean
   deploymentId?: string
   timeoutSeconds?: number
-  filePath?: string
   description?: string
   version?: string
   changeId?: string

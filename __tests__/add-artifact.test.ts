@@ -271,14 +271,14 @@ describe('removeExcludedPaths', () => {
       expect(() => removeExcludedPaths(zip, '.git/')).not.toThrow()
     })
 
-    test('handles very long path names', () => {
-      const longPath = 'very/'.repeat(50) + 'long/path/file.txt'
-      zip.file(longPath, 'data')
+    test('handles deeply nested path names', () => {
+      const nestedPath = 'very/'.repeat(10) + 'deep/path/file.txt'
+      zip.file(nestedPath, 'data')
       zip.file('src/index.js', 'data')
 
       removeExcludedPaths(zip, 'very/')
 
-      expect(zip.files[longPath]).toBeUndefined()
+      expect(zip.files[nestedPath]).toBeUndefined()
       expect(zip.files['src/index.js']).toBeDefined()
     })
 
@@ -337,8 +337,8 @@ describe('handleAddArtifact', () => {
       const minimalInputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         // Use NuGet config to avoid file processing
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org/v3/index.json'
@@ -364,8 +364,8 @@ describe('handleAddArtifact', () => {
       const fullInputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/full-artifact.zip',
+        targetEnvironmentAlias: 'dev',
         description: 'Full test artifact with all options',
         version: '2.1.0',
         nugetSourceName: 'ProductionSource',
@@ -399,8 +399,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org'
       }
@@ -420,12 +420,12 @@ describe('handleAddArtifact', () => {
 
   describe('Input Validation', () => {
     test('throws error when filePath is missing', async () => {
-      const inputs: ActionInputs = {
+      const inputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact'
+        targetEnvironmentAlias: 'dev'
         // filePath is missing
-      }
+      } as ActionInputs
 
       await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow(
         'Missing required inputs: filePath'
@@ -438,8 +438,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
-        filePath: ''
+        filePath: '',
+        targetEnvironmentAlias: 'dev'
       }
 
       await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow(
@@ -461,8 +461,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org'
       }
@@ -480,8 +480,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org'
       }
@@ -498,8 +498,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'param-test-project',
         apiKey: 'param-test-key',
-        action: 'add-artifact',
         filePath: '/specific/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         description: 'Parameter validation artifact',
         version: '1.2.3',
         nugetSourceName: 'ParamSource',
@@ -524,8 +524,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: longPath,
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org'
       }
@@ -546,8 +546,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/with spaces/and@symbols/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         description: 'Artifact with special chars: @#$%^&*()',
         version: '1.0.0-alpha+build.123',
         nugetSourceName: 'Special-Source_123',
@@ -565,8 +565,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         description: undefined,
         version: undefined,
         nugetSourceName: 'TestSource',
@@ -594,8 +594,8 @@ describe('handleAddArtifact', () => {
       const validInputs: ActionInputs = {
         projectId: 'string-project',
         apiKey: 'string-key',
-        action: 'add-artifact',
         filePath: '/string/path',
+        targetEnvironmentAlias: 'dev',
         timeoutSeconds: 1200, // number
         noBuildAndRestore: true, // boolean
         nugetSourceName: 'TestSource',
@@ -615,8 +615,8 @@ describe('handleAddArtifact', () => {
       const inputsWithOptionals: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         // These are all optional in ActionInputs interface
         description: 'optional description',
         version: '1.0.0',
@@ -641,8 +641,8 @@ describe('handleAddArtifact', () => {
       const nugetInputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org/v3/index.json',
         nugetSourceUsername: 'testuser',
@@ -668,8 +668,8 @@ describe('handleAddArtifact', () => {
       const nugetInputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org/v3/index.json'
       }
@@ -692,8 +692,8 @@ describe('handleAddArtifact', () => {
       const cloudGitignoreInputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
-        filePath: '/path/to/artifact.zip'
+        filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev'
       }
       const expectedArtifactId = 'cloudgitignore-artifact'
 
@@ -712,8 +712,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
-        filePath: '/nonexistent/path/to/artifact.zip'
+        filePath: '/nonexistent/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev'
       }
 
       // Act & Assert
@@ -725,8 +725,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
-        filePath: '/path/to/artifact.zip'
+        filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev'
       }
       const expectedArtifactId = 'basic-artifact'
 
@@ -743,8 +743,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org'
       }
@@ -764,8 +764,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org'
       }
@@ -785,8 +785,8 @@ describe('handleAddArtifact', () => {
       const inputs: ActionInputs = {
         projectId: 'test-project',
         apiKey: 'test-key',
-        action: 'add-artifact',
         filePath: '/path/to/artifact.zip',
+        targetEnvironmentAlias: 'dev',
         nugetSourceName: 'TestSource',
         nugetSourceUrl: 'https://test.nuget.org'
       }

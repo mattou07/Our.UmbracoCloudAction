@@ -1,11 +1,10 @@
 import * as core from '@actions/core'
 import { UmbracoCloudAPI } from './api/umbraco-cloud-api.js'
+import { handleAddArtifact } from './actions/add-artifact.js'
 import { handleStartDeployment } from './actions/start-deployment.js'
 import { handleCheckStatus } from './actions/check-status.js'
-import { handleAddArtifact } from './actions/add-artifact.js'
-import { handleGetChanges } from './actions/get-changes.js'
-import { handleApplyPatch } from './actions/apply-patch.js'
-import { ActionInputs } from './types/index.js'
+import { ActionInputs, ActionOutputs } from './types/index.js'
+import { validateRequiredInputs } from './utils/helpers.js'
 
 /**
  * Gets all input values for the action
@@ -14,20 +13,18 @@ export function getActionInputs(): ActionInputs {
   return {
     projectId: core.getInput('projectId', { required: true }),
     apiKey: core.getInput('apiKey', { required: true }),
-    action: core.getInput('action', { required: true }),
     baseUrl: core.getInput('baseUrl') || 'https://api.cloud.umbraco.com',
-    artifactId: core.getInput('artifactId'),
-    targetEnvironmentAlias: core.getInput('targetEnvironmentAlias'),
+    filePath: core.getInput('filePath', { required: true }),
+    targetEnvironmentAlias: core.getInput('targetEnvironmentAlias', {
+      required: true
+    }),
     commitMessage:
       core.getInput('commitMessage') || 'Deployment from GitHub Actions',
     noBuildAndRestore: core.getBooleanInput('noBuildAndRestore'),
     skipVersionCheck: core.getBooleanInput('skipVersionCheck'),
-    deploymentId: core.getInput('deploymentId'),
     timeoutSeconds: parseInt(core.getInput('timeoutSeconds') || '1200', 10),
-    filePath: core.getInput('filePath'),
     description: core.getInput('description'),
     version: core.getInput('version'),
-    changeId: core.getInput('changeId'),
     baseBranch: core.getInput('baseBranch'),
     uploadRetries: parseInt(core.getInput('upload-retries') || '3', 10),
     uploadRetryDelay: parseInt(
@@ -40,6 +37,85 @@ export function getActionInputs(): ActionInputs {
     nugetSourceUsername: core.getInput('nuget-source-username'),
     nugetSourcePassword: core.getInput('nuget-source-password'),
     excludedPaths: core.getInput('excluded-paths') || '.git/,.github/'
+  }
+}
+
+/**
+ * Runs the full deployment pipeline: upload artifact → start deployment → check status
+ * This is the single code path for the action (v1 breaking change).
+ */
+export async function runDeployPipeline(
+  api: UmbracoCloudAPI,
+  inputs: ActionInputs
+): Promise<ActionOutputs> {
+  // Validate required inputs for the pipeline
+  validateRequiredInputs(inputs as unknown as Record<string, unknown>, [
+    'projectId',
+    'apiKey',
+    'filePath',
+    'targetEnvironmentAlias'
+  ])
+
+  core.info('Step 1/3: Uploading artifact...')
+  const artifactOutputs = await handleAddArtifact(api, inputs)
+  const artifactId = artifactOutputs.artifactId
+
+  if (!artifactId) {
+    throw new Error('Artifact upload failed: no artifactId returned')
+  }
+
+  core.info(`Artifact uploaded successfully: ${artifactId}`)
+
+  core.startGroup('Step 2/3: Starting deployment...')
+  const deployInputs: ActionInputs = {
+    ...inputs,
+    artifactId
+  }
+  const deploymentOutputs = await handleStartDeployment(api, deployInputs)
+  const deploymentId = deploymentOutputs.deploymentId
+
+  if (!deploymentId) {
+    core.endGroup()
+    throw new Error('Deployment start failed: no deploymentId returned')
+  }
+
+  core.info(`Deployment started successfully: ${deploymentId}`)
+  core.endGroup()
+
+  core.startGroup('Step 3/3: Verifying deployment status...')
+  const statusInputs: ActionInputs = {
+    ...inputs,
+    deploymentId
+  }
+  const statusOutputs = await handleCheckStatus(api, statusInputs)
+
+  const green = '\x1b[32m'
+  const reset = '\x1b[0m'
+  core.info(
+    `${green}Deployment pipeline to Umbraco Cloud complete #h5yr 🎉 ${reset}`
+  )
+  core.info(
+    'Made at: https://www.crumpled-dog.com/ thank them for providing me the resources to put this together 🐕!'
+  )
+  core.info('You can find me at: https://mu7.dev/')
+  core.info(
+    'Contact Umbraco Cloud support for website issues: https://www.s1.umbraco.io/projects'
+  )
+  core.info(
+    'Raise issues with the action here: https://github.com/mattou07/Our.UmbracoCloudAction/issues'
+  )
+
+  core.endGroup()
+
+  // Return combined outputs
+  return {
+    artifactId,
+    deploymentId,
+    deploymentState: statusOutputs.deploymentState,
+    deploymentStatus: statusOutputs.deploymentStatus,
+    changes: statusOutputs.changes,
+    prUrl: statusOutputs.prUrl,
+    prNumber: statusOutputs.prNumber
   }
 }
 
@@ -59,34 +135,9 @@ export async function run(): Promise<void> {
       inputs.baseUrl
     )
 
-    core.debug(`Executing action: ${inputs.action}`)
+    core.info('Starting Umbraco Cloud deployment pipeline...')
 
-    switch (inputs.action) {
-      case 'start-deployment':
-        await handleStartDeployment(api, inputs)
-        break
-
-      case 'check-status':
-        await handleCheckStatus(api, inputs)
-        break
-
-      case 'add-artifact':
-        await handleAddArtifact(api, inputs)
-        break
-
-      case 'get-changes':
-        await handleGetChanges(api, inputs)
-        break
-
-      case 'apply-patch':
-        await handleApplyPatch(api, inputs)
-        break
-
-      default:
-        core.setFailed(
-          `Unknown action: ${inputs.action}. Supported actions: start-deployment, check-status, add-artifact, get-changes, apply-patch`
-        )
-    }
+    await runDeployPipeline(api, inputs)
   } catch (error) {
     core.error(`Error running the action: ${error}`)
     if (error instanceof Error) {
