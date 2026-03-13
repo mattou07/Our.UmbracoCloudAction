@@ -110,5 +110,5 @@ outputs:
     description: 'Status of NuGet package source injection into artifact'
 
 runs:
-  using: node20
+  using: node24
   main: dist/index.js
