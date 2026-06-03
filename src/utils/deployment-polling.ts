@@ -1,5 +1,6 @@
 import * as core from '@actions/core'
 import { DeploymentResponse } from '../types/index.js'
+import { fetchWithApiLogging } from './api-logging.js'
 
 /**
  * Polls deployment status until completion or timeout
@@ -29,13 +30,23 @@ export async function pollDeploymentStatus(
 
       let response
       try {
-        response = await fetch(url, {
-          headers: {
-            'Umbraco-Cloud-Api-Key':
-              process.env.UMBRACO_CLOUD_API_KEY || apiKey,
-            'Content-Type': 'application/json'
+        response = await fetchWithApiLogging(
+          url,
+          {
+            headers: {
+              'Umbraco-Cloud-Api-Key':
+                process.env.UMBRACO_CLOUD_API_KEY || apiKey,
+              'Content-Type': 'application/json'
+            }
+          },
+          {
+            operation: 'pollDeploymentStatus',
+            metadata: {
+              deploymentId,
+              hasLastModifiedUtc: Boolean(lastModifiedUtc)
+            }
           }
-        })
+        )
       } catch (err) {
         core.warning(`Network error while polling deployment status: ${err}`)
         await new Promise((resolve) => setTimeout(resolve, intervalMs))

@@ -5,6 +5,10 @@ import { handleStartDeployment } from './actions/start-deployment.js'
 import { handleCheckStatus } from './actions/check-status.js'
 import { ActionInputs, ActionOutputs } from './types/index.js'
 import { validateRequiredInputs } from './utils/helpers.js'
+import {
+  initializeApiLogging,
+  uploadApiLogArtifactIfAvailable
+} from './utils/api-logging.js'
 
 /**
  * Gets all input values for the action
@@ -36,7 +40,11 @@ export function getActionInputs(): ActionInputs {
     nugetSourceUrl: core.getInput('nuget-source-url'),
     nugetSourceUsername: core.getInput('nuget-source-username'),
     nugetSourcePassword: core.getInput('nuget-source-password'),
-    excludedPaths: core.getInput('excluded-paths') || '.git/,.github/'
+    excludedPaths: core.getInput('excluded-paths') || '.git/,.github/',
+    enableApiLogging:
+      core.getInput('enable-api-logging').toLowerCase() === 'true',
+    apiLogArtifactName:
+      core.getInput('api-log-artifact-name') || 'umbraco-cloud-api-log'
   }
 }
 
@@ -125,8 +133,15 @@ export async function runDeployPipeline(
  * @returns Resolves when the action is complete.
  */
 export async function run(): Promise<void> {
+  let loggingConfigured = false
+
   try {
     const inputs = getActionInputs()
+    initializeApiLogging(
+      inputs.enableApiLogging || false,
+      inputs.apiLogArtifactName
+    )
+    loggingConfigured = true
 
     // Initialize API client
     const api = new UmbracoCloudAPI(
@@ -144,6 +159,14 @@ export async function run(): Promise<void> {
       core.setFailed(error.message)
     } else {
       core.setFailed('An unknown error occurred')
+    }
+  } finally {
+    if (loggingConfigured) {
+      try {
+        await uploadApiLogArtifactIfAvailable()
+      } catch (uploadError) {
+        core.warning(`Failed to upload API log artifact: ${uploadError}`)
+      }
     }
   }
 }

@@ -86,6 +86,16 @@ inputs:
       repository only, no ".." or absolute paths are allowed.'
     required: false
     default: '.git/,.github/'
+  enable-api-logging:
+    description:
+      'Enable newline-delimited JSON logging for Umbraco Cloud API requests and
+      responses'
+    required: false
+    default: 'true'
+  api-log-artifact-name:
+    description: 'Artifact name used when uploading the API NDJSON log file'
+    required: false
+    default: 'umbraco-cloud-api-log'
 
 # Define your outputs here.
 outputs:
