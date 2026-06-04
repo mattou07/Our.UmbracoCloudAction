@@ -8,6 +8,7 @@ import {
   DeploymentListResponse
 } from '../types/index.js'
 import { sleep } from '../utils/helpers.js'
+import { fetchWithApiLogging } from '../utils/api-logging.js'
 
 export class UmbracoCloudAPI {
   private baseUrl: string
@@ -113,11 +114,20 @@ export class UmbracoCloudAPI {
     core.debug(`Request body: ${JSON.stringify(request)}`)
 
     const originalRequest = async (): Promise<string> => {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(request)
-      })
+      const response = await fetchWithApiLogging(
+        url,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(request)
+        },
+        {
+          operation: 'startDeployment',
+          metadata: {
+            targetEnvironmentAlias: request.targetEnvironmentAlias
+          }
+        }
+      )
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -138,11 +148,20 @@ export class UmbracoCloudAPI {
         targetEnvironmentAlias: request.targetEnvironmentAlias.toLowerCase()
       }
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(retryRequestData)
-      })
+      const response = await fetchWithApiLogging(
+        url,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(retryRequestData)
+        },
+        {
+          operation: 'startDeployment-lowercase-retry',
+          metadata: {
+            targetEnvironmentAlias: retryRequestData.targetEnvironmentAlias
+          }
+        }
+      )
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -188,10 +207,20 @@ export class UmbracoCloudAPI {
 
       try {
         const response = await this.retryWithRateLimit(async () => {
-          const res = await fetch(url, {
-            method: 'GET',
-            headers: this.getHeaders()
-          })
+          const res = await fetchWithApiLogging(
+            url,
+            {
+              method: 'GET',
+              headers: this.getHeaders()
+            },
+            {
+              operation: 'checkDeploymentStatus',
+              metadata: {
+                deploymentId,
+                run
+              }
+            }
+          )
 
           if (!res.ok) {
             const errorText = await res.text()
@@ -304,15 +333,25 @@ export class UmbracoCloudAPI {
         const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
         try {
-          const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-              'Umbraco-Cloud-Api-Key': this.apiKey
-              // Don't set Content-Type, let fetch set it for FormData
+          const response = await fetchWithApiLogging(
+            url,
+            {
+              method: 'POST',
+              headers: {
+                'Umbraco-Cloud-Api-Key': this.apiKey
+                // Don't set Content-Type, let fetch set it for FormData
+              },
+              body: formData,
+              signal: controller.signal
             },
-            body: formData,
-            signal: controller.signal
-          })
+            {
+              operation: 'addDeploymentArtifact',
+              metadata: {
+                fileName,
+                attempt
+              }
+            }
+          )
 
           clearTimeout(timeoutId)
 
@@ -381,10 +420,20 @@ export class UmbracoCloudAPI {
       requestUrl: string,
       label: string
     ): Promise<ChangesResponse> => {
-      const response = await fetch(requestUrl, {
-        method: 'GET',
-        headers: this.getHeaders()
-      })
+      const response = await fetchWithApiLogging(
+        requestUrl,
+        {
+          method: 'GET',
+          headers: this.getHeaders()
+        },
+        {
+          operation: `getChangesById${label}`,
+          metadata: {
+            deploymentId,
+            targetEnvironmentAlias
+          }
+        }
+      )
 
       if (response.status === 204) {
         return { changes: '' } // No changes
@@ -469,11 +518,21 @@ export class UmbracoCloudAPI {
         targetEnvironmentAlias
       }
 
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: this.getHeaders(),
-        body: JSON.stringify(requestBody)
-      })
+      const response = await fetchWithApiLogging(
+        url,
+        {
+          method: 'POST',
+          headers: this.getHeaders(),
+          body: JSON.stringify(requestBody)
+        },
+        {
+          operation: 'applyPatch',
+          metadata: {
+            changeId,
+            targetEnvironmentAlias
+          }
+        }
+      )
 
       if (!response.ok) {
         const errorText = await response.text()
@@ -504,10 +563,22 @@ export class UmbracoCloudAPI {
     core.debug(`Getting deployments from: ${url}`)
 
     const request = async () => {
-      const response = await fetch(url, {
-        method: 'GET',
-        headers: this.getHeaders()
-      })
+      const response = await fetchWithApiLogging(
+        url,
+        {
+          method: 'GET',
+          headers: this.getHeaders()
+        },
+        {
+          operation: 'getDeployments',
+          metadata: {
+            skip,
+            take,
+            includeNullDeployments,
+            targetEnvironmentAlias
+          }
+        }
+      )
 
       if (!response.ok) {
         const errorText = await response.text()

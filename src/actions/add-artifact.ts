@@ -263,8 +263,21 @@ async function validateArtifactGitRepository(filePath: string): Promise<void> {
       fs.mkdirSync(validationDir, { recursive: true })
     }
 
-    // Extract zip to validation directory
-    await exec.exec('unzip', ['-q', filePath, '-d', validationDir])
+    // Extract zip to validation directory using JSZip (cross-platform)
+    const zipData = fs.readFileSync(filePath)
+    const zip = await JSZip.loadAsync(zipData)
+    const extractPromises = Object.keys(zip.files).map(async (relativePath) => {
+      const zipEntry = zip.files[relativePath]
+      const destPath = path.join(validationDir, relativePath)
+      if (zipEntry.dir) {
+        fs.mkdirSync(destPath, { recursive: true })
+      } else {
+        fs.mkdirSync(path.dirname(destPath), { recursive: true })
+        const content = await zipEntry.async('nodebuffer')
+        fs.writeFileSync(destPath, content)
+      }
+    })
+    await Promise.all(extractPromises)
 
     // Validate git repository
     await validateGitRepository(validationDir, 'in artifact')
