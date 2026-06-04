@@ -104,6 +104,8 @@ export interface ActionInputs {
   nugetSourceUsername?: string
   nugetSourcePassword?: string
   excludedPaths?: string
+  enableApiLogging?: boolean
+  apiLogArtifactName?: string
 }
 
 export interface ActionOutputs {
