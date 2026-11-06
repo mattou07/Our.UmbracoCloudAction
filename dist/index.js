@@ -198203,7 +198203,9 @@ function initializeApiLogging(enabled, configuredArtifactName) {
         logFilePath = '';
         return;
     }
-    const baseDir = process.env.RUNNER_TEMP || process.cwd();
+    // Outside a runner (e.g. local-action) use the OS temp dir rather than the
+    // working directory, so the log never lands inside the user's repository.
+    const baseDir = process.env.RUNNER_TEMP || require$$0$5.tmpdir();
     const fileName = `umbraco-cloud-api-${Date.now()}.ndjson`;
     logFilePath = path$1.join(baseDir, fileName);
     fs.mkdirSync(path$1.dirname(logFilePath), { recursive: true });
@@ -198286,6 +198288,12 @@ class UmbracoCloudApiError extends Error {
         this.retryAfterSeconds = retryAfterSeconds;
     }
 }
+/**
+ * Status messages worth surfacing when a deployment fails. Cloud reports some
+ * failures without the word "error", e.g. "Cannot apply update because the
+ * following packages would be downgraded: ...".
+ */
+const ERROR_MESSAGE_PATTERN = /error|fail|exception|cannot|could not|unable to|downgrad/i;
 const ENVIRONMENT_ALIAS_ERRORS = [
     'No environments matches the provided alias',
     'Unable to resolve target environment by Alias'
@@ -198534,7 +198542,7 @@ class UmbracoCloudAPI {
         try {
             const deployment = await this.getDeploymentStatus(deploymentId);
             return (deployment.deploymentStatusMessages || [])
-                .filter((msg) => /error|failed|exception/i.test(msg.message))
+                .filter((msg) => ERROR_MESSAGE_PATTERN.test(msg.message))
                 .map((msg) => `[${msg.timestampUtc}] ${msg.message}`);
         }
         catch (error) {

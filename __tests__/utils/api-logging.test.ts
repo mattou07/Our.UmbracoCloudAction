@@ -100,6 +100,18 @@ describe('api-logging', () => {
       apiLogging.initializeApiLogging(true, 'my-artifact')
     })
 
+    it('falls back to the OS temp dir, not the cwd, without RUNNER_TEMP', () => {
+      delete process.env.RUNNER_TEMP
+      apiLogging.initializeApiLogging(true, 'my-artifact')
+      const logPath = apiLogging.getApiLogPath()
+      try {
+        expect(path.dirname(logPath)).toBe(os.tmpdir())
+        expect(path.dirname(logPath)).not.toBe(process.cwd())
+      } finally {
+        fs.rmSync(logPath, { force: true })
+      }
+    })
+
     it('creates the log file under RUNNER_TEMP', () => {
       expect(apiLogging.isApiLoggingEnabled()).toBe(true)
       const logPath = apiLogging.getApiLogPath()

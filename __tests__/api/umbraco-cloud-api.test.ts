@@ -468,7 +468,13 @@ describe('UmbracoCloudAPI', () => {
             { timestampUtc: 't1', message: 'Build started' },
             { timestampUtc: 't2', message: 'Build FAILED' },
             { timestampUtc: 't3', message: 'An error occurred' },
-            { timestampUtc: 't4', message: 'NullReferenceException thrown' }
+            { timestampUtc: 't4', message: 'NullReferenceException thrown' },
+            {
+              timestampUtc: 't5',
+              message:
+                'Cannot apply update because the following packages would be downgraded: Package: Umbraco.Cms'
+            },
+            { timestampUtc: 't6', message: 'Deployment pending' }
           ]
         })
       )
@@ -476,7 +482,8 @@ describe('UmbracoCloudAPI', () => {
       await expect(api().getDeploymentErrorDetails('d1')).resolves.toEqual([
         '[t2] Build FAILED',
         '[t3] An error occurred',
-        '[t4] NullReferenceException thrown'
+        '[t4] NullReferenceException thrown',
+        '[t5] Cannot apply update because the following packages would be downgraded: Package: Umbraco.Cms'
       ])
       expect(calledUrl()).toBe(`${BASE}/deployments/d1`)
     })

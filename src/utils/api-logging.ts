@@ -1,5 +1,6 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import { DefaultArtifactClient } from '@actions/artifact'
 
@@ -164,7 +165,9 @@ export function initializeApiLogging(
     return
   }
 
-  const baseDir = process.env.RUNNER_TEMP || process.cwd()
+  // Outside a runner (e.g. local-action) use the OS temp dir rather than the
+  // working directory, so the log never lands inside the user's repository.
+  const baseDir = process.env.RUNNER_TEMP || os.tmpdir()
   const fileName = `umbraco-cloud-api-${Date.now()}.ndjson`
   logFilePath = path.join(baseDir, fileName)
 

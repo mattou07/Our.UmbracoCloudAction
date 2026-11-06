@@ -45,6 +45,14 @@ export interface UmbracoCloudApiOptions {
   rateLimitBaseDelayMs?: number
 }
 
+/**
+ * Status messages worth surfacing when a deployment fails. Cloud reports some
+ * failures without the word "error", e.g. "Cannot apply update because the
+ * following packages would be downgraded: ...".
+ */
+const ERROR_MESSAGE_PATTERN =
+  /error|fail|exception|cannot|could not|unable to|downgrad/i
+
 const ENVIRONMENT_ALIAS_ERRORS = [
   'No environments matches the provided alias',
   'Unable to resolve target environment by Alias'
@@ -455,7 +463,7 @@ export class UmbracoCloudAPI {
     try {
       const deployment = await this.getDeploymentStatus(deploymentId)
       return (deployment.deploymentStatusMessages || [])
-        .filter((msg) => /error|failed|exception/i.test(msg.message))
+        .filter((msg) => ERROR_MESSAGE_PATTERN.test(msg.message))
         .map((msg) => `[${msg.timestampUtc}] ${msg.message}`)
     } catch (error) {
       core.debug(`Could not retrieve deployment error details: ${error}`)
