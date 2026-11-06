@@ -191,6 +191,37 @@ describe('UmbracoCloudAPI', () => {
         `${BASE}/deployments/d%201?lastModifiedUtc=2024-01-01T00%3A00%3A00%2B00%3A00`
       )
     })
+
+    it('strips SAS signatures from status message links', async () => {
+      fetchMock.mockResolvedValue(
+        json({
+          deploymentId: 'd1',
+          deploymentState: 'Failed',
+          deploymentStatusMessages: [
+            {
+              timestampUtc: 't1',
+              message:
+                'Error restoring packages. Restore log: https://logs.blob.core.windows.net/logs/d1/restore.txt?sv=2025-07-05&se=2027-02-04&sr=b&sp=r&sig=AbC%2Bsecret%3D'
+            },
+            {
+              timestampUtc: 't2',
+              message: 'See https://docs.umbraco.com/page?tab=cloud'
+            }
+          ]
+        })
+      )
+
+      const data = await api().getDeploymentStatus('d1')
+
+      expect(data.deploymentStatusMessages[0].message).toBe(
+        'Error restoring packages. Restore log: https://logs.blob.core.windows.net/logs/d1/restore.txt?[redacted]'
+      )
+      expect(JSON.stringify(data)).not.toContain('sig=')
+      // Unsigned links are left alone
+      expect(data.deploymentStatusMessages[1].message).toBe(
+        'See https://docs.umbraco.com/page?tab=cloud'
+      )
+    })
   })
 
   describe('addDeploymentArtifact', () => {

@@ -198094,24 +198094,30 @@ function requireArtifact () {
 
 var artifactExports = requireArtifact();
 
+const REDACTED = '[redacted]';
+// Any http(s) URL followed by a query string
+const URL_WITH_QUERY_PATTERN = /(https?:\/\/[^\s"'<>?#]+)\?[^\s"'<>]*/gi;
+// A SAS-style signature parameter inside a query string
+const SAS_SIGNATURE_PATTERN = /(^|[?&])sig=/i;
+/**
+ * Strips the query string from any URL in the text that carries a `sig=`
+ * signature (e.g. Azure SAS links to Cloud restore logs or artifacts), so the
+ * link stays recognisable but can no longer be used to read the resource.
+ */
+function redactSignedUrls(value) {
+    return value.replace(URL_WITH_QUERY_PATTERN, (match, base) => {
+        const query = match.slice(base.length + 1);
+        return SAS_SIGNATURE_PATTERN.test(query) ? `${base}?${REDACTED}` : match;
+    });
+}
+
 const DEFAULT_ARTIFACT_NAME = 'umbraco-cloud-api-log';
 const MAX_LOGGED_BODY_LENGTH = 100_000;
 let loggingEnabled = false;
 let logFilePath = '';
 let artifactName = DEFAULT_ARTIFACT_NAME;
-const REDACTED = '[redacted]';
-// URLs whose query string carries a SAS-style signature (sig=...)
-const SIGNED_URL_PATTERN = /(https?:\/\/[^\s"'<>?#]+)\?[^\s"'<>]*/gi;
-const SAS_SIGNATURE_PATTERN = /(^|[?&])sig=/i;
 // Fallback for bodies that could not be parsed (e.g. truncated JSON)
 const RAW_BLOB_URL_PATTERN = /("blobUrl"\s*:\s*)"(?:[^"\\]|\\.)*"/gi;
-/** Strips the query string from any URL in the text that carries `sig=`. */
-function redactSignedUrls(value) {
-    return value.replace(SIGNED_URL_PATTERN, (match, base) => {
-        const query = match.slice(base.length + 1);
-        return SAS_SIGNATURE_PATTERN.test(query) ? `${base}?${REDACTED}` : match;
-    });
-}
 function redactString(value) {
     return redactSignedUrls(value.replace(RAW_BLOB_URL_PATTERN, `$1"${REDACTED}"`));
 }
@@ -198420,7 +198426,14 @@ class UmbracoCloudAPI {
             : '';
         const url = `${this.projectUrl}/deployments/${encodeURIComponent(deploymentId)}${query}`;
         const response = await this.retryWithRateLimit(() => this.send(url, { method: 'GET', headers: this.getHeaders() }, 'getDeploymentStatus', 'Failed to get deployment status', { deploymentId, hasLastModifiedUtc: Boolean(lastModifiedUtc) }));
-        return (await response.json());
+        const data = (await response.json());
+        // Cloud status messages can contain signed (SAS) links, e.g. to the NuGet
+        // restore log. They end up in job logs, outputs and PR bodies, so strip
+        // the signature before anything else sees them.
+        if (Array.isArray(data.deploymentStatusMessages)) {
+            data.deploymentStatusMessages = data.deploymentStatusMessages.map((msg) => ({ ...msg, message: redactSignedUrls(msg.message ?? '') }));
+        }
+        return data;
     }
     async addDeploymentArtifact(filePath, description, version) {
         const url = `${this.projectUrl}/deployments/artifacts`;
@@ -224093,6 +224106,9 @@ async function pollDeploymentStatus(api, deploymentId, maxDurationMs = 20 * 60 *
     const deadline = start + maxDurationMs;
     let lastModifiedUtc;
     let markerWarningShown = false;
+    // Cloud returns messages *at or after* lastModifiedUtc, so the boundary
+    // message comes back on every poll. Track what we've printed.
+    const printedMessages = new Set();
     const timeoutMinutes = Math.round(maxDurationMs / 60000);
     coreExports.info(`Polling deployment status (timeout: ${timeoutMinutes} minutes, interval: ${intervalMs}ms)`);
     while (Date.now() < deadline) {
@@ -224113,6 +224129,10 @@ async function pollDeploymentStatus(api, deploymentId, maxDurationMs = 20 * 60 *
             const elapsedMinutes = Math.round((Date.now() - start) / 60000);
             coreExports.info(`Deployment status: ${data.deploymentState} (elapsed: ${elapsedMinutes}m, timeout: ${timeoutMinutes}m)`);
             for (const msg of data.deploymentStatusMessages || []) {
+                const key = `${msg.timestampUtc}|${msg.message}`;
+                if (printedMessages.has(key))
+                    continue;
+                printedMessages.add(key);
                 coreExports.info(`[${msg.timestampUtc}] ${msg.message}`);
             }
             if (!markerWarningShown &&

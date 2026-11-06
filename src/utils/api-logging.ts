@@ -3,6 +3,7 @@ import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
 import { DefaultArtifactClient } from '@actions/artifact'
+import { REDACTED, redactSignedUrls } from './redact.js'
 
 const DEFAULT_ARTIFACT_NAME = 'umbraco-cloud-api-log'
 const MAX_LOGGED_BODY_LENGTH = 100_000
@@ -31,21 +32,8 @@ let loggingEnabled = false
 let logFilePath = ''
 let artifactName = DEFAULT_ARTIFACT_NAME
 
-const REDACTED = '[redacted]'
-
-// URLs whose query string carries a SAS-style signature (sig=...)
-const SIGNED_URL_PATTERN = /(https?:\/\/[^\s"'<>?#]+)\?[^\s"'<>]*/gi
-const SAS_SIGNATURE_PATTERN = /(^|[?&])sig=/i
 // Fallback for bodies that could not be parsed (e.g. truncated JSON)
 const RAW_BLOB_URL_PATTERN = /("blobUrl"\s*:\s*)"(?:[^"\\]|\\.)*"/gi
-
-/** Strips the query string from any URL in the text that carries `sig=`. */
-function redactSignedUrls(value: string): string {
-  return value.replace(SIGNED_URL_PATTERN, (match, base: string) => {
-    const query = match.slice(base.length + 1)
-    return SAS_SIGNATURE_PATTERN.test(query) ? `${base}?${REDACTED}` : match
-  })
-}
 
 function redactString(value: string): string {
   return redactSignedUrls(

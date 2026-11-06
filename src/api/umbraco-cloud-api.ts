@@ -10,6 +10,7 @@ import {
 } from '../types/index.js'
 import { sleep } from '../utils/helpers.js'
 import { fetchWithApiLogging } from '../utils/api-logging.js'
+import { redactSignedUrls } from '../utils/redact.js'
 
 export const DEFAULT_BASE_URL = 'https://api.cloud.umbraco.com'
 
@@ -259,7 +260,16 @@ export class UmbracoCloudAPI {
       )
     )
 
-    return (await response.json()) as DeploymentResponse
+    const data = (await response.json()) as DeploymentResponse
+    // Cloud status messages can contain signed (SAS) links, e.g. to the NuGet
+    // restore log. They end up in job logs, outputs and PR bodies, so strip
+    // the signature before anything else sees them.
+    if (Array.isArray(data.deploymentStatusMessages)) {
+      data.deploymentStatusMessages = data.deploymentStatusMessages.map(
+        (msg) => ({ ...msg, message: redactSignedUrls(msg.message ?? '') })
+      )
+    }
+    return data
   }
 
   async addDeploymentArtifact(

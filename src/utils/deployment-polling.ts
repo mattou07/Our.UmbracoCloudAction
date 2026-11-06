@@ -41,6 +41,9 @@ export async function pollDeploymentStatus(
   const deadline = start + maxDurationMs
   let lastModifiedUtc: string | undefined
   let markerWarningShown = false
+  // Cloud returns messages *at or after* lastModifiedUtc, so the boundary
+  // message comes back on every poll. Track what we've printed.
+  const printedMessages = new Set<string>()
 
   const timeoutMinutes = Math.round(maxDurationMs / 60000)
   core.info(
@@ -70,6 +73,9 @@ export async function pollDeploymentStatus(
       )
 
       for (const msg of data.deploymentStatusMessages || []) {
+        const key = `${msg.timestampUtc}|${msg.message}`
+        if (printedMessages.has(key)) continue
+        printedMessages.add(key)
         core.info(`[${msg.timestampUtc}] ${msg.message}`)
       }
 

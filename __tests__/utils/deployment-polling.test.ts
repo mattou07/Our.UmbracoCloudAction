@@ -3,9 +3,10 @@ import type { DeploymentResponse } from '../../src/types/index.js'
 
 const sleepMock = jest.fn<(ms: number) => Promise<void>>()
 const warning = jest.fn()
+const info = jest.fn()
 
 jest.unstable_mockModule('@actions/core', () => ({
-  info: jest.fn(),
+  info,
   warning,
   debug: jest.fn(),
   error: jest.fn()
@@ -51,6 +52,7 @@ describe('pollDeploymentStatus', () => {
     sleepMock.mockReset()
     sleepMock.mockResolvedValue(undefined)
     warning.mockReset()
+    info.mockReset()
   })
 
   function poll(maxDurationMs = 60_000, intervalMs = 1000) {
@@ -61,6 +63,44 @@ describe('pollDeploymentStatus', () => {
       intervalMs
     )
   }
+
+  it('prints each status message once even when Cloud repeats the boundary message', async () => {
+    // Cloud returns messages at-or-after lastModifiedUtc, so the last message
+    // of one poll comes back as the first message of the next.
+    const boundary = { timestampUtc: 't1', message: 'NuGet Restore' }
+    getDeploymentStatus
+      .mockResolvedValueOnce({
+        ...status('InProgress', 't1'),
+        deploymentStatusMessages: [
+          { timestampUtc: 't0', message: 'Git Commit' },
+          boundary
+        ]
+      })
+      .mockResolvedValueOnce({
+        ...status('InProgress', 't2'),
+        deploymentStatusMessages: [
+          boundary,
+          { timestampUtc: 't2', message: 'Dotnet Build' }
+        ]
+      })
+      .mockResolvedValueOnce({
+        ...status('Completed', 't2'),
+        deploymentStatusMessages: [
+          { timestampUtc: 't2', message: 'Dotnet Build' }
+        ]
+      })
+
+    await poll()
+
+    const printed = info.mock.calls
+      .map((c) => c[0] as string)
+      .filter((line) => line.startsWith('[t'))
+    expect(printed).toEqual([
+      '[t0] Git Commit',
+      '[t1] NuGet Restore',
+      '[t2] Dotnet Build'
+    ])
+  })
 
   it('returns when the deployment completes', async () => {
     const done = status('Completed')
