@@ -61,7 +61,6 @@ export interface NuGetSourceConfig {
 export interface NuGetConfigModificationResult {
   success: boolean
   message: string
-  nugetConfigPath?: string
 }
 
 export interface DeploymentListResponse {
@@ -93,9 +92,9 @@ export interface ActionInputs {
   timeoutSeconds?: number
   description?: string
   version?: string
-  changeId?: string
   baseUrl?: string
   baseBranch?: string
+  githubToken?: string
   uploadRetries?: number
   uploadRetryDelay?: number
   uploadTimeout?: number

@@ -1,5 +1,6 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
+import * as path from 'path'
 import {
   DeploymentRequest,
   DeploymentResponse,
@@ -10,19 +11,102 @@ import {
 import { sleep } from '../utils/helpers.js'
 import { fetchWithApiLogging } from '../utils/api-logging.js'
 
+export const DEFAULT_BASE_URL = 'https://api.cloud.umbraco.com'
+
+/**
+ * Error thrown for non-2xx responses from the Umbraco Cloud API.
+ * Carries the HTTP status so callers can decide whether to retry.
+ */
+export class UmbracoCloudApiError extends Error {
+  readonly status: number
+  readonly body: string
+  readonly retryAfterSeconds?: number
+
+  constructor(
+    message: string,
+    status: number,
+    body: string,
+    retryAfterSeconds?: number
+  ) {
+    super(message)
+    this.name = 'UmbracoCloudApiError'
+    this.status = status
+    this.body = body
+    this.retryAfterSeconds = retryAfterSeconds
+  }
+}
+
+export interface UmbracoCloudApiOptions {
+  baseUrl?: string
+  uploadRetries?: number
+  uploadRetryDelayMs?: number
+  uploadTimeoutMs?: number
+  /** Base delay for 429 back-off when the API gives no Retry-After hint */
+  rateLimitBaseDelayMs?: number
+}
+
+const ENVIRONMENT_ALIAS_ERRORS = [
+  'No environments matches the provided alias',
+  'Unable to resolve target environment by Alias'
+]
+
+/** Retry on throttling, server errors and network failures — never on other 4xx. */
+export function isRetryableError(error: unknown): boolean {
+  if (error instanceof UmbracoCloudApiError) {
+    return error.status === 429 || error.status >= 500
+  }
+  // fetch() rejects with TypeError on network failures; AbortError on timeout
+  return (
+    error instanceof Error &&
+    (error.name === 'AbortError' || error.name === 'TypeError')
+  )
+}
+
+/** Honour a server-provided Retry-After hint (plus 1s buffer) when present. */
+function retryDelayFor(error: unknown, fallbackMs: number): number {
+  if (
+    error instanceof UmbracoCloudApiError &&
+    error.retryAfterSeconds !== undefined
+  ) {
+    return error.retryAfterSeconds * 1000 + 1000
+  }
+  return fallbackMs
+}
+
+function parseRetryAfter(response: Response, body: string): number | undefined {
+  const header = response.headers?.get?.('retry-after')
+  if (header && /^\d+$/.test(header.trim())) {
+    return parseInt(header, 10)
+  }
+  const match = body.match(/Try again in (\d+) seconds/i)
+  return match ? parseInt(match[1], 10) : undefined
+}
+
 export class UmbracoCloudAPI {
-  private baseUrl: string
-  private projectId: string
-  private apiKey: string
+  private readonly baseUrl: string
+  private readonly projectId: string
+  private readonly apiKey: string
+  private readonly uploadRetries: number
+  private readonly uploadRetryDelayMs: number
+  private readonly uploadTimeoutMs: number
+  private readonly rateLimitBaseDelayMs: number
 
   constructor(
     projectId: string,
     apiKey: string,
-    baseUrl: string = 'https://api.cloud.umbraco.com'
+    options: UmbracoCloudApiOptions = {}
   ) {
-    this.baseUrl = baseUrl
     this.projectId = projectId
     this.apiKey = apiKey
+    this.baseUrl = (options.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '')
+    this.uploadRetries = Math.max(1, options.uploadRetries ?? 3)
+    this.uploadRetryDelayMs = Math.max(0, options.uploadRetryDelayMs ?? 10000)
+    this.uploadTimeoutMs = Math.max(1, options.uploadTimeoutMs ?? 60000)
+    this.rateLimitBaseDelayMs = options.rateLimitBaseDelayMs ?? 1000
+  }
+
+  private get projectUrl(): string {
+    return `${this.baseUrl}/v2/projects/${encodeURIComponent(this.projectId)}`
   }
 
   private getHeaders(): Record<string, string> {
@@ -32,254 +116,142 @@ export class UmbracoCloudAPI {
     }
   }
 
+  /**
+   * Performs a request and throws UmbracoCloudApiError for non-2xx responses.
+   */
+  private async send(
+    url: string,
+    init: RequestInit,
+    operation: string,
+    errorPrefix: string,
+    metadata?: Record<string, unknown>
+  ): Promise<Response> {
+    const response = await fetchWithApiLogging(url, init, {
+      operation,
+      metadata
+    })
+
+    if (!response.ok) {
+      const body = await response.text()
+      throw new UmbracoCloudApiError(
+        `${errorPrefix}: ${response.status} ${response.statusText} - ${body}`,
+        response.status,
+        body,
+        parseRetryAfter(response, body)
+      )
+    }
+
+    return response
+  }
+
   private async retryWithLowercaseEnvironmentAlias<T>(
-    originalRequest: () => Promise<T>,
-    retryRequest: () => Promise<T>,
+    request: (alias: string) => Promise<T>,
     targetEnvironmentAlias: string,
     operationName: string
   ): Promise<T> {
     try {
-      return await originalRequest()
+      return await request(targetEnvironmentAlias)
     } catch (error) {
-      // Check if this is a case sensitivity issue with environment alias
-      if (
+      const lower = targetEnvironmentAlias.toLowerCase()
+      const isAliasError =
         error instanceof Error &&
-        (error.message.includes(
-          'reason: No environments matches the provided alias'
-        ) ||
-          error.message.includes(
-            'Unable to resolve target environment by Alias'
-          )) &&
-        targetEnvironmentAlias !== targetEnvironmentAlias.toLowerCase()
-      ) {
-        core.info(
-          `Environment alias case sensitivity detected in ${operationName}. Retrying with lowercase: ${targetEnvironmentAlias} -> ${targetEnvironmentAlias.toLowerCase()}`
-        )
+        ENVIRONMENT_ALIAS_ERRORS.some((m) => error.message.includes(m))
 
-        try {
-          const result = await retryRequest()
-          core.debug(`${operationName} succeeded with lowercase retry`)
-          return result
-        } catch (retryError) {
-          core.error(
-            `Error in ${operationName} (retry with lowercase): ${retryError}`
-          )
-          throw retryError
-        }
+      if (!isAliasError || targetEnvironmentAlias === lower) {
+        throw error
       }
 
-      throw error
+      core.info(
+        `Environment alias case sensitivity detected in ${operationName}. Retrying with lowercase: ${targetEnvironmentAlias} -> ${lower}`
+      )
+      return await request(lower)
     }
   }
 
   private async retryWithRateLimit<T>(
     request: () => Promise<T>,
-    maxRetries: number = 3,
-    baseDelay: number = 1000
+    maxRetries: number = 3
   ): Promise<T> {
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    for (let attempt = 1; ; attempt++) {
       try {
         return await request()
       } catch (error) {
         if (
-          error instanceof Error &&
-          error.message.includes('429 Too Many Requests') &&
-          attempt < maxRetries
+          !(error instanceof UmbracoCloudApiError) ||
+          error.status !== 429 ||
+          attempt >= maxRetries
         ) {
-          // Extract retry delay from error message if available
-          let retryDelay = baseDelay * Math.pow(2, attempt - 1) // Exponential backoff
-
-          // Try to parse the retry delay from the error message
-          const match = error.message.match(/Try again in (\d+) seconds/)
-          if (match) {
-            retryDelay = parseInt(match[1], 10) * 1000 + 1000 // Add 1 second buffer
-          }
-
-          core.info(
-            `Rate limit exceeded (attempt ${attempt}/${maxRetries}). Retrying in ${retryDelay}ms...`
-          )
-          await sleep(retryDelay)
-          continue
+          throw error
         }
-        throw error
+
+        const retryDelay = retryDelayFor(
+          error,
+          this.rateLimitBaseDelayMs * Math.pow(2, attempt - 1)
+        )
+
+        core.info(
+          `Rate limit exceeded (attempt ${attempt}/${maxRetries}). Retrying in ${retryDelay}ms...`
+        )
+        await sleep(retryDelay)
       }
     }
-    throw new Error(`Failed after ${maxRetries} attempts`)
   }
 
   async startDeployment(request: DeploymentRequest): Promise<string> {
-    const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments`
+    const url = `${this.projectUrl}/deployments`
 
     core.debug(`Starting deployment at ${url}`)
-    core.debug(`Request body: ${JSON.stringify(request)}`)
-
-    const originalRequest = async (): Promise<string> => {
-      const response = await fetchWithApiLogging(
-        url,
-        {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify(request)
-        },
-        {
-          operation: 'startDeployment',
-          metadata: {
-            targetEnvironmentAlias: request.targetEnvironmentAlias
-          }
-        }
-      )
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(
-          `Failed to start deployment: ${response.status} ${response.statusText} - ${errorText}`
-        )
-      }
-
-      const data = (await response.json()) as DeploymentResponse
-      core.debug(`Deployment started successfully: ${JSON.stringify(data)}`)
-
-      return data.deploymentId
-    }
-
-    const retryRequest = async (): Promise<string> => {
-      const retryRequestData = {
-        ...request,
-        targetEnvironmentAlias: request.targetEnvironmentAlias.toLowerCase()
-      }
-
-      const response = await fetchWithApiLogging(
-        url,
-        {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify(retryRequestData)
-        },
-        {
-          operation: 'startDeployment-lowercase-retry',
-          metadata: {
-            targetEnvironmentAlias: retryRequestData.targetEnvironmentAlias
-          }
-        }
-      )
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(
-          `Failed to start deployment (retry with lowercase): ${response.status} ${response.statusText} - ${errorText}`
-        )
-      }
-
-      const data = (await response.json()) as DeploymentResponse
-      core.debug(
-        `Deployment started successfully (retry with lowercase): ${JSON.stringify(data)}`
-      )
-
-      return data.deploymentId
-    }
 
     return this.retryWithLowercaseEnvironmentAlias(
-      originalRequest,
-      retryRequest,
+      async (alias) => {
+        const body = { ...request, targetEnvironmentAlias: alias }
+        const response = await this.retryWithRateLimit(() =>
+          this.send(
+            url,
+            {
+              method: 'POST',
+              headers: this.getHeaders(),
+              body: JSON.stringify(body)
+            },
+            'startDeployment',
+            'Failed to start deployment',
+            { targetEnvironmentAlias: alias }
+          )
+        )
+
+        const data = (await response.json()) as DeploymentResponse
+        core.debug(`Deployment started successfully: ${JSON.stringify(data)}`)
+        return data.deploymentId
+      },
       request.targetEnvironmentAlias,
       'startDeployment'
     )
   }
 
-  async checkDeploymentStatus(
+  /**
+   * Fetches the current deployment status once. When `lastModifiedUtc` is
+   * given, only status messages newer than that timestamp are returned.
+   */
+  async getDeploymentStatus(
     deploymentId: string,
-    targetEnvironmentAlias: string,
-    timeoutSeconds: number = 1200
+    lastModifiedUtc?: string
   ): Promise<DeploymentResponse> {
-    const baseStatusUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}`
-    const startTime = Date.now()
-    const timeoutMs = timeoutSeconds * 1000
+    const query = lastModifiedUtc
+      ? `?lastModifiedUtc=${encodeURIComponent(lastModifiedUtc)}`
+      : ''
+    const url = `${this.projectUrl}/deployments/${encodeURIComponent(deploymentId)}${query}`
 
-    const statusesBeforeCompleted = ['Pending', 'InProgress', 'Queued']
-    let run = 1
-    let url = baseStatusUrl
-    let data: DeploymentResponse | null = null
+    const response = await this.retryWithRateLimit(() =>
+      this.send(
+        url,
+        { method: 'GET', headers: this.getHeaders() },
+        'getDeploymentStatus',
+        'Failed to get deployment status',
+        { deploymentId, hasLastModifiedUtc: Boolean(lastModifiedUtc) }
+      )
+    )
 
-    core.debug(`Checking deployment status for: ${deploymentId}`)
-
-    do {
-      core.info(`[Run ${run}] Checking deployment status...`)
-
-      try {
-        const response = await this.retryWithRateLimit(async () => {
-          const res = await fetchWithApiLogging(
-            url,
-            {
-              method: 'GET',
-              headers: this.getHeaders()
-            },
-            {
-              operation: 'checkDeploymentStatus',
-              metadata: {
-                deploymentId,
-                run
-              }
-            }
-          )
-
-          if (!res.ok) {
-            const errorText = await res.text()
-            throw new Error(
-              `Failed to check deployment status: ${res.status} ${res.statusText} - ${errorText}`
-            )
-          }
-
-          return res
-        })
-
-        data = (await response.json()) as DeploymentResponse
-
-        core.info(
-          `[Run ${run}] Current deployment state: ${data.deploymentState}`
-        )
-
-        // Log deployment status messages if available
-        if (
-          data.deploymentStatusMessages &&
-          data.deploymentStatusMessages.length > 0
-        ) {
-          data.deploymentStatusMessages.forEach((message) => {
-            core.info(`[${message.timestampUtc}] ${message.message}`)
-          })
-        }
-
-        // Check if deployment is complete
-        if (!statusesBeforeCompleted.includes(data.deploymentState)) {
-          core.info(`Deployment ${data.deploymentState}`)
-          return data
-        }
-
-        // Update URL for next poll to only get new messages
-        url = `${baseStatusUrl}?lastModifiedUtc=${encodeURIComponent(data.modifiedUtc)}`
-
-        run++
-
-        // Check timeout
-        if (Date.now() - startTime > timeoutMs) {
-          throw new Error(
-            `Deployment status check timed out after ${timeoutSeconds} seconds. Current state: ${data.deploymentState}`
-          )
-        }
-
-        // Wait before next poll
-        await sleep(25000) // 25 seconds
-      } catch (error) {
-        core.error(`Error checking deployment status: ${error}`)
-        throw error
-      }
-    } while (data && statusesBeforeCompleted.includes(data.deploymentState))
-
-    // If we somehow get here without returning earlier, throw an error
-    if (!data) {
-      throw new Error('Failed to retrieve deployment status')
-    }
-
-    return data
+    return (await response.json()) as DeploymentResponse
   }
 
   async addDeploymentArtifact(
@@ -287,9 +259,8 @@ export class UmbracoCloudAPI {
     description?: string,
     version?: string
   ): Promise<string> {
-    const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/artifacts`
+    const url = `${this.projectUrl}/deployments/artifacts`
 
-    // Validate file exists
     if (!filePath) {
       throw new Error('File path is required for artifact upload')
     }
@@ -300,97 +271,68 @@ export class UmbracoCloudAPI {
 
     core.debug(`Uploading artifact: ${filePath}`)
 
-    // Retry logic for artifact upload
-    const maxRetries = parseInt(core.getInput('upload-retries') || '3', 10)
-    const baseDelay = parseInt(
-      core.getInput('upload-retry-delay') || '10000',
-      10
-    )
-    const timeoutMs = parseInt(core.getInput('upload-timeout') || '60000', 10)
+    // openAsBlob streams from disk lazily and can be re-sent on every attempt
+    // without holding the whole zip in memory.
+    const blob = await fs.openAsBlob(filePath, { type: 'application/zip' })
+    const fileName = path.basename(filePath) || 'artifact.zip'
 
-    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    for (let attempt = 1; attempt <= this.uploadRetries; attempt++) {
+      core.info(`Upload attempt ${attempt}/${this.uploadRetries}...`)
+
+      const formData = new FormData()
+      formData.append('file', blob, fileName)
+      if (description) formData.append('description', description)
+      if (version) formData.append('version', version)
+
+      const controller = new AbortController()
+      const timeoutId = setTimeout(
+        () => controller.abort(),
+        this.uploadTimeoutMs
+      )
+
       try {
-        core.info(`Upload attempt ${attempt}/${maxRetries}...`)
+        const response = await this.send(
+          url,
+          {
+            method: 'POST',
+            // No Content-Type: fetch sets the multipart boundary itself
+            headers: { 'Umbraco-Cloud-Api-Key': this.apiKey },
+            body: formData,
+            signal: controller.signal
+          },
+          'addDeploymentArtifact',
+          'Failed to upload artifact',
+          { fileName, attempt }
+        )
 
-        const formData = new FormData()
-
-        // Read file and create a blob
-        const fileBuffer = fs.readFileSync(filePath)
-        const fileName = filePath.split(/[/\\]/).pop() || 'artifact.zip'
-        const blob = new Blob([fileBuffer], { type: 'application/zip' })
-
-        formData.append('file', blob, fileName)
-
-        if (description) {
-          formData.append('description', description)
-        }
-
-        if (version) {
-          formData.append('version', version)
-        }
-
-        const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
-
-        try {
-          const response = await fetchWithApiLogging(
-            url,
-            {
-              method: 'POST',
-              headers: {
-                'Umbraco-Cloud-Api-Key': this.apiKey
-                // Don't set Content-Type, let fetch set it for FormData
-              },
-              body: formData,
-              signal: controller.signal
-            },
-            {
-              operation: 'addDeploymentArtifact',
-              metadata: {
-                fileName,
-                attempt
-              }
-            }
-          )
-
-          clearTimeout(timeoutId)
-
-          if (!response.ok) {
-            const errorText = await response.text()
-            throw new Error(
-              `Failed to upload artifact: ${response.status} ${response.statusText} - ${errorText}`
-            )
-          }
-
-          const data = (await response.json()) as ArtifactResponse
-          core.info(`Artifact uploaded successfully: ${data.artifactId}`)
-          return data.artifactId
-        } catch (error) {
-          clearTimeout(timeoutId)
-          throw error
-        }
+        const data = (await response.json()) as ArtifactResponse
+        core.info(`Artifact uploaded successfully: ${data.artifactId}`)
+        return data.artifactId
       } catch (error) {
-        const isLastAttempt = attempt === maxRetries
-
         if (error instanceof Error && error.name === 'AbortError') {
           core.warning(
-            `Upload attempt ${attempt} timed out after ${timeoutMs}ms`
+            `Upload attempt ${attempt} timed out after ${this.uploadTimeoutMs}ms`
           )
         } else {
           core.warning(`Upload attempt ${attempt} failed: ${error}`)
         }
 
-        if (isLastAttempt) {
+        if (attempt >= this.uploadRetries || !isRetryableError(error)) {
           throw error
         }
 
-        // Wait before retry with exponential backoff
-        const delay = baseDelay * Math.pow(2, attempt - 1)
+        const delay = retryDelayFor(
+          error,
+          this.uploadRetryDelayMs * Math.pow(2, attempt - 1)
+        )
         core.info(`Waiting ${delay}ms before retry...`)
         await sleep(delay)
+      } finally {
+        clearTimeout(timeoutId)
       }
     }
 
+    // Unreachable: the loop either returns or throws on the last attempt
     throw new Error('Upload failed after all retry attempts')
   }
 
@@ -400,152 +342,48 @@ export class UmbracoCloudAPI {
     maxRetries: number = 5,
     retryDelayMs: number = 10000
   ): Promise<ChangesResponse> {
-    const url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
-
     core.debug(
       `Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`
     )
 
-    // Helper to check if error is a transient "SiteExtensionNotResponding" error
-    const isTransientSiteExtensionError = (errorText: string): boolean => {
-      return (
-        errorText.includes('SiteExtensionNotResponding') ||
-        errorText.includes('Service unavailable') ||
-        (errorText.includes('500') && errorText.includes('Try again'))
-      )
-    }
+    const fetchChanges = async (alias: string): Promise<ChangesResponse> => {
+      const url = `${this.projectUrl}/deployments/${encodeURIComponent(deploymentId)}/diff?targetEnvironmentAlias=${encodeURIComponent(alias)}`
 
-    // Helper to make a single request attempt
-    const makeRequest = async (
-      requestUrl: string,
-      label: string
-    ): Promise<ChangesResponse> => {
-      const response = await fetchWithApiLogging(
-        requestUrl,
-        {
-          method: 'GET',
-          headers: this.getHeaders()
-        },
-        {
-          operation: `getChangesById${label}`,
-          metadata: {
-            deploymentId,
-            targetEnvironmentAlias
-          }
-        }
-      )
-
-      if (response.status === 204) {
-        return { changes: '' } // No changes
-      }
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(
-          `Failed to get changes${label}: ${response.status} ${response.statusText} - ${errorText}`
-        )
-      }
-
-      const changes = await response.text()
-      return { changes }
-    }
-
-    // Helper to make request with transient error retries
-    const makeRequestWithRetries = async (
-      requestUrl: string,
-      label: string
-    ): Promise<ChangesResponse> => {
-      for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      for (let attempt = 1; ; attempt++) {
         try {
-          return await makeRequest(requestUrl, label)
+          const response = await this.send(
+            url,
+            { method: 'GET', headers: this.getHeaders() },
+            'getChangesById',
+            'Failed to get changes',
+            { deploymentId, targetEnvironmentAlias: alias }
+          )
+
+          if (response.status === 204) {
+            return { changes: '' }
+          }
+          return { changes: await response.text() }
         } catch (error) {
-          const errorMessage =
-            error instanceof Error ? error.message : String(error)
-
-          // Check if this is a transient error that we should retry
-          if (
-            isTransientSiteExtensionError(errorMessage) &&
-            attempt < maxRetries
-          ) {
-            core.warning(
-              `Site extension not responding (attempt ${attempt}/${maxRetries}). ` +
-                `Retrying in ${retryDelayMs / 1000} seconds...`
-            )
-            await sleep(retryDelayMs)
-            continue
+          // The Cloud site extension is sometimes briefly unavailable right
+          // after a deployment; those surface as 5xx and are worth retrying.
+          if (!isRetryableError(error) || attempt >= maxRetries) {
+            throw error
           }
-
-          throw error
+          const delay = retryDelayFor(error, retryDelayMs)
+          core.warning(
+            `Changes endpoint not responding (attempt ${attempt}/${maxRetries}). ` +
+              `Retrying in ${delay / 1000} seconds...`
+          )
+          await sleep(delay)
         }
       }
-      throw new Error(`Failed to get changes after ${maxRetries} attempts`)
     }
 
-    const originalRequest = async (): Promise<ChangesResponse> => {
-      return makeRequestWithRetries(url, '')
-    }
-
-    const retryRequest = async (): Promise<ChangesResponse> => {
-      const retryUrl = `${this.baseUrl}/v2/projects/${this.projectId}/deployments/${deploymentId}/diff?targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias.toLowerCase())}`
-      return makeRequestWithRetries(retryUrl, ' (retry with lowercase)')
-    }
-
-    try {
-      return await this.retryWithLowercaseEnvironmentAlias(
-        originalRequest,
-        retryRequest,
-        targetEnvironmentAlias,
-        'getChangesById'
-      )
-    } catch (error) {
-      core.error(`Error getting changes: ${error}`)
-      throw error
-    }
-  }
-
-  async applyPatch(
-    changeId: string,
-    targetEnvironmentAlias: string
-  ): Promise<void> {
-    const url = `${this.baseUrl}/v2/projects/${this.projectId}/changes/${changeId}/apply`
-
-    core.debug(
-      `Applying patch for change ID: ${changeId} to environment: ${targetEnvironmentAlias}`
+    return this.retryWithLowercaseEnvironmentAlias(
+      fetchChanges,
+      targetEnvironmentAlias,
+      'getChangesById'
     )
-
-    try {
-      const requestBody = {
-        targetEnvironmentAlias
-      }
-
-      const response = await fetchWithApiLogging(
-        url,
-        {
-          method: 'POST',
-          headers: this.getHeaders(),
-          body: JSON.stringify(requestBody)
-        },
-        {
-          operation: 'applyPatch',
-          metadata: {
-            changeId,
-            targetEnvironmentAlias
-          }
-        }
-      )
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(
-          `Failed to apply patch: ${response.status} ${response.statusText} - ${errorText}`
-        )
-      }
-
-      core.info(`Patch applied successfully`)
-    } catch (error) {
-      core.error(`Error applying patch: ${error}`)
-      throw error
-    }
   }
 
   async getDeployments(
@@ -554,7 +392,7 @@ export class UmbracoCloudAPI {
     includeNullDeployments: boolean = true,
     targetEnvironmentAlias?: string
   ): Promise<DeploymentListResponse> {
-    let url = `${this.baseUrl}/v2/projects/${this.projectId}/deployments?skip=${skip}&take=${take}&includeNullDeployments=${includeNullDeployments}`
+    let url = `${this.projectUrl}/deployments?skip=${skip}&take=${take}&includeNullDeployments=${includeNullDeployments}`
 
     if (targetEnvironmentAlias) {
       url += `&targetEnvironmentAlias=${encodeURIComponent(targetEnvironmentAlias)}`
@@ -562,40 +400,17 @@ export class UmbracoCloudAPI {
 
     core.debug(`Getting deployments from: ${url}`)
 
-    const request = async () => {
-      const response = await fetchWithApiLogging(
+    const response = await this.retryWithRateLimit(() =>
+      this.send(
         url,
-        {
-          method: 'GET',
-          headers: this.getHeaders()
-        },
-        {
-          operation: 'getDeployments',
-          metadata: {
-            skip,
-            take,
-            includeNullDeployments,
-            targetEnvironmentAlias
-          }
-        }
+        { method: 'GET', headers: this.getHeaders() },
+        'getDeployments',
+        'Failed to get deployments',
+        { skip, take, includeNullDeployments, targetEnvironmentAlias }
       )
+    )
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(
-          `Failed to get deployments: ${response.status} ${response.statusText} - ${errorText}`
-        )
-      }
-
-      return response.json() as Promise<DeploymentListResponse>
-    }
-
-    try {
-      return await this.retryWithRateLimit(request)
-    } catch (error) {
-      core.error(`Error getting deployments: ${error}`)
-      throw error
-    }
+    return (await response.json()) as DeploymentListResponse
   }
 
   async getLatestCompletedDeployment(
@@ -603,13 +418,10 @@ export class UmbracoCloudAPI {
   ): Promise<string | null> {
     core.debug('Finding latest completed deployment with changes...')
 
-    let skip = 0
     const take = 10
-    const maxAttempts = 20
+    const maxPages = 20
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      core.debug(`Checking deployments batch: skip=${skip}, take=${take}`)
-
+    for (let page = 0, skip = 0; page < maxPages; page++, skip += take) {
       const deployments = await this.getDeployments(
         skip,
         take,
@@ -617,77 +429,37 @@ export class UmbracoCloudAPI {
         targetEnvironmentAlias
       )
 
-      core.debug(
-        `Found ${deployments.data.length} deployments in batch (total: ${deployments.totalItems})`
-      )
-
-      // Find the first completed deployment
-      const completedDeployment = deployments.data.find(
-        (d) => d.state === 'Completed'
-      )
-
-      if (completedDeployment) {
-        core.debug(
-          `Found latest completed deployment: ${completedDeployment.id}`
-        )
-        return completedDeployment.id
+      const completed = deployments.data.find((d) => d.state === 'Completed')
+      if (completed) {
+        core.debug(`Found latest completed deployment: ${completed.id}`)
+        return completed.id
       }
 
-      // Check if we've reached the end
       if (
         deployments.data.length < take ||
         skip + take >= deployments.totalItems
       ) {
         break
       }
-
-      skip += take
     }
 
-    core.debug(
-      'No completed deployments with changes found after checking all batches'
-    )
+    core.debug('No completed deployments with changes found')
     return null
   }
 
-  async getDeploymentErrorDetails(
-    deploymentId: string,
-    targetEnvironmentAlias: string
-  ): Promise<string[]> {
+  /**
+   * Returns status messages that look like errors for the given deployment.
+   * Fetches the full message history (no lastModifiedUtc filter).
+   */
+  async getDeploymentErrorDetails(deploymentId: string): Promise<string[]> {
     try {
-      const deployment = await this.checkDeploymentStatus(
-        deploymentId,
-        targetEnvironmentAlias,
-        10 // Short timeout just to get current status
-      )
-
-      const errorMessages: string[] = []
-
-      if (deployment.deploymentStatusMessages) {
-        deployment.deploymentStatusMessages
-          .filter(
-            (msg) =>
-              msg.message.toLowerCase().includes('error') ||
-              msg.message.toLowerCase().includes('failed') ||
-              msg.message.toLowerCase().includes('exception')
-          )
-          .forEach((msg) => {
-            errorMessages.push(`[${msg.timestampUtc}] ${msg.message}`)
-          })
-      }
-
-      return errorMessages
+      const deployment = await this.getDeploymentStatus(deploymentId)
+      return (deployment.deploymentStatusMessages || [])
+        .filter((msg) => /error|failed|exception/i.test(msg.message))
+        .map((msg) => `[${msg.timestampUtc}] ${msg.message}`)
     } catch (error) {
       core.debug(`Could not retrieve deployment error details: ${error}`)
       return []
     }
-  }
-
-  public getApiKey(): string {
-    return this.apiKey
-  }
-
-  public getProjectId(): string {
-    return this.projectId
   }
 }

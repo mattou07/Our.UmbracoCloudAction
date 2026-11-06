@@ -9,7 +9,10 @@ export default {
     '^(\\.{1,2}/.*)\\.js$': '$1'
   },
   transformIgnorePatterns: [],
-  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts'],
+  collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/index.ts'],
+  coverageThreshold: {
+    global: { statements: 90, branches: 85, functions: 90, lines: 90 }
+  },
   testMatch: ['**/__tests__/**/*.test.ts'],
   verbose: true
 }

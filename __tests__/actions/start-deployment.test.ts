@@ -1,177 +1,106 @@
 import { jest } from '@jest/globals'
-import type { DeploymentResponse } from '../../src/types/index.js'
+import type { ActionInputs, DeploymentRequest } from '../../src/types/index.js'
 
 // ESM mock setup
-const mockPollDeploymentStatus = jest.fn<() => Promise<DeploymentResponse>>()
+const mockPollDeploymentStatus = jest.fn()
 jest.unstable_mockModule('../../src/utils/deployment-polling.js', () => ({
-  pollDeploymentStatus: mockPollDeploymentStatus
+  pollDeploymentStatus: mockPollDeploymentStatus,
+  hasUpdatingMarkerError: jest.fn(() => false)
 }))
 
-jest.unstable_mockModule('@actions/core', () => ({
+const core = {
   info: jest.fn(),
   setOutput: jest.fn(),
   debug: jest.fn(),
   warning: jest.fn(),
   error: jest.fn()
-}))
-
-// Helper to create a valid DeploymentResponse mock
-function createDeploymentResponse(
-  deploymentId: string,
-  state: string = 'Completed'
-): DeploymentResponse {
-  return {
-    deploymentId,
-    deploymentState: state,
-    modifiedUtc: '2025-01-01T00:00:00Z',
-    deploymentStatusMessages: []
-  }
 }
+jest.unstable_mockModule('@actions/core', () => core)
+
+const baseInputs = (overrides: Partial<ActionInputs> = {}): ActionInputs => ({
+  projectId: 'pid',
+  apiKey: 'key',
+  filePath: './a.zip',
+  targetEnvironmentAlias: 'staging',
+  artifactId: 'artifact-123',
+  ...overrides
+})
 
 describe('handleStartDeployment', () => {
-  let handleStartDeployment: any
+  let handleStartDeployment: typeof import('../../src/actions/start-deployment.js').handleStartDeployment
 
-  const mockStartDeployment = jest.fn<() => Promise<string>>()
-  const mockApi = {
-    getApiKey: () => 'test-api-key',
-    getProjectId: () => 'test-project-id',
-    startDeployment: mockStartDeployment
-  }
+  const mockStartDeployment =
+    jest.fn<(request: DeploymentRequest) => Promise<string>>()
+  const api = { startDeployment: mockStartDeployment }
 
   beforeAll(async () => {
-    const startDeploymentModule = await import(
-      '../../src/actions/start-deployment.js'
-    )
-    handleStartDeployment = startDeploymentModule.handleStartDeployment
+    handleStartDeployment = (
+      await import('../../src/actions/start-deployment.js')
+    ).handleStartDeployment
   })
 
   beforeEach(() => {
     jest.clearAllMocks()
-    mockStartDeployment.mockReset()
-    mockPollDeploymentStatus.mockReset()
+    mockStartDeployment.mockReset().mockResolvedValue('deployment-123')
   })
 
-  describe('timeoutSeconds parameter', () => {
-    test('passes custom timeoutSeconds to pollDeploymentStatus', async () => {
-      // Arrange
-      const customTimeoutSeconds = 1800 // 30 minutes
-      const expectedTimeoutMs = customTimeoutSeconds * 1000
+  test('starts the deployment with the provided options', async () => {
+    const result = await handleStartDeployment(
+      api,
+      baseInputs({
+        commitMessage: 'Custom message',
+        noBuildAndRestore: true,
+        skipVersionCheck: true
+      })
+    )
 
-      mockStartDeployment.mockResolvedValue('deployment-123')
-      mockPollDeploymentStatus.mockResolvedValue(
-        createDeploymentResponse('deployment-123', 'Completed')
-      )
-
-      const inputs = {
-        artifactId: 'artifact-123',
-        targetEnvironmentAlias: 'staging',
-        commitMessage: 'Test deployment',
-        noBuildAndRestore: false,
-        skipVersionCheck: false,
-        timeoutSeconds: customTimeoutSeconds
-      }
-
-      // Act
-      await handleStartDeployment(mockApi, inputs)
-
-      // Assert
-      expect(mockPollDeploymentStatus).toHaveBeenCalledWith(
-        'test-api-key',
-        'test-project-id',
-        'deployment-123',
-        expectedTimeoutMs
-      )
+    expect(mockStartDeployment).toHaveBeenCalledWith({
+      targetEnvironmentAlias: 'staging',
+      artifactId: 'artifact-123',
+      commitMessage: 'Custom message',
+      noBuildAndRestore: true,
+      skipVersionCheck: true
     })
+    expect(result).toEqual({ deploymentId: 'deployment-123' })
+  })
 
-    test('uses default timeoutSeconds (1200) when not provided', async () => {
-      // Arrange
-      const defaultTimeoutMs = 1200 * 1000 // 20 minutes in ms
+  test('applies defaults for optional fields', async () => {
+    await handleStartDeployment(api, baseInputs())
 
-      mockStartDeployment.mockResolvedValue('deployment-456')
-      mockPollDeploymentStatus.mockResolvedValue(
-        createDeploymentResponse('deployment-456', 'Completed')
-      )
-
-      const inputs = {
-        artifactId: 'artifact-456',
-        targetEnvironmentAlias: 'production',
-        commitMessage: 'Production deployment',
-        noBuildAndRestore: false,
-        skipVersionCheck: false
-        // timeoutSeconds not provided
-      }
-
-      // Act
-      await handleStartDeployment(mockApi, inputs)
-
-      // Assert
-      expect(mockPollDeploymentStatus).toHaveBeenCalledWith(
-        'test-api-key',
-        'test-project-id',
-        'deployment-456',
-        defaultTimeoutMs
-      )
+    expect(mockStartDeployment).toHaveBeenCalledWith({
+      targetEnvironmentAlias: 'staging',
+      artifactId: 'artifact-123',
+      commitMessage: 'Deployment from GitHub Actions',
+      noBuildAndRestore: false,
+      skipVersionCheck: false
     })
+  })
 
-    test('handles zero timeoutSeconds by using default', async () => {
-      // Arrange - when timeoutSeconds is 0, fallback to default
-      const defaultTimeoutMs = 1200 * 1000
+  test('sets the deploymentId output', async () => {
+    await handleStartDeployment(api, baseInputs())
+    expect(core.setOutput).toHaveBeenCalledWith(
+      'deploymentId',
+      'deployment-123'
+    )
+  })
 
-      mockStartDeployment.mockResolvedValue('deployment-789')
-      mockPollDeploymentStatus.mockResolvedValue(
-        createDeploymentResponse('deployment-789', 'Completed')
-      )
+  test('does not poll for deployment status', async () => {
+    await handleStartDeployment(api, baseInputs({ timeoutSeconds: 1800 }))
+    expect(mockPollDeploymentStatus).not.toHaveBeenCalled()
+  })
 
-      const inputs = {
-        artifactId: 'artifact-789',
-        targetEnvironmentAlias: 'dev',
-        commitMessage: 'Dev deployment',
-        noBuildAndRestore: false,
-        skipVersionCheck: false,
-        timeoutSeconds: 0 // falsy value
-      }
+  test('throws when artifactId is missing', async () => {
+    await expect(
+      handleStartDeployment(api, baseInputs({ artifactId: undefined }))
+    ).rejects.toThrow('Missing required inputs: artifactId')
+    expect(mockStartDeployment).not.toHaveBeenCalled()
+  })
 
-      // Act
-      await handleStartDeployment(mockApi, inputs)
-
-      // Assert
-      expect(mockPollDeploymentStatus).toHaveBeenCalledWith(
-        'test-api-key',
-        'test-project-id',
-        'deployment-789',
-        defaultTimeoutMs
-      )
-    })
-
-    test('handles very large timeoutSeconds value', async () => {
-      // Arrange
-      const largeTimeoutSeconds = 7200 // 2 hours
-      const expectedTimeoutMs = largeTimeoutSeconds * 1000
-
-      mockStartDeployment.mockResolvedValue('deployment-large')
-      mockPollDeploymentStatus.mockResolvedValue(
-        createDeploymentResponse('deployment-large', 'Completed')
-      )
-
-      const inputs = {
-        artifactId: 'artifact-large',
-        targetEnvironmentAlias: 'staging',
-        commitMessage: 'Long deployment',
-        noBuildAndRestore: false,
-        skipVersionCheck: false,
-        timeoutSeconds: largeTimeoutSeconds
-      }
-
-      // Act
-      await handleStartDeployment(mockApi, inputs)
-
-      // Assert
-      expect(mockPollDeploymentStatus).toHaveBeenCalledWith(
-        'test-api-key',
-        'test-project-id',
-        'deployment-large',
-        expectedTimeoutMs
-      )
-    })
+  test('propagates API errors', async () => {
+    mockStartDeployment.mockRejectedValue(new Error('403 Forbidden'))
+    await expect(handleStartDeployment(api, baseInputs())).rejects.toThrow(
+      '403 Forbidden'
+    )
+    expect(core.setOutput).not.toHaveBeenCalled()
   })
 })

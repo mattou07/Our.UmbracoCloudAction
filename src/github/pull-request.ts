@@ -98,16 +98,19 @@ async function applyPatchWithReject(
     // Copy .rej files to reject directory and collect paths for artifact upload
     const artifactFiles: string[] = []
     for (const rejFile of rejFiles) {
-      const fileName = path.basename(rejFile)
-      const targetPath = path.join(rejectDir, fileName)
+      // Keep the path relative to the workspace so same-named files in
+      // different folders don't overwrite each other
+      const relativePath = path.relative(workspaceDir, rejFile)
+      const targetPath = path.join(rejectDir, relativePath)
 
       // Copy file to reject directory
+      fs.mkdirSync(path.dirname(targetPath), { recursive: true })
       fs.copyFileSync(rejFile, targetPath)
       artifactFiles.push(targetPath)
 
       // Remove .rej file from workspace so it doesn't get committed
       fs.rmSync(rejFile)
-      core.info(`Collected reject file: ${fileName}`)
+      core.info(`Collected reject file: ${relativePath}`)
     }
 
     // Upload .rej files as GitHub artifact
@@ -170,7 +173,8 @@ export async function createPullRequestWithPatch(
   baseBranch: string,
   title: string,
   body: string,
-  latestCompletedDeploymentId: string
+  latestCompletedDeploymentId: string,
+  token: string
 ): Promise<PullRequestInfo> {
   try {
     // Validate the deployment ID format
@@ -181,11 +185,9 @@ export async function createPullRequestWithPatch(
     let guidConflictOccurred = false
     core.info(`Creating new branch: ${newBranchName}`)
 
-    // Initialize Octokit with the GitHub token from environment
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
     if (!token) {
       throw new Error(
-        'GitHub token not found. Please set GITHUB_TOKEN or GH_TOKEN environment variable.'
+        'GitHub token not provided. Set the github-token input (needs contents: write and pull-requests: write).'
       )
     }
 
@@ -252,10 +254,9 @@ export async function createPullRequestWithPatch(
       const authorId = process.env.GITHUB_ACTOR_ID || '41898282'
       const authorEmail = `${authorId}+${authorName}@users.noreply.github.com`
 
-      // Debug: Output the values we're about to use
-      core.info(`Debug - GITHUB_ACTOR: ${process.env.GITHUB_ACTOR}`)
-      core.info(`Debug - GITHUB_ACTOR_ID: ${process.env.GITHUB_ACTOR_ID}`)
-      core.info(`Debug - Computed author: ${authorName} <${authorEmail}>`)
+      core.debug(`Debug - GITHUB_ACTOR: ${process.env.GITHUB_ACTOR}`)
+      core.debug(`Debug - GITHUB_ACTOR_ID: ${process.env.GITHUB_ACTOR_ID}`)
+      core.debug(`Debug - Computed author: ${authorName} <${authorEmail}>`)
 
       // Configure git user identity using Peter Evans approach with -c flags
       core.info('Setting git identity using -c flags approach...')

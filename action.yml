@@ -51,9 +51,17 @@ inputs:
     required: false
     default: 'https://api.cloud.umbraco.com'
   base-branch:
-    description: 'Base branch for pull request creation (defaults to main)'
+    description:
+      'Base branch for pull request creation when a deployment fails. Defaults
+      to the branch that triggered the workflow, or the repository default
+      branch when the workflow was not triggered by a branch.'
     required: false
-    default: 'main'
+  github-token:
+    description:
+      'Token used to push the fix branch and open a pull request when a
+      deployment fails. Needs contents: write and pull-requests: write.'
+    required: false
+    default: ${{ github.token }}
   upload-retries:
     description: 'Number of retry attempts for artifact upload (default: 3)'
     required: false
@@ -89,9 +97,11 @@ inputs:
   enable-api-logging:
     description:
       'Enable newline-delimited JSON logging for Umbraco Cloud API requests and
-      responses'
+      responses. The log is uploaded as a workflow artifact that anyone with
+      read access to the repository can download. Response bodies of diff
+      requests and signed blob URLs are redacted.'
     required: false
-    default: 'true'
+    default: 'false'
   api-log-artifact-name:
     description: 'Artifact name used when uploading the API NDJSON log file'
     required: false

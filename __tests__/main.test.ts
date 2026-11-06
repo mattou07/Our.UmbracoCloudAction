@@ -1,72 +1,130 @@
 import { jest } from '@jest/globals'
-import { getActionInputs } from '../src/main.js'
-import { ActionInputs } from '../src/types/index.js'
+import type { ActionInputs, ActionOutputs } from '../src/types/index.js'
 
-// Helper to patch process.env for input simulation
-type Inputs = Record<string, string | number | boolean | undefined>
+// --- ESM mocks -------------------------------------------------------------
+
+// Minimal @actions/core: getInput mirrors the real implementation (env lookup,
+// trimming, required check) so input parsing is exercised end to end.
+const core = {
+  getInput: jest.fn((name: string, options?: { required?: boolean }) => {
+    const value = (
+      process.env[`INPUT_${name.replace(/ /g, '_').toUpperCase()}`] || ''
+    ).trim()
+    if (options?.required && !value) {
+      throw new Error(`Input required and not supplied: ${name}`)
+    }
+    return value
+  }),
+  setSecret: jest.fn(),
+  setFailed: jest.fn(),
+  setOutput: jest.fn(),
+  info: jest.fn(),
+  debug: jest.fn(),
+  warning: jest.fn(),
+  error: jest.fn(),
+  startGroup: jest.fn(),
+  endGroup: jest.fn()
+}
+jest.unstable_mockModule('@actions/core', () => core)
+
+type Handler = (api: unknown, inputs: ActionInputs) => Promise<ActionOutputs>
+const handleAddArtifact = jest.fn<Handler>()
+const handleStartDeployment = jest.fn<Handler>()
+const handleCheckStatus = jest.fn<Handler>()
+jest.unstable_mockModule('../src/actions/add-artifact.js', () => ({
+  handleAddArtifact
+}))
+jest.unstable_mockModule('../src/actions/start-deployment.js', () => ({
+  handleStartDeployment
+}))
+jest.unstable_mockModule('../src/actions/check-status.js', () => ({
+  handleCheckStatus
+}))
+
+const initializeApiLogging = jest.fn()
+const uploadApiLogArtifactIfAvailable = jest.fn<() => Promise<void>>()
+jest.unstable_mockModule('../src/utils/api-logging.js', () => ({
+  initializeApiLogging,
+  uploadApiLogArtifactIfAvailable
+}))
+
+const UmbracoCloudAPI = jest.fn()
+jest.unstable_mockModule('../src/api/umbraco-cloud-api.js', () => ({
+  UmbracoCloudAPI
+}))
+
+const { getActionInputs, run, runDeployPipeline } = await import(
+  '../src/main.js'
+)
+
+// --- helpers ---------------------------------------------------------------
+
+type Inputs = Record<string, string | undefined>
 function defineEnv(inputs: Inputs) {
   for (const [key, value] of Object.entries(inputs)) {
-    process.env[`INPUT_${key.toUpperCase()}`] = value?.toString()
+    const envKey = `INPUT_${key.toUpperCase()}`
+    if (value === undefined) delete process.env[envKey]
+    else process.env[envKey] = value
   }
 }
+
+const requiredInputs: Inputs = {
+  projectId: 'pid',
+  apiKey: 'key',
+  filePath: './artifact.zip',
+  targetEnvironmentAlias: 'dev'
+}
+
+function clearInputs() {
+  for (const key in process.env) {
+    if (key.startsWith('INPUT_')) delete process.env[key]
+  }
+}
+
+const loggedInfo = () => core.info.mock.calls.map((c) => String(c[0]))
 
 describe('main.ts', () => {
   beforeEach(() => {
     jest.clearAllMocks()
-    // Reset process.env between tests
-    for (const key in process.env) {
-      if (key.startsWith('INPUT_')) delete process.env[key]
-    }
+    clearInputs()
   })
+
+  afterAll(() => clearInputs())
 
   describe('getActionInputs - Valid Inputs', () => {
     test('parses all required inputs correctly', () => {
-      // Arrange
-      const expectedProjectId = 'test-project-123'
-      const expectedApiKey = 'sk_test_key_abc123'
-      const expectedFilePath = './artifact.zip'
-      const expectedTargetEnv = 'dev'
+      defineEnv(requiredInputs)
 
-      defineEnv({
-        projectId: expectedProjectId,
-        apiKey: expectedApiKey,
-        filePath: expectedFilePath,
-        targetEnvironmentAlias: expectedTargetEnv,
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false'
-      })
-
-      // Act
       const result = getActionInputs()
 
-      // Assert
-      expect(result.projectId).toBe(expectedProjectId)
-      expect(result.apiKey).toBe(expectedApiKey)
-      expect(result.filePath).toBe(expectedFilePath)
-      expect(result.targetEnvironmentAlias).toBe(expectedTargetEnv)
-      expect(result).toMatchObject<Partial<ActionInputs>>({
-        projectId: expect.any(String),
-        apiKey: expect.any(String),
-        filePath: expect.any(String),
-        targetEnvironmentAlias: expect.any(String)
-      })
+      expect(result.projectId).toBe('pid')
+      expect(result.apiKey).toBe('key')
+      expect(result.filePath).toBe('./artifact.zip')
+      expect(result.targetEnvironmentAlias).toBe('dev')
+    })
+
+    test('throws when a required input is missing', () => {
+      defineEnv({ ...requiredInputs, apiKey: undefined })
+      expect(() => getActionInputs()).toThrow(
+        'Input required and not supplied: apiKey'
+      )
     })
 
     test('parses all inputs with custom values', () => {
-      // Arrange
-      const inputValues = {
+      defineEnv({
         projectId: 'pid',
         apiKey: 'key',
         filePath: '/custom/path/artifact.zip',
         targetEnvironmentAlias: 'staging',
-        baseUrl: 'https://custom-api.umbraco.com',
+        baseUrl: 'https://custom-api.umbraco.com/',
         commitMessage: 'Custom deploy message',
         timeoutSeconds: '2400',
         noBuildAndRestore: 'true',
         skipVersionCheck: 'true',
         description: 'Custom artifact description',
         version: '2.1.0',
-        baseBranch: 'develop',
+        'base-branch': 'develop',
+        'github-token': 'ghs_token',
         'upload-retries': '5',
         'upload-retry-delay': '15000',
         'upload-timeout': '120000',
@@ -74,150 +132,138 @@ describe('main.ts', () => {
         'nuget-source-url': 'https://nuget.custom.com/v3/index.json',
         'nuget-source-username': 'nuget-user',
         'nuget-source-password': 'nuget-pass',
-        'excluded-paths': '.git/,.github/,.vscode/'
-      }
+        'excluded-paths': '.git/,.github/,.vscode/',
+        'enable-api-logging': 'true',
+        'api-log-artifact-name': 'my-log'
+      })
 
-      defineEnv(inputValues)
-
-      // Act
       const result = getActionInputs()
 
-      // Assert
-      expect(result.projectId).toBe('pid')
-      expect(result.apiKey).toBe('key')
-      expect(result.filePath).toBe('/custom/path/artifact.zip')
-      expect(result.targetEnvironmentAlias).toBe('staging')
-      expect(result.baseUrl).toBe('https://custom-api.umbraco.com')
-      expect(result.commitMessage).toBe('Custom deploy message')
-      expect(result.timeoutSeconds).toBe(2400)
-      expect(result.noBuildAndRestore).toBe(true)
-      expect(result.skipVersionCheck).toBe(true)
-      expect(result.description).toBe('Custom artifact description')
-      expect(result.version).toBe('2.1.0')
-      expect(result.baseBranch).toBe('develop')
-      expect(result.uploadRetries).toBe(5)
-      expect(result.uploadRetryDelay).toBe(15000)
-      expect(result.uploadTimeout).toBe(120000)
-      expect(result.nugetSourceName).toBe('CustomSource')
-      expect(result.nugetSourceUrl).toBe(
-        'https://nuget.custom.com/v3/index.json'
-      )
-      expect(result.nugetSourceUsername).toBe('nuget-user')
-      expect(result.nugetSourcePassword).toBe('nuget-pass')
-      expect(result.excludedPaths).toBe('.git/,.github/,.vscode/')
+      expect(result).toMatchObject<Partial<ActionInputs>>({
+        projectId: 'pid',
+        apiKey: 'key',
+        filePath: '/custom/path/artifact.zip',
+        targetEnvironmentAlias: 'staging',
+        baseUrl: 'https://custom-api.umbraco.com',
+        commitMessage: 'Custom deploy message',
+        timeoutSeconds: 2400,
+        noBuildAndRestore: true,
+        skipVersionCheck: true,
+        description: 'Custom artifact description',
+        version: '2.1.0',
+        baseBranch: 'develop',
+        githubToken: 'ghs_token',
+        uploadRetries: 5,
+        uploadRetryDelay: 15000,
+        uploadTimeout: 120000,
+        nugetSourceName: 'CustomSource',
+        nugetSourceUrl: 'https://nuget.custom.com/v3/index.json',
+        nugetSourceUsername: 'nuget-user',
+        nugetSourcePassword: 'nuget-pass',
+        excludedPaths: '.git/,.github/,.vscode/',
+        enableApiLogging: true,
+        apiLogArtifactName: 'my-log'
+      })
     })
 
     test('uses default values for optional inputs', () => {
-      // Arrange
-      const minimalInputs = {
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false'
-      }
-      const expectedDefaults = {
+      defineEnv(requiredInputs)
+
+      const result = getActionInputs()
+
+      expect(result).toMatchObject<Partial<ActionInputs>>({
         baseUrl: 'https://api.cloud.umbraco.com',
         commitMessage: 'Deployment from GitHub Actions',
         timeoutSeconds: 1200,
+        noBuildAndRestore: false,
+        skipVersionCheck: false,
         uploadRetries: 3,
         uploadRetryDelay: 10000,
         uploadTimeout: 60000,
-        excludedPaths: '.git/,.github/'
-      }
+        excludedPaths: '.git/,.github/',
+        enableApiLogging: false,
+        apiLogArtifactName: 'umbraco-cloud-api-log',
+        description: '',
+        version: '',
+        baseBranch: '',
+        githubToken: ''
+      })
+    })
+  })
 
-      defineEnv(minimalInputs)
+  describe('getActionInputs - secrets', () => {
+    test('masks api key, github token and nuget password', () => {
+      defineEnv({
+        ...requiredInputs,
+        'github-token': 'ghs_secret',
+        'nuget-source-password': 'nuget-secret'
+      })
 
-      // Act
-      const result = getActionInputs()
+      getActionInputs()
 
-      // Assert
-      expect(result.baseUrl).toBe(expectedDefaults.baseUrl)
-      expect(result.commitMessage).toBe(expectedDefaults.commitMessage)
-      expect(result.timeoutSeconds).toBe(expectedDefaults.timeoutSeconds)
-      expect(result.noBuildAndRestore).toBe(false)
-      expect(result.skipVersionCheck).toBe(false)
-      expect(result.uploadRetries).toBe(expectedDefaults.uploadRetries)
-      expect(result.uploadRetryDelay).toBe(expectedDefaults.uploadRetryDelay)
-      expect(result.uploadTimeout).toBe(expectedDefaults.uploadTimeout)
-      expect(result.excludedPaths).toBe(expectedDefaults.excludedPaths)
+      expect(core.setSecret).toHaveBeenCalledWith('key')
+      expect(core.setSecret).toHaveBeenCalledWith('ghs_secret')
+      expect(core.setSecret).toHaveBeenCalledWith('nuget-secret')
+    })
 
-      // Verify optional inputs are empty when not provided
-      expect(result.description).toBe('')
-      expect(result.version).toBe('')
-      expect(result.baseBranch).toBe('')
+    test('does not register empty secrets', () => {
+      defineEnv(requiredInputs)
+      getActionInputs()
+      expect(core.setSecret).toHaveBeenCalledTimes(1)
+      expect(core.setSecret).toHaveBeenCalledWith('key')
     })
   })
 
   describe('getActionInputs - Boolean Input Parsing', () => {
     test('correctly parses boolean true values', () => {
-      // Arrange
-      const inputsWithTrueBooleans = {
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
+      defineEnv({
+        ...requiredInputs,
         noBuildAndRestore: 'true',
-        skipVersionCheck: 'true'
-      }
+        skipVersionCheck: 'TRUE'
+      })
 
-      defineEnv(inputsWithTrueBooleans)
-
-      // Act
       const result = getActionInputs()
 
-      // Assert
       expect(result.noBuildAndRestore).toBe(true)
       expect(result.skipVersionCheck).toBe(true)
     })
 
     test('correctly parses boolean false values', () => {
-      // Arrange
-      const inputsWithFalseBooleans = {
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
+      defineEnv({
+        ...requiredInputs,
         noBuildAndRestore: 'false',
         skipVersionCheck: 'false'
-      }
+      })
 
-      defineEnv(inputsWithFalseBooleans)
-
-      // Act
       const result = getActionInputs()
 
-      // Assert
       expect(result.noBuildAndRestore).toBe(false)
       expect(result.skipVersionCheck).toBe(false)
     })
 
     test('defaults to false for missing boolean inputs', () => {
-      defineEnv({
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false'
-      })
+      defineEnv(requiredInputs)
+      expect(process.env.INPUT_NOBUILDANDRESTORE).toBeUndefined()
 
       const inputs = getActionInputs()
+
       expect(inputs.noBuildAndRestore).toBe(false)
       expect(inputs.skipVersionCheck).toBe(false)
+      expect(inputs.enableApiLogging).toBe(false)
+    })
+
+    test('throws for non-boolean values', () => {
+      defineEnv({ ...requiredInputs, noBuildAndRestore: 'yes' })
+      expect(() => getActionInputs()).toThrow(
+        'Expected "true" or "false" but got "yes"'
+      )
     })
   })
 
   describe('getActionInputs - Numeric Input Parsing', () => {
     test('correctly parses numeric inputs', () => {
       defineEnv({
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false',
+        ...requiredInputs,
         timeoutSeconds: '3600',
         'upload-retries': '7',
         'upload-retry-delay': '20000',
@@ -225,118 +271,48 @@ describe('main.ts', () => {
       })
 
       const inputs = getActionInputs()
+
       expect(inputs.timeoutSeconds).toBe(3600)
       expect(inputs.uploadRetries).toBe(7)
       expect(inputs.uploadRetryDelay).toBe(20000)
       expect(inputs.uploadTimeout).toBe(90000)
-      expect(typeof inputs.timeoutSeconds).toBe('number')
-      expect(typeof inputs.uploadRetries).toBe('number')
     })
 
-    test('handles invalid numeric inputs gracefully', () => {
-      defineEnv({
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false',
-        timeoutSeconds: 'not-a-number',
-        'upload-retries': 'invalid'
-      })
-
-      const inputs = getActionInputs()
-      // parseInt returns NaN for invalid strings, which should be handled appropriately
-      expect(isNaN(inputs.timeoutSeconds!)).toBe(true)
-      expect(isNaN(inputs.uploadRetries!)).toBe(true)
+    test('throws for non-numeric timeoutSeconds', () => {
+      defineEnv({ ...requiredInputs, timeoutSeconds: 'not-a-number' })
+      expect(() => getActionInputs()).toThrow(/timeoutSeconds.*not a whole/)
     })
 
-    test('uses defaults for empty numeric inputs', () => {
-      defineEnv({
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false'
-      })
-
-      const inputs = getActionInputs()
-      expect(inputs.timeoutSeconds).toBe(1200)
-      expect(inputs.uploadRetries).toBe(3)
-      expect(inputs.uploadRetryDelay).toBe(10000)
-      expect(inputs.uploadTimeout).toBe(60000)
-    })
-  })
-
-  describe('getActionInputs - Edge Cases', () => {
-    test('handles empty string inputs for optional fields', () => {
-      defineEnv({
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        baseUrl: '',
-        commitMessage: '',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false'
-      })
-
-      const inputs = getActionInputs()
-      expect(inputs.projectId).toBe('test-project')
-      expect(inputs.apiKey).toBe('test-key')
-      expect(inputs.filePath).toBe('./artifact.zip')
-      expect(inputs.targetEnvironmentAlias).toBe('dev')
-      expect(inputs.baseUrl).toBe('https://api.cloud.umbraco.com') // Should use default
-      expect(inputs.commitMessage).toBe('Deployment from GitHub Actions') // Should use default
+    test('throws for non-numeric upload-retries', () => {
+      defineEnv({ ...requiredInputs, 'upload-retries': 'invalid' })
+      expect(() => getActionInputs()).toThrow(/upload-retries/)
     })
 
-    test('handles whitespace-only inputs', () => {
-      defineEnv({
-        projectId: '  test-project  ', // @actions/core trims whitespace
-        apiKey: '  test-key  ',
-        filePath: '  ./artifact.zip  ',
-        targetEnvironmentAlias: '  dev  ',
-        description: '\t\n', // This might also get trimmed
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false'
-      })
-
-      const inputs = getActionInputs()
-      expect(inputs.projectId).toBe('test-project') // Trimmed by @actions/core
-      expect(inputs.apiKey).toBe('test-key') // Trimmed by @actions/core
-      expect(inputs.filePath).toBe('./artifact.zip') // Trimmed by @actions/core
-      expect(inputs.targetEnvironmentAlias).toBe('dev') // Trimmed by @actions/core
-      expect(inputs.description).toBe('') // Trimmed to empty by @actions/core
+    test('throws for negative values', () => {
+      defineEnv({ ...requiredInputs, 'upload-timeout': '-5' })
+      expect(() => getActionInputs()).toThrow(/upload-timeout.*at least 1/)
     })
 
-    test('handles zero values for numeric inputs', () => {
-      defineEnv({
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false',
-        timeoutSeconds: '0',
-        'upload-retries': '0'
-      })
+    test('throws for zero timeoutSeconds', () => {
+      defineEnv({ ...requiredInputs, timeoutSeconds: '0' })
+      expect(() => getActionInputs()).toThrow(/timeoutSeconds.*at least 1/)
+    })
 
-      const inputs = getActionInputs()
-      expect(inputs.timeoutSeconds).toBe(0)
-      expect(inputs.uploadRetries).toBe(0)
+    test('throws for zero upload-retries', () => {
+      defineEnv({ ...requiredInputs, 'upload-retries': '0' })
+      expect(() => getActionInputs()).toThrow(/upload-retries.*at least 1/)
+    })
+
+    test('allows zero upload-retry-delay', () => {
+      defineEnv({ ...requiredInputs, 'upload-retry-delay': '0' })
+      expect(getActionInputs().uploadRetryDelay).toBe(0)
     })
 
     test('handles very large numeric values', () => {
       defineEnv({
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false',
+        ...requiredInputs,
         timeoutSeconds: '999999',
-        'upload-timeout': '2147483647' // Max 32-bit signed integer
+        'upload-timeout': '2147483647'
       })
 
       const inputs = getActionInputs()
@@ -345,48 +321,181 @@ describe('main.ts', () => {
     })
   })
 
-  describe('getActionInputs - TypeScript Type Validation', () => {
-    test('returns object matching ActionInputs interface', () => {
-      defineEnv({
-        projectId: 'pid',
-        apiKey: 'key',
-        filePath: './artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        noBuildAndRestore: 'false',
-        skipVersionCheck: 'false'
-      })
+  describe('getActionInputs - baseUrl', () => {
+    test('throws for non-https baseUrl', () => {
+      defineEnv({ ...requiredInputs, baseUrl: 'http://api.cloud.umbraco.com' })
+      expect(() => getActionInputs()).toThrow(/must use https/)
+    })
 
-      const inputs = getActionInputs()
-
-      // Verify return type matches ActionInputs interface
-      const typedInputs: ActionInputs = inputs
-      expect(typedInputs).toBeDefined()
-
-      // Verify required fields exist and are strings
-      expect(typeof inputs.projectId).toBe('string')
-      expect(typeof inputs.apiKey).toBe('string')
-      expect(typeof inputs.filePath).toBe('string')
-      expect(typeof inputs.targetEnvironmentAlias).toBe('string')
-
-      // Verify boolean fields are boolean (not undefined since we set them explicitly)
-      expect(typeof inputs.noBuildAndRestore).toBe('boolean')
-      expect(typeof inputs.skipVersionCheck).toBe('boolean')
-
-      // Verify optional number fields are number or undefined
-      expect(
-        inputs.timeoutSeconds === undefined ||
-          typeof inputs.timeoutSeconds === 'number'
-      ).toBe(true)
-      expect(
-        inputs.uploadRetries === undefined ||
-          typeof inputs.uploadRetries === 'number'
-      ).toBe(true)
+    test('throws for an invalid URL', () => {
+      defineEnv({ ...requiredInputs, baseUrl: 'not a url' })
+      expect(() => getActionInputs()).toThrow(/is not a URL/)
     })
   })
 
-  test('can load fixture file', async () => {
-    const fs = await import('fs/promises')
-    const fixture = await fs.readFile('__fixtures__/core.ts', 'utf8')
-    expect(fixture).toContain('jest.fn')
+  describe('getActionInputs - Edge Cases', () => {
+    test('handles empty string inputs for optional fields', () => {
+      defineEnv({ ...requiredInputs, baseUrl: '', commitMessage: '' })
+
+      const inputs = getActionInputs()
+      expect(inputs.baseUrl).toBe('https://api.cloud.umbraco.com')
+      expect(inputs.commitMessage).toBe('Deployment from GitHub Actions')
+    })
+
+    test('handles whitespace-only inputs', () => {
+      defineEnv({
+        projectId: '  test-project  ',
+        apiKey: '  test-key  ',
+        filePath: '  ./artifact.zip  ',
+        targetEnvironmentAlias: '  dev  ',
+        description: '\t\n'
+      })
+
+      const inputs = getActionInputs()
+      expect(inputs.projectId).toBe('test-project')
+      expect(inputs.apiKey).toBe('test-key')
+      expect(inputs.filePath).toBe('./artifact.zip')
+      expect(inputs.targetEnvironmentAlias).toBe('dev')
+      expect(inputs.description).toBe('')
+    })
+  })
+
+  describe('runDeployPipeline', () => {
+    const api = {} as never
+    const inputs: ActionInputs = {
+      projectId: 'pid',
+      apiKey: 'key',
+      filePath: './a.zip',
+      targetEnvironmentAlias: 'dev'
+    }
+
+    beforeEach(() => {
+      handleAddArtifact.mockResolvedValue({
+        artifactId: 'art-1',
+        nugetSourceStatus: 'skipped'
+      })
+      handleStartDeployment.mockResolvedValue({ deploymentId: 'dep-1' })
+      handleCheckStatus.mockResolvedValue({
+        deploymentState: 'Completed',
+        deploymentStatus: '{}',
+        changes: 'diff'
+      })
+    })
+
+    test('chains the three steps and returns combined outputs', async () => {
+      const result = await runDeployPipeline(api, inputs)
+
+      expect(handleStartDeployment).toHaveBeenCalledWith(
+        api,
+        expect.objectContaining({ artifactId: 'art-1' })
+      )
+      expect(handleCheckStatus).toHaveBeenCalledWith(
+        api,
+        expect.objectContaining({ deploymentId: 'dep-1' })
+      )
+      expect(result).toEqual({
+        artifactId: 'art-1',
+        deploymentId: 'dep-1',
+        nugetSourceStatus: 'skipped',
+        deploymentState: 'Completed',
+        deploymentStatus: '{}',
+        changes: 'diff'
+      })
+      expect(loggedInfo().some((m) => m.includes('#h5yr'))).toBe(true)
+    })
+
+    test('throws when no artifactId is returned', async () => {
+      handleAddArtifact.mockResolvedValue({})
+      await expect(runDeployPipeline(api, inputs)).rejects.toThrow(
+        'no artifactId returned'
+      )
+      expect(handleStartDeployment).not.toHaveBeenCalled()
+    })
+
+    test('throws when no deploymentId is returned', async () => {
+      handleStartDeployment.mockResolvedValue({})
+      await expect(runDeployPipeline(api, inputs)).rejects.toThrow(
+        'no deploymentId returned'
+      )
+      expect(handleCheckStatus).not.toHaveBeenCalled()
+      expect(core.endGroup).toHaveBeenCalledTimes(1)
+    })
+
+    test('does not print the success banner when the status check throws', async () => {
+      handleCheckStatus.mockRejectedValue(new Error('Deployment dep-1 failed'))
+      await expect(runDeployPipeline(api, inputs)).rejects.toThrow(
+        'Deployment dep-1 failed'
+      )
+      expect(loggedInfo().some((m) => m.includes('#h5yr'))).toBe(false)
+      expect(core.endGroup).toHaveBeenCalledTimes(2)
+    })
+  })
+
+  describe('run', () => {
+    beforeEach(() => {
+      defineEnv(requiredInputs)
+      handleAddArtifact.mockResolvedValue({ artifactId: 'art-1' })
+      handleStartDeployment.mockResolvedValue({ deploymentId: 'dep-1' })
+      handleCheckStatus.mockResolvedValue({ deploymentState: 'Completed' })
+      uploadApiLogArtifactIfAvailable.mockResolvedValue(undefined)
+    })
+
+    test('success: prints banner, does not fail, uploads API log', async () => {
+      await run()
+
+      expect(UmbracoCloudAPI).toHaveBeenCalledWith('pid', 'key', {
+        baseUrl: 'https://api.cloud.umbraco.com',
+        uploadRetries: 3,
+        uploadRetryDelayMs: 10000,
+        uploadTimeoutMs: 60000
+      })
+      expect(initializeApiLogging).toHaveBeenCalledWith(
+        false,
+        'umbraco-cloud-api-log'
+      )
+      expect(loggedInfo().some((m) => m.includes('#h5yr'))).toBe(true)
+      expect(core.setFailed).not.toHaveBeenCalled()
+      expect(uploadApiLogArtifactIfAvailable).toHaveBeenCalledTimes(1)
+    })
+
+    test('failed deployment: setFailed with message, no banner, log still uploaded', async () => {
+      handleCheckStatus.mockRejectedValue(new Error('Deployment dep-1 failed'))
+
+      await run()
+
+      expect(core.setFailed).toHaveBeenCalledWith('Deployment dep-1 failed')
+      expect(loggedInfo().some((m) => m.includes('complete #h5yr'))).toBe(false)
+      expect(uploadApiLogArtifactIfAvailable).toHaveBeenCalledTimes(1)
+    })
+
+    test('non-Error throws produce a generic failure message', async () => {
+      handleAddArtifact.mockRejectedValue('boom')
+      await run()
+      expect(core.setFailed).toHaveBeenCalledWith('An unknown error occurred')
+    })
+
+    test('invalid inputs: setFailed and no log upload (logging not configured)', async () => {
+      defineEnv({ timeoutSeconds: 'abc' })
+
+      await run()
+
+      expect(core.setFailed).toHaveBeenCalledWith(
+        expect.stringContaining('timeoutSeconds')
+      )
+      expect(initializeApiLogging).not.toHaveBeenCalled()
+      expect(uploadApiLogArtifactIfAvailable).not.toHaveBeenCalled()
+      expect(handleAddArtifact).not.toHaveBeenCalled()
+    })
+
+    test('warns when API log upload fails', async () => {
+      uploadApiLogArtifactIfAvailable.mockRejectedValue(new Error('upload err'))
+
+      await run()
+
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to upload API log artifact')
+      )
+      expect(core.setFailed).not.toHaveBeenCalled()
+    })
   })
 })

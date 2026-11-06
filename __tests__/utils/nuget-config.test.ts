@@ -1,395 +1,333 @@
 import { jest } from '@jest/globals'
+import * as xml2js from 'xml2js'
 
-// Mock modules before importing them
-jest.unstable_mockModule('fs', () => ({
-  existsSync: jest.fn(),
-  readFileSync: jest.fn(),
-  writeFileSync: jest.fn(),
-  mkdirSync: jest.fn()
+jest.unstable_mockModule('@actions/core', () => ({
+  info: jest.fn(),
+  debug: jest.fn(),
+  warning: jest.fn(),
+  error: jest.fn()
 }))
 
-jest.unstable_mockModule('path', () => ({
-  join: jest.fn(),
-  dirname: jest.fn()
-}))
+type AddEntry = { $: { key: string; value: string } }
 
-jest.unstable_mockModule('glob', () => ({
-  glob: jest.fn()
-}))
+describe('nuget-config', () => {
+  let core: typeof import('@actions/core')
+  let addOrUpdateNuGetConfigSource: typeof import('../../src/utils/nuget-config.js').addOrUpdateNuGetConfigSource
+  let encodeXmlLocalName: typeof import('../../src/utils/nuget-config.js').encodeXmlLocalName
 
-jest.unstable_mockModule('xml2js', () => ({
-  parseStringPromise: jest.fn(),
-  Builder: jest.fn().mockImplementation(() => ({
-    buildObject: jest.fn().mockReturnValue('<xml>test</xml>')
-  }))
-}))
-
-// Import mocked modules
-const fs = await import('fs')
-const path = await import('path')
-const { glob } = await import('glob')
-const xml2js = await import('xml2js')
-
-// Import the function to test
-const { addOrUpdateNuGetConfigSource } = await import(
-  '../../src/utils/nuget-config.js'
-)
-
-interface NuGetSourceConfig {
-  name: string
-  source: string
-  username?: string
-  password?: string
-}
-
-// Get the mock functions
-const mockGlob = glob as jest.MockedFunction<typeof glob>
-const mockExistsSync = fs.existsSync as jest.MockedFunction<
-  typeof fs.existsSync
->
-const mockReadFileSync = fs.readFileSync as jest.MockedFunction<
-  typeof fs.readFileSync
->
-const mockWriteFileSync = fs.writeFileSync as jest.MockedFunction<
-  typeof fs.writeFileSync
->
-const mockPathJoin = path.join as jest.MockedFunction<typeof path.join>
-const mockPathDirname = path.dirname as jest.MockedFunction<typeof path.dirname>
-const mockParseStringPromise = xml2js.parseStringPromise as jest.MockedFunction<
-  typeof xml2js.parseStringPromise
->
-
-describe('addOrUpdateNuGetConfigSource', () => {
-  beforeEach(() => {
-    // Clear all mocks before each test
-    jest.clearAllMocks()
-
-    // Reset all mock implementations to prevent test interference
-    mockGlob.mockReset()
-    mockExistsSync.mockReset()
-    mockReadFileSync.mockReset()
-    mockWriteFileSync.mockReset()
-    mockPathJoin.mockReset()
-    mockPathDirname.mockReset()
-    mockParseStringPromise.mockReset()
-
-    // Setup default mock implementations
-    mockPathJoin.mockImplementation((...args) => args.join('/'))
-    mockPathDirname.mockImplementation((p) =>
-      p.substring(0, p.lastIndexOf('/'))
-    )
+  beforeAll(async () => {
+    core = await import('@actions/core')
+    const mod = await import('../../src/utils/nuget-config.js')
+    addOrUpdateNuGetConfigSource = mod.addOrUpdateNuGetConfigSource
+    encodeXmlLocalName = mod.encodeXmlLocalName
   })
 
-  describe('Valid Input Scenarios', () => {
-    test('creates new NuGet.config file when none exists', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'nuget.org',
-        source: 'https://api.nuget.org/v3/index.json'
-      }
+  beforeEach(() => {
+    jest.clearAllMocks()
+  })
 
-      // Setup working directory to simulate current directory
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue([])
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config')
-      mockPathDirname.mockReturnValue('/test/project')
+  async function parse(xml: string): Promise<any> {
+    return xml2js.parseStringPromise(xml)
+  }
 
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
+  function sourcesOf(parsed: any): Record<string, string> {
+    const adds: AddEntry[] = parsed.configuration.packageSources[0].add
+    return Object.fromEntries(adds.map((a) => [a.$.key, a.$.value]))
+  }
 
-      // Assert
-      expect(result.success).toBe(true)
-      expect(result.nugetConfigPath).toBe('/test/project/NuGet.config')
-      expect(result.message).toContain('Created new NuGet.config')
-      expect(mockWriteFileSync).toHaveBeenCalled()
+  function credentialsOf(
+    parsed: any,
+    elementName: string
+  ): Record<string, string> {
+    const adds: AddEntry[] =
+      parsed.configuration.packageSourceCredentials[0][elementName][0].add
+    return Object.fromEntries(adds.map((a) => [a.$.key, a.$.value]))
+  }
 
-      // Clean up
-      mockCwd.mockRestore()
-    })
-
-    test('updates existing NuGet.config file with new source', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'custom-feed',
-        source: 'https://custom.nuget.feed/v3/index.json'
-      }
-
-      const existingConfig = `<?xml version="1.0" encoding="utf-8"?>
+  const existingConfig = `<?xml version="1.0" encoding="utf-8"?>
 <configuration>
   <packageSources>
+    <clear />
     <add key="nuget.org" value="https://api.nuget.org/v3/index.json" protocolVersion="3" />
+    <add key="MyFeed" value="https://old.example.com/index.json" />
   </packageSources>
+  <activePackageSource>
+    <add key="All" value="(Aggregate source)" />
+  </activePackageSource>
+  <packageSourceMapping>
+    <packageSource key="nuget.org">
+      <package pattern="*" />
+    </packageSource>
+  </packageSourceMapping>
+  <packageSourceCredentials>
+    <MyFeed>
+      <add key="Username" value="olduser" />
+      <add key="ClearTextPassword" value="%OLD_PASSWORD%" />
+    </MyFeed>
+    <Other>
+      <add key="Username" value="other" />
+    </Other>
+  </packageSourceCredentials>
 </configuration>`
 
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue(['/test/project/NuGet.config'])
-      mockExistsSync.mockReturnValue(true)
-      mockReadFileSync.mockReturnValue(existingConfig)
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config') // Fix the path join
-      mockParseStringPromise.mockResolvedValue({
-        configuration: {
-          packageSources: [
-            {
-              add: [
-                {
-                  $: {
-                    key: 'nuget.org',
-                    value: 'https://api.nuget.org/v3/index.json',
-                    protocolVersion: '3'
-                  }
-                }
-              ]
-            }
-          ]
-        }
-      })
-
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
-
-      // Assert
-      expect(result.success).toBe(true)
-      expect(result.nugetConfigPath).toBe('/test/project/NuGet.config')
-      expect(result.message).toContain('Updated NuGet.config')
-      expect(mockReadFileSync).toHaveBeenCalledWith(
-        '/test/project/NuGet.config',
-        'utf8'
-      )
-      expect(mockWriteFileSync).toHaveBeenCalled()
-
-      mockCwd.mockRestore()
+  test('creates a new config when no existing content is provided', async () => {
+    const result = await addOrUpdateNuGetConfigSource({
+      name: 'MyFeed',
+      source: 'https://nuget.example.com/v3/index.json'
     })
 
-    test('adds source with username and password credentials', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'private-feed',
-        source: 'https://private.nuget.feed/v3/index.json',
-        username: 'testuser',
-        password: 'testpass'
-      }
+    expect(result.success).toBe(true)
+    expect(result.message).toContain('Created new NuGet.config')
+    expect(result).not.toHaveProperty('nugetConfigPath')
+    expect(result.xmlContent).toMatch(
+      /^<\?xml version="1.0" encoding="utf-8"\?>/
+    )
 
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue([])
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config')
-      mockPathDirname.mockReturnValue('/test/project')
+    const parsed = await parse(result.xmlContent)
+    expect(sourcesOf(parsed)).toEqual({
+      MyFeed: 'https://nuget.example.com/v3/index.json'
+    })
+    expect(parsed.configuration.packageSourceCredentials).toBeUndefined()
+  })
 
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
+  test('treats whitespace-only content as a new config', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'MyFeed', source: 'https://a' },
+      '   \n'
+    )
+    expect(result.message).toContain('Created new NuGet.config')
+  })
 
-      // Assert
-      expect(result.success).toBe(true)
-      expect(result.nugetConfigPath).toBe('/test/project/NuGet.config')
-      expect(mockWriteFileSync).toHaveBeenCalled()
+  test('preserves existing sources when adding a new one', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'NewFeed', source: 'https://new.example.com/index.json' },
+      existingConfig
+    )
 
-      mockCwd.mockRestore()
+    expect(result.message).toContain('Updated NuGet.config')
+    const parsed = await parse(result.xmlContent)
+    expect(sourcesOf(parsed)).toEqual({
+      'nuget.org': 'https://api.nuget.org/v3/index.json',
+      MyFeed: 'https://old.example.com/index.json',
+      NewFeed: 'https://new.example.com/index.json'
+    })
+    // Extra attributes and <clear/> are preserved
+    expect(result.xmlContent).toContain('protocolVersion="3"')
+    expect(parsed.configuration.packageSources[0].clear).toBeDefined()
+  })
+
+  test('updates the URL of an existing source', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'MyFeed', source: 'https://new.example.com/index.json' },
+      existingConfig
+    )
+
+    const parsed = await parse(result.xmlContent)
+    const sources = sourcesOf(parsed)
+    expect(sources.MyFeed).toBe('https://new.example.com/index.json')
+    expect(Object.keys(sources)).toEqual(['nuget.org', 'MyFeed'])
+  })
+
+  test('adds credentials for a new source', async () => {
+    const result = await addOrUpdateNuGetConfigSource({
+      name: 'MyFeed',
+      source: 'https://a',
+      username: 'user',
+      password: '%NUGET_PASSWORD%'
     })
 
-    test('finds existing NuGet.config in current directory', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'nuget.org',
-        source: 'https://api.nuget.org/v3/index.json'
-      }
-
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue(['/test/project/NuGet.config'])
-      mockExistsSync.mockReturnValue(true)
-      mockReadFileSync.mockReturnValue(`<?xml version="1.0" encoding="utf-8"?>
-<configuration>
-  <packageSources>
-  </packageSources>
-</configuration>`)
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config') // Fix the path join
-      mockParseStringPromise.mockResolvedValue({
-        configuration: {
-          packageSources: [
-            {
-              add: [] // Empty add array for empty packageSources
-            }
-          ]
-        }
-      })
-
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
-
-      // Assert
-      expect(result.success).toBe(true)
-      expect(result.nugetConfigPath).toBe('/test/project/NuGet.config')
-      expect(mockGlob).toHaveBeenCalledWith('**/NuGet.config', {
-        cwd: '/test/project',
-        nodir: true
-      })
-
-      mockCwd.mockRestore()
+    const parsed = await parse(result.xmlContent)
+    expect(credentialsOf(parsed, 'MyFeed')).toEqual({
+      Username: 'user',
+      ClearTextPassword: '%NUGET_PASSWORD%'
     })
   })
 
-  describe('Invalid Input Validation', () => {
-    test('handles empty name in config', async () => {
-      // Arrange
-      const config = {
-        name: '', // Invalid: empty name
-        source: 'https://api.nuget.org/v3/index.json'
-      } as NuGetSourceConfig
+  test('updates existing credentials without duplicating entries', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      {
+        name: 'MyFeed',
+        source: 'https://a',
+        username: 'newuser',
+        password: '%NEW_PASSWORD%'
+      },
+      existingConfig
+    )
 
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue([])
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config')
+    const parsed = await parse(result.xmlContent)
+    const adds: AddEntry[] =
+      parsed.configuration.packageSourceCredentials[0].MyFeed[0].add
+    expect(adds).toHaveLength(2)
+    expect(credentialsOf(parsed, 'MyFeed')).toEqual({
+      Username: 'newuser',
+      ClearTextPassword: '%NEW_PASSWORD%'
+    })
+    // Other credentials untouched
+    expect(credentialsOf(parsed, 'Other')).toEqual({ Username: 'other' })
+  })
 
-      // Don't setup parseStringPromise since no existing file to parse
+  test('does not add credentials when only username is provided', async () => {
+    const result = await addOrUpdateNuGetConfigSource({
+      name: 'MyFeed',
+      source: 'https://a',
+      username: 'user'
+    })
+    const parsed = await parse(result.xmlContent)
+    expect(parsed.configuration.packageSourceCredentials).toBeUndefined()
+  })
 
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
+  test('preserves other sections', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'NewFeed', source: 'https://new' },
+      existingConfig
+    )
 
-      // Assert
-      expect(result.success).toBe(true) // The function still processes it
-      expect(mockWriteFileSync).toHaveBeenCalled()
+    const parsed = await parse(result.xmlContent)
+    expect(parsed.configuration.activePackageSource[0].add[0].$).toEqual({
+      key: 'All',
+      value: '(Aggregate source)'
+    })
+    expect(
+      parsed.configuration.packageSourceMapping[0].packageSource[0].$.key
+    ).toBe('nuget.org')
+    expect(
+      parsed.configuration.packageSourceMapping[0].packageSource[0].package[0].$
+        .pattern
+    ).toBe('*')
+  })
 
-      mockCwd.mockRestore()
+  test('adds packageSources when the existing config has none', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'MyFeed', source: 'https://a' },
+      '<configuration><config><add key="x" value="y"/></config></configuration>'
+    )
+    const parsed = await parse(result.xmlContent)
+    expect(sourcesOf(parsed)).toEqual({ MyFeed: 'https://a' })
+    expect(parsed.configuration.config[0].add[0].$.key).toBe('x')
+  })
+
+  test('handles an empty <configuration/> element', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'MyFeed', source: 'https://a' },
+      '<configuration/>'
+    )
+    const parsed = await parse(result.xmlContent)
+    expect(sourcesOf(parsed)).toEqual({ MyFeed: 'https://a' })
+  })
+
+  test('encodes a source name with a space in the credentials element', async () => {
+    const result = await addOrUpdateNuGetConfigSource({
+      name: 'My Feed',
+      source: 'https://a',
+      username: 'user',
+      password: '%PW%'
     })
 
-    test('handles empty source URL in config', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'test-source',
-        source: '' // Invalid: empty URL
-      }
-
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue([])
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config')
-
-      // Don't setup parseStringPromise since no existing file to parse
-
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
-
-      // Assert
-      expect(result.success).toBe(true) // The function still processes it
-      expect(mockWriteFileSync).toHaveBeenCalled()
-
-      mockCwd.mockRestore()
+    expect(result.xmlContent).toContain('<My_x0020_Feed>')
+    const parsed = await parse(result.xmlContent)
+    // Source key itself is not encoded
+    expect(sourcesOf(parsed)).toEqual({ 'My Feed': 'https://a' })
+    expect(credentialsOf(parsed, 'My_x0020_Feed')).toEqual({
+      Username: 'user',
+      ClearTextPassword: '%PW%'
     })
   })
 
-  describe('Edge Cases', () => {
-    test('handles malformed existing NuGet.config', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'nuget.org',
-        source: 'https://api.nuget.org/v3/index.json'
-      }
-
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue(['/test/project/NuGet.config'])
-      mockExistsSync.mockReturnValue(true)
-      mockReadFileSync.mockReturnValue('<invalid>xml</content>') // Malformed XML
-      mockParseStringPromise.mockRejectedValue(new Error('Invalid XML'))
-
-      // Act & Assert
-      await expect(addOrUpdateNuGetConfigSource(config)).rejects.toThrow(
-        'Invalid XML'
-      )
-
-      mockCwd.mockRestore()
-    })
-
-    test('handles file system errors when writing NuGet.config', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'nuget.org',
-        source: 'https://api.nuget.org/v3/index.json'
-      }
-
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue([])
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config')
-      mockWriteFileSync.mockImplementation(() => {
-        throw new Error('Permission denied')
-      })
-
-      // Act & Assert
-      await expect(addOrUpdateNuGetConfigSource(config)).rejects.toThrow(
-        'Permission denied'
-      )
-
-      mockCwd.mockRestore()
+  test('matches existing credentials on the encoded name', async () => {
+    const existing = `<configuration>
+  <packageSources><add key="My Feed" value="https://old"/></packageSources>
+  <packageSourceCredentials>
+    <My_x0020_Feed>
+      <add key="Username" value="old"/>
+      <add key="ClearTextPassword" value="%OLD%"/>
+    </My_x0020_Feed>
+  </packageSourceCredentials>
+</configuration>`
+    const result = await addOrUpdateNuGetConfigSource(
+      {
+        name: 'My Feed',
+        source: 'https://new',
+        username: 'new',
+        password: '%NEW%'
+      },
+      existing
+    )
+    const parsed = await parse(result.xmlContent)
+    expect(
+      Object.keys(parsed.configuration.packageSourceCredentials[0])
+    ).toEqual(['My_x0020_Feed'])
+    expect(credentialsOf(parsed, 'My_x0020_Feed')).toEqual({
+      Username: 'new',
+      ClearTextPassword: '%NEW%'
     })
   })
 
-  describe('TypeScript Type Safety', () => {
-    test('accepts valid NuGetSourceConfig interface', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'nuget.org',
-        source: 'https://api.nuget.org/v3/index.json',
-        username: 'optional-user',
-        password: 'optional-pass'
-      }
+  test('encodeXmlLocalName follows XmlConvert.EncodeLocalName rules', () => {
+    expect(encodeXmlLocalName('MyFeed')).toBe('MyFeed')
+    expect(encodeXmlLocalName('My Feed')).toBe('My_x0020_Feed')
+    expect(encodeXmlLocalName('1Feed')).toBe('_x0031_Feed')
+    expect(encodeXmlLocalName('Feed1')).toBe('Feed1')
+    expect(encodeXmlLocalName('my.feed-name')).toBe('my.feed-name')
+    expect(encodeXmlLocalName('a:b')).toBe('a_x003A_b')
+    expect(encodeXmlLocalName('a@b')).toBe('a_x0040_b')
+    expect(encodeXmlLocalName('a_x0020_b')).toBe('a_x005F_x0020_b')
+  })
 
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue([])
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config')
-
-      // Don't setup parseStringPromise since no existing file
-
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
-
-      // Assert - TypeScript compilation validates interface compliance
-      expect(result.success).toBe(true)
-      expect(typeof result.nugetConfigPath).toBe('string')
-
-      mockCwd.mockRestore()
+  test('warns when a literal clear-text password is provided', async () => {
+    await addOrUpdateNuGetConfigSource({
+      name: 'MyFeed',
+      source: 'https://a',
+      username: 'user',
+      password: 'hunter2'
     })
+    expect(core.warning).toHaveBeenCalledTimes(1)
+    const message = (core.warning as jest.Mock).mock.calls[0][0] as string
+    expect(message).toContain('Umbraco Cloud git repository')
+    expect(message).toContain('%SECRET_NAME%')
+    expect(message).not.toContain('hunter2')
+  })
 
-    test('returns proper NuGetConfigModificationResult interface', async () => {
-      // Arrange
-      const config: NuGetSourceConfig = {
-        name: 'nuget.org',
-        source: 'https://api.nuget.org/v3/index.json'
-      }
-
-      const mockCwd = jest
-        .spyOn(process, 'cwd')
-        .mockReturnValue('/test/project')
-      mockGlob.mockResolvedValue([])
-      mockPathJoin.mockReturnValue('/test/project/NuGet.config')
-
-      // Don't setup parseStringPromise since no existing file
-
-      // Act
-      const result = await addOrUpdateNuGetConfigSource(config)
-
-      // Assert - TypeScript compilation validates return type
-      expect(result).toHaveProperty('success')
-      expect(result).toHaveProperty('message')
-      expect(result).toHaveProperty('nugetConfigPath')
-      expect(typeof result.success).toBe('boolean')
-      expect(typeof result.message).toBe('string')
-      expect(typeof result.nugetConfigPath).toBe('string')
-
-      mockCwd.mockRestore()
+  test('does not warn when the password is an environment variable reference', async () => {
+    await addOrUpdateNuGetConfigSource({
+      name: 'MyFeed',
+      source: 'https://a',
+      username: 'user',
+      password: '%NUGET_PASSWORD%'
     })
+    expect(core.warning).not.toHaveBeenCalled()
+  })
+
+  test('never logs the password', async () => {
+    await addOrUpdateNuGetConfigSource({
+      name: 'MyFeed',
+      source: 'https://a',
+      username: 'user',
+      password: 'hunter2'
+    })
+    const logged = [
+      ...(core.info as jest.Mock).mock.calls,
+      ...(core.debug as jest.Mock).mock.calls
+    ]
+      .flat()
+      .join('\n')
+    expect(logged).not.toContain('hunter2')
+  })
+
+  test('rejects malformed XML', async () => {
+    await expect(
+      addOrUpdateNuGetConfigSource(
+        { name: 'MyFeed', source: 'https://a' },
+        '<configuration><packageSources>'
+      )
+    ).rejects.toThrow()
+  })
+
+  test('rejects XML without a configuration root', async () => {
+    await expect(
+      addOrUpdateNuGetConfigSource(
+        { name: 'MyFeed', source: 'https://a' },
+        '<settings/>'
+      )
+    ).rejects.toThrow('<configuration>')
   })
 })

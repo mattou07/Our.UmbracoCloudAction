@@ -1,146 +1,102 @@
 import * as core from '@actions/core'
 import { DeploymentResponse } from '../types/index.js'
-import { fetchWithApiLogging } from './api-logging.js'
+import {
+  UmbracoCloudAPI,
+  UmbracoCloudApiError,
+  isRetryableError
+} from '../api/umbraco-cloud-api.js'
+import { sleep } from './helpers.js'
+
+/** States in which a deployment is still running. Anything else is terminal. */
+export const IN_PROGRESS_STATES = ['Pending', 'InProgress', 'Queued']
+
+export const UPDATING_MARKER_PATTERNS = [
+  "The site can't be upgraded as it's blocked with the following markers: updating",
+  'CheckBlockingMarkers',
+  'blocked with the following markers: updating'
+]
+
+export function hasUpdatingMarkerError(
+  messages: DeploymentResponse['deploymentStatusMessages'] | undefined
+): boolean {
+  return (messages || []).some((msg) =>
+    UPDATING_MARKER_PATTERNS.some((p) => msg.message.includes(p))
+  )
+}
 
 /**
- * Polls deployment status until completion or timeout
+ * Polls deployment status until it reaches a terminal state or times out.
+ *
+ * - Transient failures (network errors, 429, 5xx) are logged and retried.
+ * - Other client errors (401/403/404, ...) fail immediately: retrying a bad
+ *   key or unknown deployment for the full timeout only wastes runner time.
  */
 export async function pollDeploymentStatus(
-  apiKey: string,
-  projectId: string,
+  api: Pick<UmbracoCloudAPI, 'getDeploymentStatus'>,
   deploymentId: string,
-  maxDurationMs = 15 * 60 * 1000,
+  maxDurationMs = 20 * 60 * 1000,
   intervalMs = 25000
 ): Promise<DeploymentResponse> {
   const start = Date.now()
-  let lastModifiedUtc: string | undefined = undefined
+  const deadline = start + maxDurationMs
+  let lastModifiedUtc: string | undefined
+  let markerWarningShown = false
 
   const timeoutMinutes = Math.round(maxDurationMs / 60000)
   core.info(
-    `Polling deployment status (timeout: ${timeoutMinutes} minutes / ${maxDurationMs}ms, interval: ${intervalMs}ms)`
+    `Polling deployment status (timeout: ${timeoutMinutes} minutes, interval: ${intervalMs}ms)`
   )
 
-  try {
-    while (Date.now() - start < maxDurationMs) {
-      const url =
-        `https://api.cloud.umbraco.com/v2/projects/${projectId}/deployments/${deploymentId}` +
-        (lastModifiedUtc
-          ? `?lastModifiedUtc=${encodeURIComponent(lastModifiedUtc)}`
-          : '')
+  while (Date.now() < deadline) {
+    let data: DeploymentResponse | undefined
+    try {
+      data = await api.getDeploymentStatus(deploymentId, lastModifiedUtc)
+    } catch (error) {
+      if (!isRetryableError(error)) {
+        if (error instanceof UmbracoCloudApiError && error.status === 401) {
+          throw new Error(
+            `Unauthorized while polling deployment ${deploymentId}: check the API key and its permissions. ${error.message}`
+          )
+        }
+        throw error
+      }
+      core.warning(`Transient error while polling deployment status: ${error}`)
+    }
 
-      let response
-      try {
-        response = await fetchWithApiLogging(
-          url,
-          {
-            headers: {
-              'Umbraco-Cloud-Api-Key':
-                process.env.UMBRACO_CLOUD_API_KEY || apiKey,
-              'Content-Type': 'application/json'
-            }
-          },
-          {
-            operation: 'pollDeploymentStatus',
-            metadata: {
-              deploymentId,
-              hasLastModifiedUtc: Boolean(lastModifiedUtc)
-            }
-          }
-        )
-      } catch (err) {
-        core.warning(`Network error while polling deployment status: ${err}`)
-        await new Promise((resolve) => setTimeout(resolve, intervalMs))
-        continue
-      }
-
-      if (response.status === 401) {
-        core.warning(
-          'Unauthorized: The API key may have expired or lost permissions. Will retry.'
-        )
-        await new Promise((resolve) => setTimeout(resolve, intervalMs))
-        continue
-      }
-      if (response.status === 404) {
-        core.warning(
-          'Not Found: The project or deployment ID could not be found. Will retry.'
-        )
-        await new Promise((resolve) => setTimeout(resolve, intervalMs))
-        continue
-      }
-      if (!response.ok) {
-        core.warning(
-          `Failed to get deployment status: ${response.status} ${response.statusText}. Will retry.`
-        )
-        await new Promise((resolve) => setTimeout(resolve, intervalMs))
-        continue
-      }
-
-      const data = (await response.json()) as DeploymentResponse
-      const elapsedMs = Date.now() - start
-      const elapsedMinutes = Math.round(elapsedMs / 60000)
+    if (data) {
+      const elapsedMinutes = Math.round((Date.now() - start) / 60000)
       core.info(
-        `Deployment status: ${data.deploymentState} (elapsed: ${elapsedMinutes}m, remaining: ${timeoutMinutes - elapsedMinutes}m)`
+        `Deployment status: ${data.deploymentState} (elapsed: ${elapsedMinutes}m, timeout: ${timeoutMinutes}m)`
       )
 
-      // Check for deployment status messages
-      if (data.deploymentStatusMessages) {
-        data.deploymentStatusMessages.forEach((msg) =>
-          core.info(`[${msg.timestampUtc}] ${msg.message}`)
-        )
-
-        // Check for the specific "updating" marker blocking error
-        const hasUpdatingMarkerError = data.deploymentStatusMessages.some(
-          (msg) =>
-            msg.message.includes(
-              "The site can't be upgraded as it's blocked with the following markers: updating"
-            ) ||
-            msg.message.includes('CheckBlockingMarkers') ||
-            msg.message.includes('blocked with the following markers: updating')
-        )
-
-        if (hasUpdatingMarkerError) {
-          core.warning('⚠️  Deployment is blocked by leftover upgrade markers!')
-          core.warning(
-            'This error is caused by leftover upgrade markers interfering with the Deploy process.'
-          )
-          core.warning(
-            'This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.'
-          )
-          core.warning('')
-          core.warning(
-            'Resolution: Use KUDU to remove leftover marker files from site/locks folder'
-          )
-          core.warning(
-            'For detailed steps, see: https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed'
-          )
-          core.info('Continuing to poll for status changes...')
-        }
+      for (const msg of data.deploymentStatusMessages || []) {
+        core.info(`[${msg.timestampUtc}] ${msg.message}`)
       }
 
       if (
-        data.deploymentState === 'Completed' ||
-        data.deploymentState === 'Failed'
+        !markerWarningShown &&
+        hasUpdatingMarkerError(data.deploymentStatusMessages)
       ) {
+        markerWarningShown = true
+        core.warning(
+          '⚠️  Deployment is blocked by leftover upgrade markers! Use KUDU to remove leftover marker files from the site/locks folder. See: https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed'
+        )
+      }
+
+      if (!IN_PROGRESS_STATES.includes(data.deploymentState)) {
         return data
       }
 
-      lastModifiedUtc = data.modifiedUtc
-      await new Promise((resolve) => setTimeout(resolve, intervalMs))
+      lastModifiedUtc = data.modifiedUtc || lastModifiedUtc
     }
-  } catch (unexpectedError) {
-    const elapsedMs = Date.now() - start
-    const elapsedMinutes = Math.round(elapsedMs / 60000)
-    core.error(
-      `Unexpected error during polling after ${elapsedMinutes} minutes: ${unexpectedError}`
-    )
-    throw unexpectedError
+
+    // Never sleep past the deadline
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) break
+    await sleep(Math.min(intervalMs, remaining))
   }
 
-  const elapsedMs = Date.now() - start
-  const elapsedMinutes = Math.round(elapsedMs / 60000)
-  core.error(
-    `Polling loop exited after ${elapsedMinutes} minutes (${elapsedMs}ms). Max duration was ${maxDurationMs}ms.`
-  )
+  const elapsedMinutes = Math.round((Date.now() - start) / 60000)
   throw new Error(
     `Deployment did not complete within the expected time. Elapsed: ${elapsedMinutes} minutes, Timeout: ${timeoutMinutes} minutes.`
   )

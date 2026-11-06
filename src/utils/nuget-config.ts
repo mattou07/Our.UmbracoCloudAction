@@ -1,8 +1,5 @@
 import * as xml2js from 'xml2js'
 import * as core from '@actions/core'
-import * as path from 'path'
-import * as fs from 'fs'
-import { glob } from 'glob'
 import {
   NuGetSourceConfig,
   NuGetConfigModificationResult
@@ -17,39 +14,105 @@ interface NuGetXmlAttribute {
 }
 
 interface NuGetPackageSources {
-  add: NuGetXmlAttribute[]
+  add: NuGetXmlAttribute[] | NuGetXmlAttribute
+  [key: string]: unknown
+}
+
+interface NuGetCredentialEntry {
+  add: NuGetXmlAttribute[] | NuGetXmlAttribute
+  [key: string]: unknown
 }
 
 interface NuGetPackageSourceCredentials {
-  [sourceName: string]: Array<{
-    add: NuGetXmlAttribute[]
-  }>
+  [sourceName: string]: NuGetCredentialEntry[] | NuGetCredentialEntry
 }
 
 interface NuGetConfiguration {
-  packageSources: NuGetPackageSources[] | NuGetPackageSources
+  packageSources?: NuGetPackageSources[] | NuGetPackageSources | string
   packageSourceCredentials?:
     | NuGetPackageSourceCredentials[]
     | NuGetPackageSourceCredentials
+    | string
   // Allow any other properties to preserve existing sections like activePackageSource
-  [key: string]:
-    | NuGetPackageSources[]
-    | NuGetPackageSources
-    | NuGetPackageSourceCredentials[]
-    | NuGetPackageSourceCredentials
-    | unknown
+  [key: string]: unknown
 }
 
 interface NuGetConfigXml {
-  configuration: NuGetConfiguration
+  configuration: NuGetConfiguration | string
 }
 
 /**
- * Adds or updates a NuGet package source in the NuGet.config content from a zip file.
+ * Encodes a string as an XML local name the same way .NET's
+ * XmlConvert.EncodeLocalName does (which NuGet uses for credential element
+ * names): characters that are not valid in an XML name are written as
+ * _xHHHH_. A leading character that is not a valid name start character
+ * (e.g. a digit) is also encoded. A literal "_x" that looks like an escape
+ * sequence has its underscore escaped so the value round-trips.
+ */
+export function encodeXmlLocalName(name: string): string {
+  // XML 1.0 (5th edition) NameStartChar / NameChar ranges (BMP only)
+  const nameStartRanges: Array<[number, number]> = [
+    [0x41, 0x5a], // A-Z
+    [0x5f, 0x5f], // _
+    [0x61, 0x7a], // a-z
+    [0xc0, 0xd6],
+    [0xd8, 0xf6],
+    [0xf8, 0x2ff],
+    [0x370, 0x37d],
+    [0x37f, 0x1fff],
+    [0x200c, 0x200d],
+    [0x2070, 0x218f],
+    [0x2c00, 0x2fef],
+    [0x3001, 0xd7ff],
+    [0xf900, 0xfdcf],
+    [0xfdf0, 0xfffd]
+  ]
+  const nameExtraRanges: Array<[number, number]> = [
+    [0x2d, 0x2e], // - .
+    [0x30, 0x39], // 0-9
+    [0xb7, 0xb7],
+    [0x300, 0x36f],
+    [0x203f, 0x2040]
+  ]
+  const inRanges = (code: number, ranges: Array<[number, number]>): boolean =>
+    ranges.some(([lo, hi]) => code >= lo && code <= hi)
+  const isNameStartChar = (c: string): boolean =>
+    inRanges(c.charCodeAt(0), nameStartRanges)
+  const isNameChar = (c: string): boolean =>
+    isNameStartChar(c) || inRanges(c.charCodeAt(0), nameExtraRanges)
+  const hex = (c: string): string =>
+    c.charCodeAt(0).toString(16).toUpperCase().padStart(4, '0')
+
+  let result = ''
+  for (let i = 0; i < name.length; i++) {
+    const c = name[i]
+    // Escape an underscore that would otherwise be read as an escape sequence
+    if (c === '_' && /^_x[0-9A-Fa-f]{4}_/.test(name.substring(i))) {
+      result += '_x005F_'
+      continue
+    }
+    const valid = i === 0 ? isNameStartChar(c) : isNameChar(c)
+    result += valid ? c : `_x${hex(c)}_`
+  }
+  return result
+}
+
+function isEnvironmentVariableReference(value: string): boolean {
+  return /^%[^%\s]+%$/.test(value)
+}
+
+function toArray<T>(value: T[] | T | undefined): T[] {
+  if (value === undefined) return []
+  return Array.isArray(value) ? value : [value]
+}
+
+/**
+ * Adds or updates a NuGet package source in NuGet.config XML content.
+ * This is a pure function: it does not touch the file system.
  *
  * @param config - The NuGet source configuration
- * @param existingXmlContent - The existing XML content from the zip file NuGet.config
- * @returns Promise with the result and the updated XML content
+ * @param existingXmlContent - The existing NuGet.config XML content, if any
+ * @returns The result and the updated XML content
  */
 export async function addOrUpdateNuGetConfigSource(
   config: NuGetSourceConfig,
@@ -57,225 +120,139 @@ export async function addOrUpdateNuGetConfigSource(
 ): Promise<NuGetConfigModificationResult & { xmlContent: string }> {
   let nugetConfigXml: NuGetConfigXml
   let isNew = false
-  const cwd = process.cwd()
 
-  core.info('NuGet Config: Processing NuGet.config from zip file artifact')
-
-  // Determine the NuGet.config path - check if it exists in the current directory
-  let nugetConfigPath: string
-  const matches = await glob('**/NuGet.config', {
-    cwd,
-    nodir: true
-  })
-
-  if (matches.length > 0) {
-    // Found existing file
-    nugetConfigPath = path.join(cwd, matches[0])
-  } else {
-    // Will create new file in cwd
-    nugetConfigPath = path.join(cwd, 'NuGet.config')
-  }
-
-  if (!existingXmlContent || !existingXmlContent.trim()) {
-    // Check if file exists and load it
-    if (matches.length > 0) {
-      core.info(
-        `NuGet Config: Found existing NuGet.config at ${nugetConfigPath}`
-      )
-      try {
-        existingXmlContent = fs.readFileSync(nugetConfigPath, 'utf8')
-      } catch {
-        core.info(
-          `NuGet Config: Found NuGet.config path but file not present; creating new config`
-        )
-        isNew = true
-        existingXmlContent = ''
-      }
-    } else {
-      core.info(
-        'NuGet Config: No existing XML content provided, creating new config'
-      )
-      isNew = true
-      existingXmlContent = ''
-    }
-  }
-
-  if (!isNew && existingXmlContent && existingXmlContent.trim()) {
+  if (existingXmlContent && existingXmlContent.trim()) {
     nugetConfigXml = (await xml2js.parseStringPromise(
       existingXmlContent
     )) as NuGetConfigXml
-    core.debug(
-      `NuGet Config: Parsed configuration sections from existing content: ${JSON.stringify(Object.keys(nugetConfigXml.configuration))}`
-    )
-  } else {
-    isNew = true
-    nugetConfigXml = {
-      configuration: {
-        packageSources: { add: [] }
-      }
+    if (!nugetConfigXml || nugetConfigXml.configuration === undefined) {
+      throw new Error(
+        'Existing NuGet.config does not have a <configuration> root element'
+      )
     }
-  }
-
-  // Ensure packageSources exists and normalize structure
-  if (!nugetConfigXml.configuration.packageSources) {
-    core.info(
-      'NuGet Config: packageSources section not found, creating new one'
-    )
-    nugetConfigXml.configuration.packageSources = { add: [] }
-  }
-
-  core.debug(
-    `NuGet Config: packageSources type is ${Array.isArray(nugetConfigXml.configuration.packageSources) ? 'array' : 'object'}`
-  )
-  core.debug(
-    `NuGet Config: Full configuration structure: ${JSON.stringify(Object.keys(nugetConfigXml.configuration))}`
-  )
-
-  // Handle both array and object formats from xml2js
-  let packageSources: NuGetPackageSources
-  if (Array.isArray(nugetConfigXml.configuration.packageSources)) {
-    // If it's an array, use the first element (should be the main packageSources)
-    core.info(
-      `NuGet Config: packageSources is array with ${nugetConfigXml.configuration.packageSources.length} elements`
-    )
-    packageSources = nugetConfigXml.configuration
-      .packageSources[0] as NuGetPackageSources
   } else {
-    // If it's a single object, use it directly
-    core.info('NuGet Config: packageSources is single object')
-    packageSources = nugetConfigXml.configuration
-      .packageSources as NuGetPackageSources
+    core.info('NuGet Config: No existing NuGet.config content, creating new')
+    isNew = true
+    nugetConfigXml = { configuration: {} }
   }
 
-  // Ensure the add array exists
-  if (!packageSources.add) {
+  // An empty <configuration/> element is parsed as an empty string
+  if (typeof nugetConfigXml.configuration !== 'object') {
+    nugetConfigXml.configuration = {}
+  }
+  const configuration = nugetConfigXml.configuration
+
+  // Ensure packageSources exists and normalise structure
+  if (
+    !configuration.packageSources ||
+    typeof configuration.packageSources !== 'object'
+  ) {
+    configuration.packageSources = { add: [] }
+  }
+
+  let packageSources: NuGetPackageSources
+  if (Array.isArray(configuration.packageSources)) {
+    if (
+      !configuration.packageSources[0] ||
+      typeof configuration.packageSources[0] !== 'object'
+    ) {
+      configuration.packageSources[0] = { add: [] }
+    }
+    packageSources = configuration.packageSources[0]
+  } else {
+    packageSources = configuration.packageSources
+  }
+
+  const sources = toArray(packageSources.add)
+  packageSources.add = sources
+
+  if (sources.length > 0) {
     core.info(
-      'NuGet Config: add array not found in packageSources, creating new one'
+      `NuGet Config: Existing source keys: ${sources.map((s) => s.$.key).join(', ')}`
     )
-    packageSources.add = []
   }
 
-  core.info(
-    `NuGet Config: Found ${packageSources.add.length} existing package sources`
-  )
-  if (packageSources.add.length > 0) {
-    const existingKeys = packageSources.add.map((s) => s.$.key)
-    core.info(`NuGet Config: Existing source keys: ${existingKeys.join(', ')}`)
-  }
-
-  // Ensure add is an array (xml2js might return a single object if there's only one source)
-  if (!Array.isArray(packageSources.add)) {
-    core.info('NuGet Config: Converting single add object to array')
-    packageSources.add = [packageSources.add]
-  }
-
-  const sources = packageSources.add
-
-  // Add or update the source
   const existingSource = sources.find((s) => s.$.key === config.name)
   if (existingSource) {
     core.info(
-      `NuGet Config: Updating existing source '${config.name}' from '${existingSource.$.value}' to '${config.source}'`
+      `NuGet Config: Updating existing source '${config.name}' to '${config.source}'`
     )
     existingSource.$.value = config.source
   } else {
     core.info(
       `NuGet Config: Adding new source '${config.name}' with value '${config.source}'`
     )
-    sources.push({
-      $: {
-        key: config.name,
-        value: config.source
-      }
-    })
+    sources.push({ $: { key: config.name, value: config.source } })
   }
-
-  core.info(
-    `NuGet Config: Total package sources after modification: ${sources.length}`
-  )
-  core.debug(
-    `NuGet Config: All source keys after modification: ${sources.map((s) => s.$.key).join(', ')}`
-  )
 
   // Handle credentials
   if (config.username && config.password) {
-    if (!nugetConfigXml.configuration.packageSourceCredentials) {
-      nugetConfigXml.configuration.packageSourceCredentials = {}
+    if (!isEnvironmentVariableReference(config.password)) {
+      core.warning(
+        `NuGet Config: A clear-text password was provided for source '${config.name}'. ` +
+          'It will be written to NuGet.config and committed to the Umbraco Cloud git repository. ' +
+          'Consider storing the password as an Umbraco Cloud secret and passing a reference to it ' +
+          'in the form %SECRET_NAME% instead.'
+      )
     }
 
-    // Handle both array and object formats from xml2js
+    if (
+      !configuration.packageSourceCredentials ||
+      typeof configuration.packageSourceCredentials !== 'object'
+    ) {
+      configuration.packageSourceCredentials = {}
+    }
+
     let credentialsSection: NuGetPackageSourceCredentials
-    if (Array.isArray(nugetConfigXml.configuration.packageSourceCredentials)) {
-      credentialsSection = nugetConfigXml.configuration
-        .packageSourceCredentials[0] as NuGetPackageSourceCredentials
+    if (Array.isArray(configuration.packageSourceCredentials)) {
+      if (
+        !configuration.packageSourceCredentials[0] ||
+        typeof configuration.packageSourceCredentials[0] !== 'object'
+      ) {
+        configuration.packageSourceCredentials[0] = {}
+      }
+      credentialsSection = configuration.packageSourceCredentials[0]
     } else {
-      credentialsSection = nugetConfigXml.configuration
-        .packageSourceCredentials as NuGetPackageSourceCredentials
+      credentialsSection = configuration.packageSourceCredentials
     }
 
-    if (!credentialsSection[config.name]) {
-      credentialsSection[config.name] = [{ add: [] }]
+    const elementName = encodeXmlLocalName(config.name)
+    let entries = toArray(credentialsSection[elementName])
+    if (entries.length === 0 || typeof entries[0] !== 'object') {
+      entries = [{ add: [] }]
     }
+    credentialsSection[elementName] = entries
 
-    const credentialsList = credentialsSection[config.name][0].add
+    const credentialsList = toArray(entries[0].add)
+    entries[0].add = credentialsList
 
-    // Update or add username
-    const usernameEntry = credentialsList.find((c) => c.$.key === 'Username')
-    if (usernameEntry) {
-      usernameEntry.$.value = config.username
-    } else {
-      credentialsList.push({
-        $: {
-          key: 'Username',
-          value: config.username
-        }
-      })
+    const setCredential = (key: string, value: string): void => {
+      const entry = credentialsList.find((c) => c.$.key === key)
+      if (entry) {
+        entry.$.value = value
+      } else {
+        credentialsList.push({ $: { key, value } })
+      }
     }
-
-    // Update or add password
-    const passwordEntry = credentialsList.find(
-      (c) => c.$.key === 'ClearTextPassword'
-    )
-    if (passwordEntry) {
-      passwordEntry.$.value = config.password
-    } else {
-      credentialsList.push({
-        $: {
-          key: 'ClearTextPassword',
-          value: config.password
-        }
-      })
-    }
+    setCredential('Username', config.username)
+    setCredential('ClearTextPassword', config.password)
   }
 
-  // Write back the NuGet.config with XML declaration
-  core.debug(
-    `NuGet Config: Final configuration sections before building XML: ${JSON.stringify(Object.keys(nugetConfigXml.configuration))}`
-  )
   const builder = new xml2js.Builder({
     headless: false,
     xmldec: { version: '1.0', encoding: 'utf-8' },
     renderOpts: { pretty: true }
   })
   const newXml = builder.buildObject(nugetConfigXml)
-  core.info(`NuGet Config: Generated updated XML configuration`)
-  core.debug(`NuGet Config: Final XML content:\n${newXml}`)
-
-  try {
-    fs.writeFileSync(nugetConfigPath, newXml, 'utf8')
-  } catch (error) {
-    core.error(
-      `NuGet Config: Failed to write NuGet.config to ${nugetConfigPath}: ${error}`
-    )
-    throw error
-  }
+  core.info(
+    `NuGet Config: Generated configuration with sources: ${sources.map((s) => s.$.key).join(', ')}`
+  )
 
   return {
     success: true,
     message: isNew
       ? `Created new NuGet.config and added source '${config.name}'.`
       : `Updated NuGet.config and added/updated source '${config.name}'.`,
-    nugetConfigPath,
     xmlContent: newXml
   }
 }
