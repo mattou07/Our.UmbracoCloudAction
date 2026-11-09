@@ -1,100 +1,194 @@
 import * as core from '@actions/core'
 import * as exec from '@actions/exec'
-import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
+import * as github from '@actions/github'
+import * as fs from 'fs'
+import * as path from 'path'
+import {
+  UmbracoCloudApiError,
+  type UmbracoCloudAPI
+} from '../api/umbraco-cloud-api.js'
 import {
   ActionInputs,
   ActionOutputs,
-  DeploymentResponse
+  DeploymentResponse,
+  PullRequestInfo
 } from '../types/index.js'
 import { validateRequiredInputs } from '../utils/helpers.js'
-import { pollDeploymentStatus } from '../utils/deployment-polling.js'
+import {
+  hasUpdatingMarkerError,
+  pollDeploymentStatus
+} from '../utils/deployment-polling.js'
 import { createPullRequestWithPatch } from '../github/pull-request.js'
-import * as fs from 'fs'
-import * as path from 'path'
-import * as github from '@actions/github'
 
+type CheckStatusApi = Pick<
+  UmbracoCloudAPI,
+  | 'getDeploymentStatus'
+  | 'getChangesById'
+  | 'getLatestCompletedDeployment'
+  | 'getDeploymentErrorDetails'
+> & {
+  getFailureLogExcerpts(
+    deploymentId: string,
+    maxLines?: number
+  ): Promise<Array<{ name: string; lines: string[] }>>
+}
+
+interface DowngradedPackage {
+  name: string
+  cloudVersion: string
+  sourceVersion: string
+  file: string
+}
+
+interface FailureResult {
+  outputs: ActionOutputs
+  /** Short guidance appended to the thrown error message. */
+  summary?: string
+}
+
+const DEPLOYMENT_FAILED_DOCS_URL =
+  'https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed'
+
+/*
+ * Decision rules: structure decides, text only enriches.
+ *
+ * Success/failure, whether a fix PR may be opened at all and whether "no
+ * changes" is benign are decided from structured data: the deployment state,
+ * `cloudRepositoryUpdated`, HTTP status codes and the problem-details `type`.
+ * Umbraco Cloud can reword its messages at any time, so message text is only
+ * used to enrich output and to narrow down when a PR is worth trying. Every
+ * text-based check must fail safe: when nothing matches, no PR is opened and
+ * the action still fails with all the details shown.
+ */
+
+/** Text hint: errors a git patch from Cloud can typically fix (package version drift). */
+const VERSION_FAILURE_PATTERN =
+  /downgrad|version (mismatch|conflict|check)|NU1605|NU1107/i
+
+/** Text hint: NuGet credential/feed failures; a patch won't help. */
+const NUGET_FAILURE_PATTERN = /error restoring packages|nu1301|nu1302/i
+
+/**
+ * Text hint: one entry of Cloud's downgrade message, e.g.
+ * "Package: Umbraco.Cms, Version: 17.7.2 ==> Referencing file: src/X.csproj contains lower Version: 17.4.2 ."
+ */
+const DOWNGRADE_ENTRY_PATTERN =
+  /Package:\s*([^,\s]+),\s*Version:\s*(\S+)\s*==>\s*Referencing file:\s*(.+?)\s+contains lower Version:\s*(\S+)/gi
+
+const NO_FIX_PR_MESSAGE =
+  'No fix PR attempted: this failure is not caused by changes made in Umbraco Cloud.'
+
+const DOWNGRADE_FALLBACK_ADVICE =
+  'Your source may reference older package versions than Umbraco Cloud; compare your .csproj package versions with the Cloud environment.'
+
+/**
+ * Waits for the deployment to reach a terminal state.
+ *
+ * Returns the outputs when the deployment completed successfully, and throws
+ * for any other outcome (after attempting to open a fix PR for failures).
+ */
 export async function handleCheckStatus(
-  api: UmbracoCloudAPI,
+  api: CheckStatusApi,
   inputs: ActionInputs
 ): Promise<ActionOutputs> {
-  validateRequiredInputs(inputs as unknown as Record<string, unknown>, [
-    'deploymentId',
-    'targetEnvironmentAlias'
-  ])
+  validateRequiredInputs(inputs, ['deploymentId', 'targetEnvironmentAlias'])
+  const deploymentId = inputs.deploymentId!
 
   core.info(
-    `Checking status for deployment ID: ${inputs.deploymentId}, environment: ${inputs.targetEnvironmentAlias}`
+    `Checking status for deployment ID: ${deploymentId}, environment: ${inputs.targetEnvironmentAlias}`
   )
 
-  // Poll until completed/failed, then use the result for the rest of the logic
   const timeoutMs = (inputs.timeoutSeconds || 1200) * 1000
   const deploymentStatus = await pollDeploymentStatus(
-    api.getApiKey(),
-    api.getProjectId(),
-    inputs.deploymentId!,
+    api,
+    deploymentId,
     timeoutMs
   )
 
   core.setOutput('deploymentState', deploymentStatus.deploymentState)
   core.setOutput('deploymentStatus', JSON.stringify(deploymentStatus))
 
-  // Handle deployment based on state
   if (deploymentStatus.deploymentState === 'Completed') {
     return await handleCompletedDeployment(api, inputs, deploymentStatus)
-  } else if (deploymentStatus.deploymentState === 'Failed') {
-    return await handleFailedDeployment(api, inputs, deploymentStatus)
-  } else {
-    // Check if the deployment failed due to updating markers
-    const hasUpdatingMarkerError = checkForUpdatingMarkerError(deploymentStatus)
-    if (hasUpdatingMarkerError) {
-      core.setFailed(
-        `Deployment failed due to updating marker: The site is currently being updated and cannot be upgraded. Please wait for the update to complete and retry the deployment.`
-      )
-    } else {
-      core.setFailed(
-        `Unexpected deployment status: ${deploymentStatus.deploymentState}`
-      )
-    }
+  }
 
-    return {
-      deploymentState: deploymentStatus.deploymentState,
-      deploymentStatus: JSON.stringify(deploymentStatus)
-    }
+  if (hasUpdatingMarkerError(deploymentStatus.deploymentStatusMessages)) {
+    reportUpdatingMarkerGuidance()
+    throw new Error(
+      `Deployment ${deploymentId} failed: it is blocked by leftover upgrade markers. Remove them via KUDU (site/locks) and retry. See: ${DEPLOYMENT_FAILED_DOCS_URL}`
+    )
+  }
+
+  if (deploymentStatus.deploymentState === 'Failed') {
+    const { outputs, summary } = await handleFailedDeployment(
+      api,
+      inputs,
+      deploymentStatus
+    )
+    const prNote = outputs.prUrl
+      ? `. A pull request with the Umbraco Cloud changes was opened: ${outputs.prUrl}`
+      : ''
+    const summaryNote = summary ? `. ${summary}` : ''
+    throw new Error(`Deployment ${deploymentId} failed${prNote}${summaryNote}`)
+  }
+
+  throw new Error(
+    `Deployment ended in unexpected state: ${deploymentStatus.deploymentState}`
+  )
+}
+
+function reportUpdatingMarkerGuidance(): void {
+  core.error(
+    '❌ Deployment is blocked by leftover upgrade markers interfering with the Deploy process.'
+  )
+  core.error(
+    'This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.'
+  )
+  core.error('')
+  core.error('Resolution using KUDU:')
+  core.error(
+    '1. Access KUDU on the target environment via the Umbraco Cloud portal'
+  )
+  core.error('2. Navigate to site > locks folder')
+  core.error(
+    '3. Remove files named: upgrading, upgrade-failed, or failed-upgrade'
+  )
+  core.error('4. Repeat the operation on the target environment')
+  core.error('')
+  core.error('For detailed steps see:')
+  core.error(DEPLOYMENT_FAILED_DOCS_URL)
+}
+
+function baseOutputs(deploymentStatus: DeploymentResponse): ActionOutputs {
+  return {
+    deploymentState: deploymentStatus.deploymentState,
+    deploymentStatus: JSON.stringify(deploymentStatus)
   }
 }
 
-/**
- * Check if the deployment failed due to updating marker blocking
- */
-function checkForUpdatingMarkerError(
-  deploymentStatus: DeploymentResponse
-): boolean {
-  if (!deploymentStatus.deploymentStatusMessages) {
+/** Structural check: 409 with problem type CloudNullDeployment ("no changes"). */
+function isCloudNullDeployment(error: unknown): boolean {
+  if (!(error instanceof UmbracoCloudApiError) || error.status !== 409) {
     return false
   }
-
-  return deploymentStatus.deploymentStatusMessages.some(
-    (msg) =>
-      msg.message.includes(
-        "The site can't be upgraded as it's blocked with the following markers: updating"
-      ) ||
-      msg.message.includes('CheckBlockingMarkers') ||
-      msg.message.includes('blocked with the following markers: updating')
+  const problemType = (error as { problemType?: string }).problemType
+  return (
+    problemType === 'CloudNullDeployment' ||
+    /CloudNullDeployment/.test(error.body)
   )
 }
 
 async function handleCompletedDeployment(
-  api: UmbracoCloudAPI,
+  api: CheckStatusApi,
   inputs: ActionInputs,
   deploymentStatus: DeploymentResponse
 ): Promise<ActionOutputs> {
   core.info('Deployment completed successfully')
 
-  // Get changes (diff) for completed deployment
   try {
     const changes = await api.getChangesById(
       inputs.deploymentId!,
-      inputs.targetEnvironmentAlias!
+      inputs.targetEnvironmentAlias
     )
 
     if (changes.changes && changes.changes.trim().length > 0) {
@@ -107,16 +201,11 @@ async function handleCompletedDeployment(
     core.setOutput('changes', JSON.stringify(changes))
 
     return {
-      deploymentState: deploymentStatus.deploymentState,
-      deploymentStatus: JSON.stringify(deploymentStatus),
+      ...baseOutputs(deploymentStatus),
       changes: JSON.stringify(changes)
     }
   } catch (diffError: unknown) {
-    if (
-      diffError instanceof Error &&
-      diffError.message.includes('409 Conflict') &&
-      diffError.message.includes('CloudNullDeployment')
-    ) {
+    if (isCloudNullDeployment(diffError)) {
       core.info(
         'Deployment completed successfully, but there were no changes to apply to the cloud repository.'
       )
@@ -126,102 +215,101 @@ async function handleCompletedDeployment(
       )
     }
 
-    return {
-      deploymentState: deploymentStatus.deploymentState,
-      deploymentStatus: JSON.stringify(deploymentStatus)
-    }
+    return baseOutputs(deploymentStatus)
   }
 }
 
 async function handleFailedDeployment(
-  api: UmbracoCloudAPI,
+  api: CheckStatusApi,
   inputs: ActionInputs,
   deploymentStatus: DeploymentResponse
-): Promise<ActionOutputs> {
-  // Check for specific updating marker error first
-  const hasUpdatingMarkerError = checkForUpdatingMarkerError(deploymentStatus)
-  if (hasUpdatingMarkerError) {
-    core.setFailed('Deployment failed due to leftover upgrade markers')
-    core.error(
-      '❌ Deployment is blocked by leftover upgrade markers interfering with the Deploy process.'
-    )
-    core.error(
-      'This might happen if your environment was restarted during an upgrade, or the upgrade process encountered issues.'
-    )
-    core.error('')
-    core.error('Resolution using KUDU:')
-    core.error(
-      '1. Access KUDU on the target environment via the Umbraco Cloud portal'
-    )
-    core.error('2. Navigate to site > locks folder')
-    core.error(
-      '3. Remove files named: upgrading, upgrade-failed, or failed-upgrade'
-    )
-    core.error('4. Repeat the operation on the target environment')
-    core.error('')
-    core.error('For detailed steps see:')
-    core.error(
-      'https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed'
-    )
+): Promise<FailureResult> {
+  const deploymentId = inputs.deploymentId!
+  core.warning('Deployment failed - collecting error details')
 
-    return {
-      deploymentState: deploymentStatus.deploymentState,
-      deploymentStatus: JSON.stringify(deploymentStatus)
-    }
+  const errorDetails = await getErrorDetails(api, deploymentId)
+  await reportFailureLogExcerpts(api, deploymentId)
+
+  // Structural gate: Cloud already pushed this deployment's commit, so any
+  // Cloud -> source diff would contain the failing changes themselves.
+  if (deploymentStatus.cloudRepositoryUpdated === true) {
+    core.warning(
+      'This deployment already changed the Umbraco Cloud repository, so a sync PR would include the failing changes. Skipping PR creation: fix the problem in your source repository and redeploy.'
+    )
+    return { outputs: baseOutputs(deploymentStatus) }
   }
 
-  core.setFailed('Deployment failed')
-  core.warning(
-    'Deployment failed - attempting to retrieve git patch to fix the issue'
-  )
+  // Text hints from here on; each fails safe (no match => no PR).
+  const failureTexts = [
+    ...errorDetails,
+    ...(deploymentStatus.deploymentStatusMessages || []).map((m) => m.message)
+  ]
 
-  // Get detailed error information from Umbraco Cloud
-  const errorDetails = await getErrorDetails(api, inputs)
-
-  // Check if this is a NuGet-related failure first (exit early, no PR creation)
-  const isNuGetFailure = errorDetails.some(
-    (error) =>
-      error.toLowerCase().includes('error restoring packages') ||
-      error.toLowerCase().includes('nu1301') ||
-      error.toLowerCase().includes('nu1302')
-  )
-
-  if (isNuGetFailure) {
+  // NuGet failures are credential/configuration issues; a patch won't help.
+  if (failureTexts.some((text) => NUGET_FAILURE_PATTERN.test(text))) {
     core.warning(
       'NuGet-related failure detected. Skipping PR creation as this is likely a credential or configuration issue.'
     )
-    return {
-      deploymentState: deploymentStatus.deploymentState,
-      deploymentStatus: JSON.stringify(deploymentStatus)
+    return { outputs: baseOutputs(deploymentStatus) }
+  }
+
+  const versionFailureTexts = [
+    ...new Set(
+      failureTexts.filter((text) => VERSION_FAILURE_PATTERN.test(text))
+    )
+  ]
+  if (versionFailureTexts.length === 0) {
+    core.info(NO_FIX_PR_MESSAGE)
+    return { outputs: baseOutputs(deploymentStatus) }
+  }
+
+  const outputs = await attemptVersionFixPullRequest(
+    api,
+    inputs,
+    deploymentStatus,
+    errorDetails
+  )
+  if (outputs.prUrl) {
+    return { outputs }
+  }
+
+  return { outputs, summary: reportDowngradeGuidance(versionFailureTexts) }
+}
+
+async function attemptVersionFixPullRequest(
+  api: CheckStatusApi,
+  inputs: ActionInputs,
+  deploymentStatus: DeploymentResponse,
+  errorDetails: string[]
+): Promise<ActionOutputs> {
+  core.info(
+    'Version-related deployment failure detected. Attempting to get git patch to synchronise versions...'
+  )
+
+  let patch: string | undefined
+  try {
+    const changes = await api.getChangesById(
+      inputs.deploymentId!,
+      inputs.targetEnvironmentAlias
+    )
+    patch = changes.changes
+    core.info('Successfully retrieved git patch from failed deployment')
+    core.setOutput('changes', JSON.stringify(changes))
+  } catch (patchError) {
+    if (isCloudNullDeployment(patchError)) {
+      core.info(
+        'The failed deployment made no changes to the Umbraco Cloud repository.'
+      )
+    } else {
+      core.warning(
+        `Could not retrieve git patch from failed deployment: ${patchError}`
+      )
     }
   }
 
-  // Check if this is a version-related failure that can be fixed with a patch
-  const isVersionFailure = errorDetails.some(
-    (error) =>
-      error.toLowerCase().includes('downgraded') ||
-      error.toLowerCase().includes('version') ||
-      error.toLowerCase().includes('package')
-  )
-
-  if (isVersionFailure) {
-    core.info(
-      'Version-related deployment failure detected. Attempting to get git patch to synchronise versions...'
-    )
-
-    try {
-      // Try to get the git patch from the failed deployment
-      const changes = await api.getChangesById(
-        inputs.deploymentId!,
-        inputs.targetEnvironmentAlias!
-      )
-
-      core.info('Successfully retrieved git patch from failed deployment')
-      core.setOutput('changes', JSON.stringify(changes))
-
-      // Create GitHub PR with the patch
-      const prTitle = `Fix: Update package versions for deployment ${inputs.deploymentId}`
-      const prBody = `This PR applies the git patch from Umbraco Cloud to fix package version issues in deployment ${inputs.deploymentId}.
+  if (patch && patch.trim()) {
+    const prTitle = `Fix: Update package versions for deployment ${inputs.deploymentId}`
+    const prBody = `This PR applies the git patch from Umbraco Cloud to fix package version issues in deployment ${inputs.deploymentId}.
 
 **Failed Deployment ID:** ${inputs.deploymentId}
 **Target Environment:** ${inputs.targetEnvironmentAlias}
@@ -232,42 +320,104 @@ ${errorDetails.map((error) => `- ${error}`).join('\n')}
 
 The changes in this PR contain the necessary package version updates from Umbraco Cloud.`
 
-      await createPullRequestInWorkspace(
-        changes.changes,
-        prTitle,
-        prBody,
-        inputs.deploymentId!
-      )
+    const pr = await tryCreatePullRequest(
+      inputs,
+      patch,
+      prTitle,
+      prBody,
+      inputs.deploymentId!
+    )
 
-      return {
-        deploymentState: deploymentStatus.deploymentState,
-        deploymentStatus: JSON.stringify(deploymentStatus),
-        changes: JSON.stringify(changes)
-      }
-    } catch (patchError) {
-      core.warning(
-        `Could not retrieve git patch from failed deployment: ${patchError}`
-      )
-      core.info('Falling back to latest completed deployment approach...')
-
-      // Fall back to the original approach
-      return await attemptPullRequestCreation(api, inputs, deploymentStatus)
+    return {
+      ...baseOutputs(deploymentStatus),
+      changes: JSON.stringify({ changes: patch }),
+      ...prOutputs(pr)
     }
   }
 
-  // Try to get the latest completed deployment and create a PR
+  core.info('Falling back to latest completed deployment approach...')
   return await attemptPullRequestCreation(api, inputs, deploymentStatus)
 }
 
+/** Parses Cloud's downgrade message into package entries (text hint). */
+export function parseDowngradedPackages(texts: string[]): DowngradedPackage[] {
+  const packages = new Map<string, DowngradedPackage>()
+  for (const text of texts) {
+    for (const match of text.matchAll(DOWNGRADE_ENTRY_PATTERN)) {
+      const [, name, cloudVersion, file, sourceVersion] = match
+      const entry: DowngradedPackage = {
+        name,
+        cloudVersion: cloudVersion.replace(/\.+$/, ''),
+        sourceVersion: sourceVersion.replace(/\.+$/, ''),
+        file: file.trim()
+      }
+      packages.set(`${entry.name}|${entry.file}`, entry)
+    }
+  }
+  return [...packages.values()]
+}
+
+/**
+ * Explains a version failure no PR could fix: the source itself references
+ * older packages than Cloud runs. Returns a short summary for the thrown error.
+ */
+function reportDowngradeGuidance(versionFailureTexts: string[]): string {
+  const packages = parseDowngradedPackages(versionFailureTexts)
+
+  if (packages.length === 0) {
+    // Wording changed or unexpected format: show the raw text with generic advice.
+    core.error(DOWNGRADE_FALLBACK_ADVICE)
+    versionFailureTexts.forEach((text) => core.error(text))
+    return DOWNGRADE_FALLBACK_ADVICE
+  }
+
+  core.error(
+    'Your source references older package versions than Umbraco Cloud is running. Update these in your repository and redeploy:'
+  )
+  for (const pkg of packages) {
+    core.error(
+      `- ${pkg.name}: ${pkg.sourceVersion} → ${pkg.cloudVersion} (${pkg.file})`
+    )
+  }
+  const short = packages
+    .map((pkg) => `${pkg.name} ${pkg.sourceVersion} → ${pkg.cloudVersion}`)
+    .join(', ')
+  return `Your source references older package versions than Umbraco Cloud is running (${short}); update them in your repository and redeploy.`
+}
+
+/** Prints error lines from Cloud's signed build/restore logs, if any. */
+async function reportFailureLogExcerpts(
+  api: CheckStatusApi,
+  deploymentId: string
+): Promise<void> {
+  let excerpts: Array<{ name: string; lines: string[] }>
+  try {
+    excerpts = (await api.getFailureLogExcerpts(deploymentId)) || []
+  } catch (error) {
+    core.debug(`Could not read Umbraco Cloud logs: ${error}`)
+    return
+  }
+
+  const withLines = excerpts.filter((e) => e.lines && e.lines.length > 0)
+  if (withLines.length === 0) return
+
+  core.startGroup('Errors from Umbraco Cloud logs')
+  try {
+    for (const excerpt of withLines) {
+      core.info(`${excerpt.name}:`)
+      excerpt.lines.forEach((line) => core.error(line))
+    }
+  } finally {
+    core.endGroup()
+  }
+}
+
 async function getErrorDetails(
-  api: UmbracoCloudAPI,
-  inputs: ActionInputs
+  api: CheckStatusApi,
+  deploymentId: string
 ): Promise<string[]> {
   try {
-    const errorDetails = await api.getDeploymentErrorDetails(
-      inputs.deploymentId!,
-      inputs.targetEnvironmentAlias!
-    )
+    const errorDetails = await api.getDeploymentErrorDetails(deploymentId)
 
     if (errorDetails.length > 0) {
       core.warning('Deployment failed with the following errors:')
@@ -295,7 +445,7 @@ async function getErrorDetails(
 }
 
 async function attemptPullRequestCreation(
-  api: UmbracoCloudAPI,
+  api: CheckStatusApi,
   inputs: ActionInputs,
   deploymentStatus: DeploymentResponse
 ): Promise<ActionOutputs> {
@@ -305,25 +455,21 @@ async function attemptPullRequestCreation(
     )
 
     const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(
-      inputs.targetEnvironmentAlias!
+      inputs.targetEnvironmentAlias
     )
 
     if (!latestCompletedDeploymentId) {
       core.warning('No completed deployments found to create PR from')
-      return {
-        deploymentState: deploymentStatus.deploymentState,
-        deploymentStatus: JSON.stringify(deploymentStatus)
-      }
+      return baseOutputs(deploymentStatus)
     }
 
     core.info(
       `Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`
     )
 
-    // Get the changes from the latest completed deployment
     const changes = await api.getChangesById(
       latestCompletedDeploymentId,
-      inputs.targetEnvironmentAlias!
+      inputs.targetEnvironmentAlias
     )
 
     core.info('Retrieved changes from latest completed deployment')
@@ -333,7 +479,6 @@ async function attemptPullRequestCreation(
     )
     core.setOutput('changes', JSON.stringify(changes))
 
-    // Create GitHub PR with the changes
     const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`
     const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).
 
@@ -343,7 +488,8 @@ async function attemptPullRequestCreation(
 
 The changes in this PR are based on the git patch from the latest successful deployment.`
 
-    await createPullRequestInWorkspace(
+    const pr = await tryCreatePullRequest(
+      inputs,
       changes.changes,
       prTitle,
       prBody,
@@ -351,32 +497,88 @@ The changes in this PR are based on the git patch from the latest successful dep
     )
 
     return {
-      deploymentState: deploymentStatus.deploymentState,
-      deploymentStatus: JSON.stringify(deploymentStatus),
+      ...baseOutputs(deploymentStatus),
       latestCompletedDeploymentId,
-      changes: JSON.stringify(changes)
+      changes: JSON.stringify(changes),
+      ...prOutputs(pr)
     }
   } catch (error) {
-    core.warning(
-      `Failed to get latest completed deployment or create PR: ${error}`
-    )
-    if (
-      error instanceof Error &&
-      error.message.includes('Not in a git repository')
-    ) {
-      core.warning(
-        'PR creation failed because the action is not running in a git repository context.'
-      )
-      core.warning(
-        'This typically happens when the action is not properly configured in the GitHub Actions workflow.'
-      )
-      core.warning('Please ensure the workflow includes: actions/checkout@v4')
-    }
+    core.warning(`Failed to get latest completed deployment: ${error}`)
+    return baseOutputs(deploymentStatus)
+  }
+}
 
-    return {
-      deploymentState: deploymentStatus.deploymentState,
-      deploymentStatus: JSON.stringify(deploymentStatus)
-    }
+function prOutputs(pr: PullRequestInfo | undefined): ActionOutputs {
+  return pr ? { prUrl: pr.url, prNumber: String(pr.number) } : {}
+}
+
+/**
+ * Resolve the branch the fix PR should target.
+ * Explicit input wins; otherwise the triggering branch (only for branch refs,
+ * not e.g. refs/pull/N/merge or tags), then the repository default branch.
+ */
+export function resolveBaseBranch(inputs: ActionInputs): string {
+  if (inputs.baseBranch && inputs.baseBranch.trim()) {
+    return inputs.baseBranch.trim()
+  }
+
+  const ref = github.context.ref || ''
+  if (ref.startsWith('refs/heads/')) {
+    return ref.substring('refs/heads/'.length)
+  }
+
+  const defaultBranch = github.context.payload?.repository?.default_branch
+  if (typeof defaultBranch === 'string' && defaultBranch) {
+    return defaultBranch
+  }
+
+  return 'main'
+}
+
+/**
+ * Opens a PR with the given patch. Never throws: PR creation is best effort,
+ * the deployment outcome decides whether the action fails.
+ */
+async function tryCreatePullRequest(
+  inputs: ActionInputs,
+  patch: string,
+  prTitle: string,
+  prBody: string,
+  sourceDeploymentId: string
+): Promise<PullRequestInfo | undefined> {
+  if (!patch || !patch.trim()) {
+    core.info(
+      'The git patch from Umbraco Cloud is empty; skipping PR creation.'
+    )
+    return undefined
+  }
+
+  const token =
+    inputs.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN
+  if (!token) {
+    core.warning(
+      'No GitHub token available (github-token input, GITHUB_TOKEN or GH_TOKEN); skipping PR creation.'
+    )
+    return undefined
+  }
+
+  const baseBranch = resolveBaseBranch(inputs)
+
+  try {
+    const pr = await createPullRequestInWorkspace(
+      patch,
+      prTitle,
+      prBody,
+      sourceDeploymentId,
+      baseBranch,
+      token
+    )
+    core.setOutput('pr-url', pr.url)
+    core.setOutput('pr-number', String(pr.number))
+    return pr
+  } catch (error) {
+    core.warning(`Failed to create pull request: ${error}`)
+    return undefined
   }
 }
 
@@ -384,92 +586,61 @@ async function createPullRequestInWorkspace(
   changes: string,
   prTitle: string,
   prBody: string,
-  sourceDeploymentId: string
-): Promise<void> {
+  sourceDeploymentId: string,
+  baseBranch: string,
+  token: string
+): Promise<PullRequestInfo> {
+  core.setSecret(token)
+
   const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
   const prWorkspace = path.join(
     process.env.GITHUB_WORKSPACE || process.cwd(),
     `pr-workspace-${runId}`
   )
+  const originalCwd = process.cwd()
 
   try {
-    // The GITHUB_TOKEN is automatically available in GitHub Actions environment
-    const githubToken = process.env.GITHUB_TOKEN || process.env.GH_TOKEN
-    if (!githubToken) {
-      throw new Error(
-        'GITHUB_TOKEN or GH_TOKEN environment variable is not available. Ensure the workflow has proper permissions.'
-      )
-    }
-
-    // Create the subfolder
     fs.mkdirSync(prWorkspace, { recursive: true })
 
-    // Clone the current repo and checkout the current branch into the subfolder
-    // Use the token in the URL for authentication
-    const repoUrl = `https://x-access-token:${githubToken}@github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
-    const currentBranch = github.context.ref.replace('refs/heads/', '')
+    const host = (github.context.serverUrl || 'https://github.com').replace(
+      /^https?:\/\//,
+      ''
+    )
+    const { owner, repo } = github.context.repo
+    const publicUrl = `https://${host}/${owner}/${repo}.git`
+    const repoUrl = `https://x-access-token:${token}@${host}/${owner}/${repo}.git`
 
     core.info(`Cloning repository to: ${prWorkspace}`)
-    core.info(
-      `Repository URL: https://github.com/${github.context.repo.owner}/${github.context.repo.repo}.git`
-    )
-    core.info(`Branch: ${currentBranch}`)
+    core.info(`Repository URL: ${publicUrl}`)
+    core.info(`Branch: ${baseBranch}`)
 
     await exec.exec('git', [
       'clone',
       '--branch',
-      currentBranch,
+      baseBranch,
       repoUrl,
       prWorkspace
     ])
 
-    // Change working directory to the subfolder for all git/PR operations
-    const originalCwd = process.cwd()
     process.chdir(prWorkspace)
 
-    // Ensure working directory is clean before proceeding
-    await ensureCleanWorkingDirectory()
-
-    // Run the PR creation logic (patch application, branch creation, etc.)
-    await createPullRequestWithPatch(
+    return await createPullRequestWithPatch(
       changes,
-      currentBranch,
+      baseBranch,
       prTitle,
       prBody,
-      sourceDeploymentId
+      sourceDeploymentId,
+      token
     )
-
-    // Restore original working directory
-    process.chdir(originalCwd)
   } catch (error) {
-    core.error(`Failed to create PR workspace or clone repository: ${error}`)
-
-    if (error instanceof Error) {
-      if (
-        error.message.includes('Authentication failed') ||
-        error.message.includes('fatal: Authentication failed')
-      ) {
-        core.error(
-          'Git authentication failed. This suggests an issue with the GITHUB_TOKEN.'
-        )
-        core.error('Ensure that:')
-        core.error('1. The workflow has appropriate permissions')
-        core.error('2. The GITHUB_TOKEN is properly set')
-        core.error('3. The repository is accessible with the provided token')
-      } else if (
-        error.message.includes('Repository not found') ||
-        error.message.includes('fatal: repository')
-      ) {
-        core.error('Repository not found or not accessible.')
-        core.error(
-          'Check that the repository exists and the token has the necessary permissions.'
-        )
-      }
-    }
-
+    core.error(`Failed to create pull request from workspace: ${error}`)
+    core.error(
+      `Check that the token can push to ${github.context.repo.owner}/${github.context.repo.repo} (contents: write, pull-requests: write) and that branch "${baseBranch}" exists.`
+    )
     throw error
   } finally {
-    // Clean up the subfolder after PR creation
+    // Leave the directory before deleting it
+    process.chdir(originalCwd)
     if (fs.existsSync(prWorkspace)) {
       try {
         fs.rmSync(prWorkspace, { recursive: true, force: true })
@@ -478,25 +649,5 @@ async function createPullRequestInWorkspace(
         core.warning(`Failed to clean up workspace: ${cleanupError}`)
       }
     }
-  }
-}
-
-async function ensureCleanWorkingDirectory(): Promise<void> {
-  let gitStatusOutput = ''
-  await exec.exec('git', ['status', '--porcelain'], {
-    listeners: {
-      stdout: (data) => {
-        gitStatusOutput += data.toString()
-      }
-    }
-  })
-
-  if (gitStatusOutput.trim() !== '') {
-    core.info('Working directory is not clean. Resetting...')
-    await exec.exec('git', ['reset', '--hard', 'HEAD'])
-    await exec.exec('git', ['clean', '-fd'])
-    core.info('Working directory reset complete')
-  } else {
-    core.info('Working directory is already clean')
   }
 }

@@ -1,827 +1,660 @@
 import { jest } from '@jest/globals'
+import * as fs from 'fs'
+import * as os from 'os'
+import * as path from 'path'
 import JSZip from 'jszip'
+import type { UmbracoCloudAPI } from '../src/api/umbraco-cloud-api.js'
+import type { ActionInputs } from '../src/types/index.js'
+import { STATUS_MESSAGES } from './fixtures/umbraco-cloud-responses.js'
 
-// Import the functions
-import {
-  removeExcludedPaths,
-  handleAddArtifact
-} from '../src/actions/add-artifact.js'
-import { UmbracoCloudAPI } from '../src/api/umbraco-cloud-api.js'
-import { ActionInputs, ActionOutputs } from '../src/types/index.js'
-
-// Mock the validateRequiredInputs function directly
-jest.mock('../src/utils/helpers.js', () => ({
-  validateRequiredInputs: jest.fn(
-    (inputs: Record<string, unknown>, required: string[]) => {
-      const missing = required.filter((key) => !inputs[key])
-      if (missing.length > 0) {
-        throw new Error(`Missing required inputs: ${missing.join(', ')}`)
-      }
-    }
-  )
-}))
-
-// Mock fs module for file system operations
-jest.mock('fs', () => ({
-  readFileSync: jest.fn(),
-  writeFileSync: jest.fn(),
-  unlinkSync: jest.fn(),
-  existsSync: jest.fn(),
-  mkdirSync: jest.fn(),
-  rmSync: jest.fn(),
-  readdirSync: jest.fn(),
-  statSync: jest.fn()
-}))
-
-// Mock path module
-jest.mock('path', () => ({
-  join: jest.fn((...args) => args.join('/')),
-  resolve: jest.fn()
-}))
-
-// Mock nuget-config module
-jest.mock('../src/utils/nuget-config.js', () => ({
-  addOrUpdateNuGetConfigSource: jest.fn()
-}))
-
-// Mock @actions/core
-jest.mock('@actions/core', () => ({
+jest.unstable_mockModule('@actions/core', () => ({
   info: jest.fn(),
+  debug: jest.fn(),
   warning: jest.fn(),
-  setFailed: jest.fn(),
+  error: jest.fn(),
   setOutput: jest.fn(),
-  debug: jest.fn()
+  setFailed: jest.fn(),
+  startGroup: jest.fn(),
+  endGroup: jest.fn()
 }))
 
-// Mock exec module to avoid system calls
-jest.mock('@actions/exec', () => ({
-  exec: jest.fn(() => Promise.resolve(0))
-}))
+describe('add-artifact', () => {
+  let core: typeof import('@actions/core')
+  let handleAddArtifact: typeof import('../src/actions/add-artifact.js').handleAddArtifact
+  let removeExcludedPaths: typeof import('../src/actions/add-artifact.js').removeExcludedPaths
 
-describe('removeExcludedPaths', () => {
-  let zip: JSZip
+  let tempDir: string
+  let mockAddDeploymentArtifact: jest.Mock<
+    (
+      filePath: string,
+      description?: string,
+      version?: string
+    ) => Promise<string>
+  >
+  let api: UmbracoCloudAPI
 
-  beforeEach(() => {
-    zip = new JSZip()
-    jest.clearAllMocks()
+  beforeAll(async () => {
+    core = await import('@actions/core')
+    const mod = await import('../src/actions/add-artifact.js')
+    handleAddArtifact = mod.handleAddArtifact
+    removeExcludedPaths = mod.removeExcludedPaths
   })
-
-  beforeEach(() => {
-    zip = new JSZip()
-  })
-
-  describe('Valid Input Scenarios', () => {
-    test('removes single excluded path', () => {
-      // Arrange
-      const testFiles = {
-        '.git/config': 'config data',
-        '.git/HEAD': 'head data',
-        'src/index.js': 'source code'
-      }
-
-      Object.entries(testFiles).forEach(([path, content]) => {
-        zip.file(path, content)
-      })
-
-      const pathToExclude = '.git/'
-
-      // Act
-      removeExcludedPaths(zip, pathToExclude)
-
-      // Assert
-      expect(zip.files['.git/config']).toBeUndefined()
-      expect(zip.files['.git/HEAD']).toBeUndefined()
-      expect(zip.files['src/index.js']).toBeDefined()
-    })
-
-    test('removes multiple comma-separated excluded paths', () => {
-      // Arrange
-      const testFiles = {
-        '.git/config': 'data',
-        '.github/workflow.yml': 'data',
-        'node_modules/package/index.js': 'data',
-        'src/index.js': 'data'
-      }
-
-      Object.entries(testFiles).forEach(([path, content]) => {
-        zip.file(path, content)
-      })
-
-      const pathsToExclude = '.git/,.github/,node_modules/'
-
-      // Act
-      removeExcludedPaths(zip, pathsToExclude)
-
-      // Assert
-      expect(zip.files['.git/config']).toBeUndefined()
-      expect(zip.files['.github/workflow.yml']).toBeUndefined()
-      expect(zip.files['node_modules/package/index.js']).toBeUndefined()
-      expect(zip.files['src/index.js']).toBeDefined()
-    })
-
-    test('removes paths with spaces around commas', () => {
-      // Arrange
-      const testFiles = {
-        '.git/config': 'data',
-        '.github/workflow.yml': 'data',
-        'temp/file.txt': 'data',
-        'src/index.js': 'data'
-      }
-
-      Object.entries(testFiles).forEach(([path, content]) => {
-        zip.file(path, content)
-      })
-
-      const pathsToExclude = '.git/, .github/ , temp/'
-
-      // Act
-      removeExcludedPaths(zip, pathsToExclude)
-
-      // Assert
-      expect(zip.files['.git/config']).toBeUndefined()
-      expect(zip.files['.github/workflow.yml']).toBeUndefined()
-      expect(zip.files['temp/file.txt']).toBeUndefined()
-      expect(zip.files['src/index.js']).toBeDefined()
-    })
-
-    test('handles backslash path separators', () => {
-      // Arrange
-      const testFiles = {
-        'temp\\cache\\file.tmp': 'data',
-        'src\\index.js': 'data'
-      }
-
-      Object.entries(testFiles).forEach(([path, content]) => {
-        zip.file(path, content)
-      })
-
-      const pathToExclude = 'temp\\'
-
-      // Act
-      removeExcludedPaths(zip, pathToExclude)
-
-      // Assert
-      expect(zip.files['temp\\cache\\file.tmp']).toBeUndefined()
-      expect(zip.files['src\\index.js']).toBeDefined()
-    })
-
-    test('handles empty excluded paths gracefully', () => {
-      // Arrange
-      const testFiles = {
-        'src/index.js': 'data',
-        '.git/config': 'data'
-      }
-
-      Object.entries(testFiles).forEach(([path, content]) => {
-        zip.file(path, content)
-      })
-
-      const emptyPathsToExclude = ''
-
-      // Act & Assert
-      expect(() => removeExcludedPaths(zip, emptyPathsToExclude)).not.toThrow()
-      expect(zip.files['src/index.js']).toBeDefined()
-      expect(zip.files['.git/config']).toBeDefined()
-    })
-
-    test('handles whitespace-only excluded paths', () => {
-      // Arrange
-      zip.file('src/index.js', 'data')
-      const whitespaceOnlyPaths = '   \t\n  '
-
-      // Act & Assert
-      expect(() => removeExcludedPaths(zip, whitespaceOnlyPaths)).not.toThrow()
-      expect(zip.files['src/index.js']).toBeDefined()
-    })
-  })
-
-  describe('Invalid Input Validation', () => {
-    test('throws error for space-separated paths', () => {
-      // Arrange
-      const invalidSpaceSeparatedPaths = ['foo bar', '.git/ .github/']
-      const expectedErrorMessage = 'Invalid excluded-paths format'
-
-      // Act & Assert
-      invalidSpaceSeparatedPaths.forEach((invalidPath) => {
-        expect(() => removeExcludedPaths(zip, invalidPath)).toThrow(
-          expectedErrorMessage
-        )
-      })
-    })
-
-    test('throws error for mixed path separators', () => {
-      // Arrange
-      const invalidMixedSeparatorPaths = ['foo/bar\\baz', 'path\\to/mixed']
-      const expectedErrorMessage = 'contains mixed separators'
-
-      // Act & Assert
-      invalidMixedSeparatorPaths.forEach((invalidPath) => {
-        expect(() => removeExcludedPaths(zip, invalidPath)).toThrow(
-          expectedErrorMessage
-        )
-      })
-    })
-
-    test('throws error for unsafe relative paths', () => {
-      // Arrange
-      const unsafeRelativePaths = ['../etc/passwd', '../../sensitive']
-      const expectedErrorMessage = 'Invalid path'
-
-      // Act & Assert
-      unsafeRelativePaths.forEach((unsafePath) => {
-        expect(() => removeExcludedPaths(zip, unsafePath)).toThrow(
-          expectedErrorMessage
-        )
-      })
-    })
-
-    test('throws error for absolute paths', () => {
-      // The function validates path format and rejects absolute paths
-      expect(() => removeExcludedPaths(zip, '/absolute/path')).toThrow(
-        'Invalid path "/absolute/path" in excluded-paths'
-      )
-    })
-
-    test('logs info when Windows-style paths not found in artifact', () => {
-      // Windows-style paths are valid format but won't match Unix paths in zip
-      // This should not throw, just log info about the path not being found
-      expect(() =>
-        removeExcludedPaths(zip, 'C:\\some\\absolute\\path')
-      ).not.toThrow()
-    })
-
-    test('logs info when excluded paths not found in artifact (already removed)', () => {
-      zip.file('src/index.js', 'data')
-
-      // Should not throw - missing paths are logged as info since goal is to remove them
-      expect(() => removeExcludedPaths(zip, 'notfound/')).not.toThrow()
-    })
-
-    test('logs warning when no files match excluded paths', () => {
-      zip.file('src/index.js', 'data')
-
-      // Should not throw - just logs a warning about no matches
-      expect(() => removeExcludedPaths(zip, 'nonexistent/')).not.toThrow()
-    })
-  })
-
-  describe('Edge Cases', () => {
-    test('handles empty zip file gracefully', () => {
-      // Should not throw for empty zip - just logs that paths weren't found
-      expect(() => removeExcludedPaths(zip, '.git/')).not.toThrow()
-    })
-
-    test('handles deeply nested path names', () => {
-      const nestedPath = 'very/'.repeat(10) + 'deep/path/file.txt'
-      zip.file(nestedPath, 'data')
-      zip.file('src/index.js', 'data')
-
-      removeExcludedPaths(zip, 'very/')
-
-      expect(zip.files[nestedPath]).toBeUndefined()
-      expect(zip.files['src/index.js']).toBeDefined()
-    })
-
-    test('handles special characters in paths', () => {
-      zip.file('special@#$%/file.txt', 'data')
-      zip.file('normal/file.txt', 'data')
-
-      removeExcludedPaths(zip, 'special@#$%/')
-
-      expect(zip.files['special@#$%/file.txt']).toBeUndefined()
-      expect(zip.files['normal/file.txt']).toBeDefined()
-    })
-
-    test('handles partial path matches correctly', () => {
-      zip.file('.gitignore', 'data')
-      zip.file('.git/config', 'data')
-      zip.file('src/index.js', 'data')
-
-      removeExcludedPaths(zip, '.git/')
-
-      // .gitignore should remain (partial match)
-      expect(zip.files['.gitignore']).toBeDefined()
-      expect(zip.files['.git/config']).toBeUndefined()
-      expect(zip.files['src/index.js']).toBeDefined()
-    })
-  })
-
-  describe('TypeScript Type Safety', () => {
-    test('accepts JSZip instance and string parameters', () => {
-      const zip: JSZip = new JSZip()
-      const paths: string = '.git/,.github/'
-
-      zip.file('test.txt', 'data')
-
-      // This should compile without TypeScript errors
-      // No error thrown - paths not found is just logged as info (already removed)
-      expect(() => removeExcludedPaths(zip, paths)).not.toThrow()
-    })
-  })
-})
-
-describe('handleAddArtifact', () => {
-  let mockApi: jest.Mocked<UmbracoCloudAPI>
 
   beforeEach(() => {
     jest.clearAllMocks()
-
-    mockApi = {
-      addDeploymentArtifact: jest.fn()
-    } as Partial<jest.Mocked<UmbracoCloudAPI>> as jest.Mocked<UmbracoCloudAPI>
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'add-artifact-test-'))
+    mockAddDeploymentArtifact = jest.fn(async () => 'artifact-123')
+    api = {
+      addDeploymentArtifact: mockAddDeploymentArtifact
+    } as unknown as UmbracoCloudAPI
   })
 
-  describe('Valid Input Scenarios', () => {
-    test('handles minimal required inputs', async () => {
-      // Arrange
-      const minimalInputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        // Use NuGet config to avoid file processing
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org/v3/index.json'
-      }
-      const expectedArtifactId = 'artifact-123'
+  afterEach(() => {
+    fs.rmSync(tempDir, { recursive: true, force: true })
+  })
 
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
+  const UMBRACO_FILE = '{"project":"src/Web/Web.csproj"}'
 
-      // Act
-      const result = await handleAddArtifact(mockApi, minimalInputs)
+  /**
+   * Builds a test artifact. A root .umbraco file is added unless
+   * `withUmbraco` is false, since Umbraco Cloud requires one.
+   */
+  async function writeZip(
+    files: Record<string, string>,
+    { withUmbraco = true }: { withUmbraco?: boolean } = {}
+  ): Promise<string> {
+    const zip = new JSZip()
+    if (withUmbraco) {
+      zip.file('.umbraco', UMBRACO_FILE)
+    }
+    for (const [name, content] of Object.entries(files)) {
+      zip.file(name, content)
+    }
+    const buffer = await zip.generateAsync({ type: 'nodebuffer' })
+    const zipPath = path.join(tempDir, 'artifact.zip')
+    fs.writeFileSync(zipPath, buffer)
+    return zipPath
+  }
 
-      // Assert
-      expect(result.artifactId).toBe(expectedArtifactId)
-      expect(mockApi.addDeploymentArtifact).toHaveBeenCalledWith(
-        minimalInputs.filePath,
-        undefined, // description
-        undefined // version
-      )
-    })
+  async function readZip(zipPath: string): Promise<JSZip> {
+    return JSZip.loadAsync(fs.readFileSync(zipPath))
+  }
 
-    test('handles all optional parameters', async () => {
-      // Arrange
-      const fullInputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/full-artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        description: 'Full test artifact with all options',
-        version: '2.1.0',
-        nugetSourceName: 'ProductionSource',
-        nugetSourceUrl: 'https://prod.nuget.org/v3/index.json',
-        nugetSourceUsername: 'prod-user',
-        nugetSourcePassword: 'prod-pass',
-        excludedPaths: '.git/,.github/,.vscode/,temp/'
-      }
-      const expectedArtifactId = 'full-artifact-456'
+  function fileNames(zip: JSZip): string[] {
+    return Object.keys(zip.files)
+      .filter((n) => !zip.files[n].dir)
+      .sort()
+  }
 
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
+  function inputs(overrides: Partial<ActionInputs>): ActionInputs {
+    return {
+      projectId: 'project',
+      apiKey: 'key',
+      action: 'add-artifact',
+      ...overrides
+    } as ActionInputs
+  }
 
-      // Act
-      const result = await handleAddArtifact(mockApi, fullInputs)
-
-      // Assert
-      expect(result).toEqual<ActionOutputs>({
-        artifactId: expectedArtifactId,
-        nugetSourceStatus: expect.stringContaining(
-          'Failed to configure NuGet source'
-        )
+  describe('handleAddArtifact', () => {
+    test('removes excluded paths and writes zip back without NuGet or .cloud_gitignore', async () => {
+      const zipPath = await writeZip({
+        '.git/HEAD': 'ref: refs/heads/main',
+        '.git/config': '[core]',
+        '.github/workflows/ci.yml': 'on: push',
+        'src/Program.cs': 'class P {}',
+        'node_modules/pkg/index.js': 'x'
       })
-      expect(mockApi.addDeploymentArtifact).toHaveBeenCalledWith(
-        fullInputs.filePath,
-        fullInputs.description,
-        fullInputs.version
-      )
-    })
 
-    test('returns proper ActionOutputs interface', async () => {
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-
-      const expectedArtifactId = 'typed-artifact-789'
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      // Verify result matches ActionOutputs interface
-      const typedResult: ActionOutputs = result
-      expect(typedResult).toBeDefined()
-      expect(typeof result.artifactId).toBe('string')
-      expect(typeof result.nugetSourceStatus).toBe('string')
-    })
-  })
-
-  describe('Input Validation', () => {
-    test('throws error when filePath is missing', async () => {
-      const inputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        targetEnvironmentAlias: 'dev'
-        // filePath is missing
-      } as ActionInputs
-
-      await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow(
-        'Missing required inputs: filePath'
+      const result = await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          excludedPaths: '.git/,.github/,node_modules'
+        })
       )
 
-      expect(mockApi.addDeploymentArtifact).not.toHaveBeenCalled()
-    })
-
-    test('throws error when filePath is empty string', async () => {
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '',
-        targetEnvironmentAlias: 'dev'
-      }
-
-      await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow(
-        'Missing required inputs: filePath'
-      )
-    })
-
-    test('throws error when all required fields are missing', async () => {
-      const inputs = {} as ActionInputs
-
-      await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow(
-        'Missing required inputs: filePath'
-      )
-    })
-  })
-
-  describe('API Integration', () => {
-    test('handles API success response correctly', async () => {
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-
-      const expectedArtifactId = 'success-artifact-123'
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      expect(result.artifactId).toBe(expectedArtifactId)
-      expect(mockApi.addDeploymentArtifact).toHaveBeenCalledTimes(1)
-    })
-
-    test('propagates API errors correctly', async () => {
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-
-      const apiError = new Error('API connection failed')
-      mockApi.addDeploymentArtifact.mockRejectedValue(apiError)
-
-      await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow(
-        'API connection failed'
-      )
-    })
-
-    test('calls API with correct parameters', async () => {
-      const inputs: ActionInputs = {
-        projectId: 'param-test-project',
-        apiKey: 'param-test-key',
-        filePath: '/specific/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        description: 'Parameter validation artifact',
-        version: '1.2.3',
-        nugetSourceName: 'ParamSource',
-        nugetSourceUrl: 'https://param.nuget.org'
-      }
-
-      mockApi.addDeploymentArtifact.mockResolvedValue('param-artifact-id')
-
-      await handleAddArtifact(mockApi, inputs)
-
-      expect(mockApi.addDeploymentArtifact).toHaveBeenCalledWith(
-        '/specific/path/to/artifact.zip',
-        'Parameter validation artifact',
-        '1.2.3'
-      )
-    })
-  })
-
-  describe('Edge Cases', () => {
-    test('handles very long file paths', async () => {
-      const longPath = '/very/'.repeat(50) + 'long/path/to/artifact.zip'
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: longPath,
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-
-      mockApi.addDeploymentArtifact.mockResolvedValue('long-path-artifact')
-
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      expect(result.artifactId).toBe('long-path-artifact')
-      expect(mockApi.addDeploymentArtifact).toHaveBeenCalledWith(
-        longPath,
+      expect(result.artifactId).toBe('artifact-123')
+      expect(result.nugetSourceStatus).toBe('')
+      expect(fileNames(await readZip(zipPath))).toEqual([
+        '.umbraco',
+        'src/Program.cs'
+      ])
+      expect(mockAddDeploymentArtifact).toHaveBeenCalledWith(
+        zipPath,
         undefined,
         undefined
       )
-    })
-
-    test('handles special characters in parameters', async () => {
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/with spaces/and@symbols/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        description: 'Artifact with special chars: @#$%^&*()',
-        version: '1.0.0-alpha+build.123',
-        nugetSourceName: 'Special-Source_123',
-        nugetSourceUrl: 'https://special.nuget.org/v3/index.json'
-      }
-
-      mockApi.addDeploymentArtifact.mockResolvedValue('special-artifact')
-
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      expect(result.artifactId).toBe('special-artifact')
-    })
-
-    test('handles undefined optional parameters correctly', async () => {
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        description: undefined,
-        version: undefined,
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(
-        'undefined-params-artifact'
-      )
-
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      expect(result.artifactId).toBe('undefined-params-artifact')
-      expect(mockApi.addDeploymentArtifact).toHaveBeenCalledWith(
-        inputs.filePath,
-        undefined,
-        undefined
-      )
-    })
-  })
-
-  describe('TypeScript Type Safety', () => {
-    test('enforces ActionInputs interface constraints', async () => {
-      // This test validates TypeScript compilation
-      const validInputs: ActionInputs = {
-        projectId: 'string-project',
-        apiKey: 'string-key',
-        filePath: '/string/path',
-        targetEnvironmentAlias: 'dev',
-        timeoutSeconds: 1200, // number
-        noBuildAndRestore: true, // boolean
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-
-      mockApi.addDeploymentArtifact.mockResolvedValue('type-safe-artifact')
-
-      const result = await handleAddArtifact(mockApi, validInputs)
-
-      // Verify return type is ActionOutputs
-      const typedResult: ActionOutputs = result
-      expect(typedResult.artifactId).toBe('type-safe-artifact')
-    })
-
-    test('handles optional properties in ActionInputs correctly', async () => {
-      const inputsWithOptionals: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        // These are all optional in ActionInputs interface
-        description: 'optional description',
-        version: '1.0.0',
-        timeoutSeconds: 3600,
-        uploadRetries: 5,
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(
-        'optional-fields-artifact'
-      )
-
-      const result = await handleAddArtifact(mockApi, inputsWithOptionals)
-      expect(result.artifactId).toBe('optional-fields-artifact')
-    })
-  })
-
-  describe('NuGet Configuration Processing', () => {
-    test('processes artifact with NuGet configuration successfully', async () => {
-      // Arrange
-      const nugetInputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org/v3/index.json',
-        nugetSourceUsername: 'testuser',
-        nugetSourcePassword: 'testpass',
-        excludedPaths: '.git/,.github/'
-      }
-      const expectedArtifactId = 'nuget-artifact-123'
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      // Act
-      const result = await handleAddArtifact(mockApi, nugetInputs)
-
-      // Assert
-      expect(result.artifactId).toBe(expectedArtifactId)
-      expect(result.nugetSourceStatus).toContain(
-        'Failed to configure NuGet source'
-      ) // File doesn't exist
-    })
-
-    test('handles NuGet configuration errors gracefully', async () => {
-      // Arrange
-      const nugetInputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org/v3/index.json'
-      }
-      const expectedArtifactId = 'nuget-error-artifact'
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      // Act
-      const result = await handleAddArtifact(mockApi, nugetInputs)
-
-      // Assert
-      expect(result.artifactId).toBe(expectedArtifactId)
-      expect(result.nugetSourceStatus).toContain(
-        'Failed to configure NuGet source'
+      expect(core.setOutput).toHaveBeenCalledWith('artifactId', 'artifact-123')
+      expect(core.setOutput).not.toHaveBeenCalledWith(
+        'nuget-source-status',
+        expect.anything()
       )
     })
 
-    test('processes .cloud_gitignore without NuGet config', async () => {
-      // Arrange
-      const cloudGitignoreInputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev'
+    test('applies default exclusions when excluded-paths is not provided', async () => {
+      const zipPath = await writeZip({
+        '.git/HEAD': 'ref',
+        '.github/workflows/ci.yml': 'on: push',
+        'site/web.config': '<configuration/>'
+      })
+
+      await handleAddArtifact(api, inputs({ filePath: zipPath }))
+
+      expect(fileNames(await readZip(zipPath))).toEqual([
+        '.umbraco',
+        'site/web.config'
+      ])
+    })
+
+    test('.git exclusion does not remove .gitignore or .github/', async () => {
+      const zipPath = await writeZip({
+        '.git/HEAD': 'ref',
+        '.gitignore': 'bin/',
+        '.github/workflows/ci.yml': 'on: push',
+        'src/.gitignore': 'obj/',
+        'src/Program.cs': 'class P {}'
+      })
+
+      await handleAddArtifact(
+        api,
+        inputs({ filePath: zipPath, excludedPaths: '.git' })
+      )
+
+      expect(fileNames(await readZip(zipPath))).toEqual([
+        '.github/workflows/ci.yml',
+        '.gitignore',
+        '.umbraco',
+        'src/.gitignore',
+        'src/Program.cs'
+      ])
+    })
+
+    test('directory exclusion without trailing slash removes the directory only', async () => {
+      const zipPath = await writeZip({
+        'src/Client.RCLProject/bin/Debug/a.dll': 'x',
+        'src/Client.RCLProject/bin/Release/b.dll': 'x',
+        'src/Client.RCLProject/binary.txt': 'keep',
+        'src/Client.RCLProject/Client.csproj': '<Project/>'
+      })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          excludedPaths: 'src/Client.RCLProject/bin'
+        })
+      )
+
+      expect(fileNames(await readZip(zipPath))).toEqual([
+        '.umbraco',
+        'src/Client.RCLProject/Client.csproj',
+        'src/Client.RCLProject/binary.txt'
+      ])
+    })
+
+    test('.cloud_gitignore replaces root and nested .gitignore files', async () => {
+      const zipPath = await writeZip({
+        '.cloud_gitignore': 'cloud-rules',
+        '.gitignore': 'local-rules',
+        'src/Web/.gitignore': 'nested-local-rules',
+        'src/Web/foo.gitignore': 'not a gitignore',
+        'src/Web/Program.cs': 'class P {}'
+      })
+
+      await handleAddArtifact(api, inputs({ filePath: zipPath }))
+
+      const zip = await readZip(zipPath)
+      expect(await zip.file('.gitignore')!.async('string')).toBe('cloud-rules')
+      expect(await zip.file('src/Web/.gitignore')!.async('string')).toBe(
+        'cloud-rules'
+      )
+      expect(await zip.file('src/Web/foo.gitignore')!.async('string')).toBe(
+        'not a gitignore'
+      )
+    })
+
+    test('.cloud_gitignore without any .gitignore leaves the zip untouched', async () => {
+      const zipPath = await writeZip({
+        '.cloud_gitignore': 'cloud-rules',
+        'src/Program.cs': 'class P {}'
+      })
+      const originalBytes = fs.readFileSync(zipPath)
+
+      await handleAddArtifact(api, inputs({ filePath: zipPath }))
+
+      expect(core.info).toHaveBeenCalledWith(
+        'No .gitignore files found in artifact to replace'
+      )
+      expect(fs.readFileSync(zipPath).equals(originalBytes)).toBe(true)
+      expect(mockAddDeploymentArtifact).toHaveBeenCalledTimes(1)
+    })
+
+    test('reports the NuGet failure when something other than an Error is thrown', async () => {
+      const zipPath = await writeZip({ 'src/Program.cs': 'class P {}' })
+      const originalFile = JSZip.prototype.file
+      const fileSpy = jest
+        .spyOn(JSZip.prototype, 'file')
+        .mockImplementation(function (this: JSZip, ...args: unknown[]) {
+          if (args[0] === 'NuGet.config') {
+            throw 'disk on fire'
+          }
+          return (originalFile as (...a: unknown[]) => unknown).apply(
+            this,
+            args
+          )
+        } as never)
+
+      try {
+        await expect(
+          handleAddArtifact(
+            api,
+            inputs({
+              filePath: zipPath,
+              nugetSourceName: 'MyFeed',
+              nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+            })
+          )
+        ).rejects.toThrow('Failed to configure NuGet source: disk on fire')
+      } finally {
+        fileSpy.mockRestore()
       }
-      const expectedArtifactId = 'cloudgitignore-artifact'
+      expect(core.setOutput).toHaveBeenCalledWith(
+        'nuget-source-status',
+        'Failed to configure NuGet source: disk on fire'
+      )
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
 
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      // Act & Assert - This will fail trying to read the file, which is expected behavior
+    test('reports a friendly error when filePath is a directory', async () => {
       await expect(
-        handleAddArtifact(mockApi, cloudGitignoreInputs)
-      ).rejects.toThrow()
-    })
-  })
-
-  describe('Git Repository Validation', () => {
-    test('handles git validation when file does not exist', async () => {
-      // Arrange
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/nonexistent/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev'
-      }
-
-      // Act & Assert
-      await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow()
-    })
-
-    test('handles git validation for basic artifact', async () => {
-      // Arrange
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev'
-      }
-      const expectedArtifactId = 'basic-artifact'
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      // Act & Assert
-      await expect(handleAddArtifact(mockApi, inputs)).rejects.toThrow()
-    })
-  })
-
-  describe('Cloud Gitignore Processing', () => {
-    test('processes .cloud_gitignore replacement successfully', async () => {
-      // Arrange
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-      const expectedArtifactId = 'gitignore-processed'
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      // Act
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      // Assert
-      expect(result.artifactId).toBe(expectedArtifactId)
-    })
-
-    test('handles missing .cloud_gitignore gracefully', async () => {
-      // Arrange
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-      const expectedArtifactId = 'no-cloudgitignore'
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      // Act
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      // Assert
-      expect(result.artifactId).toBe(expectedArtifactId)
-    })
-
-    test('handles .cloud_gitignore processing errors gracefully', async () => {
-      // Arrange
-      const inputs: ActionInputs = {
-        projectId: 'test-project',
-        apiKey: 'test-key',
-        filePath: '/path/to/artifact.zip',
-        targetEnvironmentAlias: 'dev',
-        nugetSourceName: 'TestSource',
-        nugetSourceUrl: 'https://test.nuget.org'
-      }
-      const expectedArtifactId = 'gitignore-error'
-
-      mockApi.addDeploymentArtifact.mockResolvedValue(expectedArtifactId)
-
-      // Act
-      const result = await handleAddArtifact(mockApi, inputs)
-
-      // Assert
-      expect(result.artifactId).toBe(expectedArtifactId)
-    })
-  })
-
-  describe('Edge Cases and Error Handling', () => {
-    test('handles no files matching excluded paths gracefully', async () => {
-      // Arrange
-      const testZip = new JSZip()
-      testZip.file('src/index.js', 'content')
-      const excludedPaths = 'nonexistent/'
-
-      // Act & Assert - should not throw, paths may already be removed
-      expect(() => removeExcludedPaths(testZip, excludedPaths)).not.toThrow()
-    })
-
-    test('throws error for invalid excluded paths format', async () => {
-      // Arrange
-      const testZip = new JSZip()
-      const invalidPathFormat = '   ,   ,   '
-
-      // Act & Assert
-      expect(() => removeExcludedPaths(testZip, invalidPathFormat)).toThrow(
-        'Invalid excluded-paths format'
+        handleAddArtifact(api, inputs({ filePath: tempDir }))
+      ).rejects.toThrow(
+        `filePath "${tempDir}" is not a file (resolved to ${path.resolve(tempDir)})`
       )
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('reports a friendly error when the zip reader rejects with a non-Error', async () => {
+      const zipPath = await writeZip({ 'src/Program.cs': 'class P {}' })
+      const loadSpy = jest
+        .spyOn(JSZip, 'loadAsync')
+        .mockRejectedValueOnce('corrupt' as never)
+
+      try {
+        await expect(
+          handleAddArtifact(api, inputs({ filePath: zipPath }))
+        ).rejects.toThrow(
+          `filePath "${zipPath}" is not a valid zip file: corrupt`
+        )
+      } finally {
+        loadSpy.mockRestore()
+      }
+    })
+
+    test('rejects excluded-paths that normalise to nothing', async () => {
+      const zipPath = await writeZip({ 'src/Program.cs': 'class P {}' })
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({ filePath: zipPath, excludedPaths: './' })
+        )
+      ).rejects.toThrow('No valid paths found after validation.')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('injects a new NuGet.config at the zip root', async () => {
+      const zipPath = await writeZip({
+        'src/Web/Program.cs': 'class P {}'
+      })
+
+      const result = await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          nugetSourceName: 'MyFeed',
+          nugetSourceUrl: 'https://nuget.example.com/v3/index.json',
+          nugetSourceUsername: 'user',
+          nugetSourcePassword: '%NUGET_PASSWORD%'
+        })
+      )
+
+      const zip = await readZip(zipPath)
+      expect(fileNames(zip)).toEqual([
+        '.umbraco',
+        'NuGet.config',
+        'src/Web/Program.cs'
+      ])
+      const xml = await zip.file('NuGet.config')!.async('string')
+      expect(xml).toContain(
+        '<add key="MyFeed" value="https://nuget.example.com/v3/index.json"/>'
+      )
+      expect(xml).toContain('<add key="Username" value="user"/>')
+      expect(xml).toContain(
+        '<add key="ClearTextPassword" value="%NUGET_PASSWORD%"/>'
+      )
+      expect(result.nugetSourceStatus).toBe(
+        'NuGet.config successfully injected into artifact'
+      )
+      expect(core.setOutput).toHaveBeenCalledWith(
+        'nuget-source-status',
+        'NuGet.config successfully injected into artifact'
+      )
+      expect(mockAddDeploymentArtifact).toHaveBeenCalledTimes(1)
+    })
+
+    test('updates an existing lowercase nuget.config in place without creating a second file', async () => {
+      const existing = `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+  </packageSources>
+</configuration>`
+      const zipPath = await writeZip({
+        'nuget.config': existing,
+        'src/nested/NuGet.config': '<configuration/>',
+        'src/Program.cs': 'class P {}'
+      })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          nugetSourceName: 'MyFeed',
+          nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+        })
+      )
+
+      const zip = await readZip(zipPath)
+      const rootConfigs = fileNames(zip).filter(
+        (n) => n.toLowerCase() === 'nuget.config'
+      )
+      expect(rootConfigs).toEqual(['nuget.config'])
+      const xml = await zip.file('nuget.config')!.async('string')
+      expect(xml).toContain('key="nuget.org"')
+      expect(xml).toContain('key="MyFeed"')
+      // Nested config untouched
+      expect(await zip.file('src/nested/NuGet.config')!.async('string')).toBe(
+        '<configuration/>'
+      )
+    })
+
+    test('throws and does not upload when NuGet injection fails', async () => {
+      const zipPath = await writeZip({
+        'NuGet.config': '<configuration><packageSources>',
+        'src/Program.cs': 'class P {}'
+      })
+      const originalBytes = fs.readFileSync(zipPath)
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({
+            filePath: zipPath,
+            nugetSourceName: 'MyFeed',
+            nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+          })
+        )
+      ).rejects.toThrow('Failed to configure NuGet source')
+
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+      expect(fs.readFileSync(zipPath).equals(originalBytes)).toBe(true)
+      // The failure is still reported through the nuget-source-status output
+      expect(core.setOutput).toHaveBeenCalledWith(
+        'nuget-source-status',
+        expect.stringContaining('Failed to configure NuGet source')
+      )
+    })
+
+    test('throws when the zip has no files after exclusions', async () => {
+      const zipPath = await writeZip(
+        {
+          '.git/HEAD': 'ref',
+          '.github/workflows/ci.yml': 'on: push'
+        },
+        { withUmbraco: false }
+      )
+
+      await expect(
+        handleAddArtifact(api, inputs({ filePath: zipPath }))
+      ).rejects.toThrow('Artifact contains no files')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('throws before NuGet injection when exclusions remove every file', async () => {
+      // Real run A4: every top-level entry was excluded, NuGet injection then
+      // re-created NuGet.config and a zip holding only that file was deployed.
+      const zipPath = await writeZip({
+        'src/Program.cs': 'class P {}',
+        'NuGet.config': '<configuration/>'
+      })
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({
+            filePath: zipPath,
+            excludedPaths: '.umbraco,src/,NuGet.config',
+            nugetSourceName: 'MyFeed',
+            nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+          })
+        )
+      ).rejects.toThrow('Artifact contains no files')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('throws when the artifact has no root .umbraco file', async () => {
+      const zipPath = await writeZip(
+        {
+          'src/Web/.umbraco': 'nested does not count',
+          'src/Web/Program.cs': 'class P {}'
+        },
+        { withUmbraco: false }
+      )
+
+      const error = await handleAddArtifact(
+        api,
+        inputs({ filePath: zipPath })
+      ).catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(Error)
+      const message = (error as Error).message
+      expect(message).toContain('no .umbraco file at the root of the zip')
+      expect(message).toContain('Umbraco Cloud requires this file')
+      expect(message).toContain('project file (.csproj)')
+      expect(message).not.toContain('excluded-paths')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+      // Without this check Umbraco Cloud fails the deployment with:
+      expect(STATUS_MESSAGES.missingUmbracoFile).toContain(
+        'Incoming package has no .umbraco file in its root. It names the project folder and project file the build uses.'
+      )
+    })
+
+    test('says excluded-paths removed .umbraco when it did', async () => {
+      const zipPath = await writeZip({ 'src/Web/Program.cs': 'class P {}' })
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({ filePath: zipPath, excludedPaths: '.git/,.umbraco' })
+        )
+      ).rejects.toThrow(/removed by the excluded-paths input/)
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('does not upload an artifact without .umbraco even when NuGet would add a file', async () => {
+      const zipPath = await writeZip(
+        { 'src/Web/Program.cs': 'class P {}' },
+        { withUmbraco: false }
+      )
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({
+            filePath: zipPath,
+            nugetSourceName: 'MyFeed',
+            nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+          })
+        )
+      ).rejects.toThrow('.umbraco')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('a freshly generated NuGet.config also lists nuget.org', async () => {
+      const zipPath = await writeZip({ 'src/Web/Program.cs': 'class P {}' })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          nugetSourceName: 'MyFeed',
+          nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+        })
+      )
+
+      const xml = await (await readZip(zipPath))
+        .file('NuGet.config')!
+        .async('string')
+      expect(xml).toContain(
+        '<add key="nuget.org" value="https://api.nuget.org/v3/index.json"/>'
+      )
+      expect(xml).toContain('key="MyFeed"')
+      expect(core.warning).not.toHaveBeenCalled()
+    })
+
+    test('does not duplicate nuget.org when it is the configured source', async () => {
+      const zipPath = await writeZip({ 'src/Web/Program.cs': 'class P {}' })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          nugetSourceName: 'public',
+          nugetSourceUrl: 'https://api.nuget.org/v3/index.json/'
+        })
+      )
+
+      const xml = await (await readZip(zipPath))
+        .file('NuGet.config')!
+        .async('string')
+      expect(xml.match(/api\.nuget\.org/g)).toHaveLength(1)
+    })
+
+    test('warns when excluded-paths removed the root NuGet.config but a source is configured', async () => {
+      const zipPath = await writeZip({
+        'NuGet.config':
+          '<configuration><packageSources><add key="other" value="https://other.example.com/v3/index.json"/></packageSources></configuration>',
+        'src/Web/Program.cs': 'class P {}'
+      })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          excludedPaths: '.git/,NuGet.config',
+          nugetSourceName: 'MyFeed',
+          nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+        })
+      )
+
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'excluded-paths removed the existing root NuGet.config'
+        )
+      )
+      const xml = await (await readZip(zipPath))
+        .file('NuGet.config')!
+        .async('string')
+      expect(xml).toContain('key="MyFeed"')
+      expect(xml).toContain('key="nuget.org"')
+      expect(xml).not.toContain('key="other"')
+    })
+
+    test('reports a friendly error when filePath does not exist', async () => {
+      const missing = path.join(tempDir, 'does-not-exist.zip')
+
+      await expect(
+        handleAddArtifact(api, inputs({ filePath: missing }))
+      ).rejects.toThrow(
+        `filePath "${missing}" does not exist (resolved to ${path.resolve(missing)})`
+      )
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('reports a friendly error when filePath is not a zip', async () => {
+      const notZip = path.join(tempDir, 'not-a-zip.zip')
+      fs.writeFileSync(notZip, 'plain text, not a zip')
+
+      const error = await handleAddArtifact(
+        api,
+        inputs({ filePath: notZip })
+      ).catch((e: unknown) => e)
+
+      expect((error as Error).message).toBe(
+        `filePath "${notZip}" is not a valid zip file: Can't find end of central directory : is this a zip file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html`
+      )
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('does not rewrite the zip when nothing changed', async () => {
+      const zipPath = await writeZip({ 'src/Program.cs': 'class P {}' })
+      const originalBytes = fs.readFileSync(zipPath)
+
+      await handleAddArtifact(api, inputs({ filePath: zipPath }))
+
+      expect(fs.readFileSync(zipPath).equals(originalBytes)).toBe(true)
+      expect(mockAddDeploymentArtifact).toHaveBeenCalledTimes(1)
+    })
+
+    test('throws when filePath is missing', async () => {
+      await expect(handleAddArtifact(api, inputs({}))).rejects.toThrow()
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('removeExcludedPaths', () => {
+    function zipWith(names: string[]): JSZip {
+      const zip = new JSZip()
+      for (const n of names) zip.file(n, 'x')
+      return zip
+    }
+
+    test('normalises backslashes and leading ./', () => {
+      const zip = zipWith(['node_modules/a.js', 'obj/b.dll', 'keep.txt'])
+      const removed = removeExcludedPaths(zip, 'node_modules\\,./obj')
+      expect(removed).toBe(true)
+      expect(fileNames(zip)).toEqual(['keep.txt'])
+    })
+
+    test('matches an exact file path', () => {
+      const zip = zipWith(['appsettings.Local.json', 'appsettings.json'])
+      removeExcludedPaths(zip, 'appsettings.Local.json')
+      expect(fileNames(zip)).toEqual(['appsettings.json'])
+    })
+
+    test('returns false and logs info (not a warning) when nothing matched', () => {
+      const zip = zipWith(['keep.txt'])
+      expect(removeExcludedPaths(zip, '.git/')).toBe(false)
+      expect(core.warning).not.toHaveBeenCalled()
+      expect(core.info).toHaveBeenCalledWith(
+        expect.stringContaining('No excluded paths were found')
+      )
+    })
+
+    test('returns false for empty input', () => {
+      const zip = zipWith(['keep.txt'])
+      expect(removeExcludedPaths(zip, '   ')).toBe(false)
+      expect(fileNames(zip)).toEqual(['keep.txt'])
+    })
+
+    test.each([
+      ['path1 path2', 'Invalid excluded-paths format'],
+      ['../secret', 'Invalid path'],
+      ['/abs', 'Invalid path'],
+      ['mixed/sep\\path', 'mixed separators']
+    ])('rejects invalid input %p', (value, message) => {
+      expect(() => removeExcludedPaths(zipWith(['a']), value)).toThrow(message)
     })
   })
 })

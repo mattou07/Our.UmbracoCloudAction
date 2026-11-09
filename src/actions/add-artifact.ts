@@ -1,20 +1,105 @@
 import * as core from '@actions/core'
+import * as fs from 'fs'
+import * as path from 'path'
+import JSZip from 'jszip'
 import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
 import { ActionInputs, ActionOutputs } from '../types/index.js'
 import { validateRequiredInputs } from '../utils/helpers.js'
 import { addOrUpdateNuGetConfigSource } from '../utils/nuget-config.js'
-import * as fs from 'fs'
-import * as path from 'path'
-import * as exec from '@actions/exec'
-import JSZip from 'jszip'
+
+const DEFAULT_EXCLUDED_PATHS = '.git/,.github/'
+const DEFAULT_NUGET_CONFIG_NAME = 'NuGet.config'
+const UMBRACO_MARKER_FILE = '.umbraco'
+const NUGET_ORG_SOURCE_NAME = 'nuget.org'
+const NUGET_ORG_SOURCE_URL = 'https://api.nuget.org/v3/index.json'
+
+/**
+ * Seed used when the artifact has no root NuGet.config. A repository-level
+ * NuGet.config that only lists the private feed relies on the build machine's
+ * user-level config for nuget.org; listing nuget.org explicitly keeps restore
+ * of public packages working regardless of how the build host is configured.
+ */
+const FRESH_NUGET_CONFIG_SEED = `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="${NUGET_ORG_SOURCE_NAME}" value="${NUGET_ORG_SOURCE_URL}" />
+  </packageSources>
+</configuration>`
+
+function countFiles(zip: JSZip): number {
+  return Object.values(zip.files).filter((f) => !f.dir).length
+}
+
+/** True when the zip has a `.umbraco` file at its root. */
+function hasRootUmbracoFile(zip: JSZip): boolean {
+  const entry = zip.files[UMBRACO_MARKER_FILE]
+  return Boolean(entry && !entry.dir)
+}
+
+/**
+ * Reads and parses the artifact zip, turning file-system and JSZip errors into
+ * messages that name the filePath input.
+ */
+async function loadArtifactZip(filePath: string): Promise<JSZip> {
+  const resolved = path.resolve(filePath)
+  if (!fs.existsSync(filePath)) {
+    throw new Error(
+      `filePath "${filePath}" does not exist (resolved to ${resolved})`
+    )
+  }
+  if (!fs.statSync(filePath).isFile()) {
+    throw new Error(
+      `filePath "${filePath}" is not a file (resolved to ${resolved})`
+    )
+  }
+  const data = fs.readFileSync(filePath)
+  try {
+    return await JSZip.loadAsync(data)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `filePath "${filePath}" is not a valid zip file: ${message}`
+    )
+  }
+}
+
+/**
+ * Normalises a path for comparison against zip entry names:
+ * backslashes become forward slashes and a leading "./" is stripped.
+ */
+function normalisePath(p: string): string {
+  let normalised = p.replace(/\\/g, '/')
+  while (normalised.startsWith('./')) {
+    normalised = normalised.substring(2)
+  }
+  return normalised
+}
+
+/**
+ * Returns true when the zip entry name is the excluded path itself or lives
+ * underneath it. An exclusion without a trailing slash is treated as either a
+ * file or a directory, but never as a raw prefix (".git" does not match
+ * ".gitignore" or ".github/").
+ */
+function matchesExcludedPath(entryName: string, excludePath: string): boolean {
+  const name = normalisePath(entryName)
+  const p = excludePath
+  if (name === p || name === `${p}/`) {
+    return true
+  }
+  const dirPrefix = p.endsWith('/') ? p : `${p}/`
+  return name.startsWith(dirPrefix)
+}
 
 /**
  * Removes excluded paths from a zip file based on path list
  * Supports single path (e.g., ".git") or comma-separated paths (e.g., ".git/,.github/")
+ *
+ * @returns true when at least one entry was removed
  */
-function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
+function removeExcludedPaths(zip: JSZip, excludedPaths: string): boolean {
   if (!excludedPaths.trim()) {
-    return
+    return false
   }
 
   // Validate format: single path or comma-separated paths (no space-separated paths)
@@ -28,76 +113,60 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
     )
   }
 
-  // Additional validation: reject mixed path separators
-  const paths = excludedPaths.split(',').map((p) => p.trim())
-  for (const path of paths) {
-    if (path.includes('/') && path.includes('\\')) {
+  const rawPaths = excludedPaths
+    .split(',')
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0)
+
+  for (const rawPath of rawPaths) {
+    // Reject mixed path separators
+    if (rawPath.includes('/') && rawPath.includes('\\')) {
       throw new Error(
-        `Invalid path "${path}" contains mixed separators. Use either forward slashes (/) or backslashes (\\), not both.`
+        `Invalid path "${rawPath}" contains mixed separators. Use either forward slashes (/) or backslashes (\\), not both.`
+      )
+    }
+    if (rawPath.includes('..') || rawPath.startsWith('/')) {
+      throw new Error(
+        `Invalid path "${rawPath}" in excluded-paths. Paths should be relative to your repository and not contain ".." or not start with "/" for safety reasons`
       )
     }
   }
 
-  const pathsToExclude = excludedPaths
-    .split(',')
-    .map((path) => path.trim())
-    .filter((path) => path.length > 0)
+  const pathsToExclude = rawPaths
+    .map(normalisePath)
+    .filter((p) => p.length > 0 && p !== '/')
 
-  // This should never happen after our validation as we have defaults
   if (pathsToExclude.length === 0) {
     throw new Error('No valid paths found after validation.')
-  }
-
-  // Validate individual paths
-  for (const path of pathsToExclude) {
-    if (path.includes('..') || path.startsWith('/')) {
-      throw new Error(
-        `Invalid path "${path}" in excluded-paths. Paths should be relative to your repository and not contain ".." or not start with "/" for safety reasons`
-      )
-    }
   }
 
   core.info(`Processing excluded paths: ${pathsToExclude.join(', ')}`)
 
   const removedFiles: string[] = []
-  const foundPaths: string[] = []
-  const notFoundPaths: string[] = [...pathsToExclude]
+  const foundPaths = new Set<string>()
 
-  Object.keys(zip.files).forEach((filename) => {
-    for (const excludePath of pathsToExclude) {
-      if (filename.startsWith(excludePath)) {
-        zip.remove(filename)
-        removedFiles.push(filename)
-        if (!foundPaths.includes(excludePath)) {
-          foundPaths.push(excludePath)
-          // Remove from not found list
-          const notFoundIndex = notFoundPaths.indexOf(excludePath)
-          if (notFoundIndex > -1) {
-            notFoundPaths.splice(notFoundIndex, 1)
-          }
-        }
-        break // Move to next filename once a match is found
-      }
+  for (const filename of Object.keys(zip.files)) {
+    const match = pathsToExclude.find((p) => matchesExcludedPath(filename, p))
+    if (match) {
+      zip.remove(filename)
+      removedFiles.push(filename)
+      foundPaths.add(match)
     }
-  })
+  }
 
   if (removedFiles.length > 0) {
-    // ANSI escape codes for styling
-    const red = '\x1b[31m'
-    const dim = '\x1b[2m'
-    const reset = '\x1b[0m'
-
     core.startGroup(
-      `${red}Removed ${removedFiles.length} file(s)${reset} matching excluded paths: ${foundPaths.join(', ')}`
+      `Removed ${removedFiles.length} file(s) matching excluded paths: ${[...foundPaths].join(', ')}`
     )
     for (const file of removedFiles) {
-      core.info(`${dim}- ${reset}${red}${file}${reset}`)
+      core.info(`- ${file}`)
     }
     core.endGroup()
   }
 
   // Log info about paths that weren't found (already removed or never existed)
   // This is not an error since the goal is to ensure they're not in the artifact
+  const notFoundPaths = pathsToExclude.filter((p) => !foundPaths.has(p))
   if (notFoundPaths.length > 0) {
     const yellow = '\x1b[33m'
     const reset = '\x1b[0m'
@@ -106,17 +175,15 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): void {
     )
   }
 
-  // Only warn if no paths were found at all and no files were removed
-  // This might indicate a configuration issue, but is not a hard error
-  if (
-    removedFiles.length === 0 &&
-    foundPaths.length === 0 &&
-    pathsToExclude.length > 0
-  ) {
-    core.warning(
+  // Note if nothing was removed at all; this might indicate a
+  // configuration issue, but is not a hard error
+  if (removedFiles.length === 0) {
+    core.info(
       'No excluded paths were found in the artifact. This may be expected if they were already removed, or may indicate a misconfiguration.'
     )
   }
+
+  return removedFiles.length > 0
 }
 
 export { removeExcludedPaths }
@@ -129,50 +196,101 @@ export async function handleAddArtifact(
     'filePath'
   ])
 
+  const filePath = inputs.filePath!
+  const nugetConfigured = Boolean(
+    inputs.nugetSourceName && inputs.nugetSourceUrl
+  )
+
+  // Single pipeline: load once, apply all modifications, write back once
+  const zip = await loadArtifactZip(filePath)
+  let modified = false
+
+  const hadUmbracoFile = hasRootUmbracoFile(zip)
+  const hadRootNuGetConfig = findRootNuGetConfig(zip) !== undefined
+
+  if (
+    removeExcludedPaths(zip, inputs.excludedPaths || DEFAULT_EXCLUDED_PATHS)
+  ) {
+    modified = true
+  }
+
+  // Check before any step that can add files (NuGet injection creates
+  // NuGet.config), otherwise an artifact emptied by excluded-paths would be
+  // uploaded containing only the generated NuGet.config.
+  if (countFiles(zip) === 0) {
+    throw new Error(
+      'Artifact contains no files after applying excluded-paths. Check the excluded-paths input and the contents of the artifact zip.'
+    )
+  }
+
+  // Umbraco Cloud rejects packages without a root .umbraco file, failing the
+  // deployment with: "Incoming package has no .umbraco file in its root. It
+  // names the project folder and project file the build uses."
+  if (!hasRootUmbracoFile(zip)) {
+    const base =
+      'Artifact has no .umbraco file at the root of the zip. Umbraco Cloud requires this file: it names the project folder and project file (.csproj) the build uses, and deployments without it are rejected.'
+    throw new Error(
+      hadUmbracoFile
+        ? `${base} The .umbraco file was present in the artifact but was removed by the excluded-paths input ("${inputs.excludedPaths}"); remove the matching entry from excluded-paths.`
+        : `${base} Add a .umbraco file to the root of the artifact before uploading.`
+    )
+  }
+
+  if (await processCloudGitignoreInZip(zip)) {
+    modified = true
+  }
+
   let nugetSourceStatus = ''
-  let modifiedFilePath = inputs.filePath!
-
-  // Handle NuGet source injection if provided
-  if (inputs.nugetSourceName && inputs.nugetSourceUrl) {
-    try {
-      modifiedFilePath = await processArtifactWithNugetConfig(
-        inputs.filePath!,
-        inputs.nugetSourceName,
-        inputs.nugetSourceUrl,
-        inputs.nugetSourceUsername,
-        inputs.nugetSourcePassword,
-        inputs.excludedPaths
+  if (nugetConfigured) {
+    if (hadRootNuGetConfig && findRootNuGetConfig(zip) === undefined) {
+      core.warning(
+        `excluded-paths removed the existing root NuGet.config from the artifact. Because a NuGet source is configured, a new NuGet.config is being generated containing only '${inputs.nugetSourceName}' and ${NUGET_ORG_SOURCE_NAME}; any other sources or settings from the excluded file are not included.`
       )
-      nugetSourceStatus = 'NuGet.config successfully injected into artifact'
-    } catch (error) {
-      const errorMessage = `Failed to configure NuGet source: ${error}`
-      core.warning(errorMessage)
-      nugetSourceStatus = errorMessage
     }
+    try {
+      await injectNuGetConfig(zip, {
+        name: inputs.nugetSourceName!,
+        source: inputs.nugetSourceUrl!,
+        username: inputs.nugetSourceUsername,
+        password: inputs.nugetSourcePassword
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      nugetSourceStatus = `Failed to configure NuGet source: ${message}`
+      core.setOutput('nuget-source-status', nugetSourceStatus)
+      throw new Error(nugetSourceStatus)
+    }
+    modified = true
+    nugetSourceStatus = 'NuGet.config successfully injected into artifact'
+  }
+
+  const fileCount = countFiles(zip)
+
+  if (modified) {
+    const updatedData = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 }
+    })
+    fs.writeFileSync(filePath, updatedData)
+    core.info(
+      `Artifact updated (${fileCount} file(s), ${updatedData.length} bytes)`
+    )
   } else {
-    // Process .cloud_gitignore replacement if present, even without NuGet config
-    try {
-      modifiedFilePath = await processCloudGitignore(
-        inputs.filePath!,
-        inputs.excludedPaths
-      )
-      core.info('Successfully processed .cloud_gitignore')
-    } catch (error) {
-      core.warning(`Failed to process .cloud_gitignore: ${error}`)
-    }
-
-    // Only validate git repository if we didn't process the artifact
-    await validateArtifactGitRepository(modifiedFilePath)
+    core.info(`Artifact unchanged (${fileCount} file(s))`)
   }
 
   const artifactId = await api.addDeploymentArtifact(
-    modifiedFilePath,
+    filePath,
     inputs.description,
     inputs.version
   )
 
   core.info(`Artifact uploaded successfully with ID: ${artifactId}`)
   core.setOutput('artifactId', artifactId)
+  if (nugetConfigured) {
+    core.setOutput('nuget-source-status', nugetSourceStatus)
+  }
 
   return {
     artifactId,
@@ -180,257 +298,92 @@ export async function handleAddArtifact(
   }
 }
 
-async function processArtifactWithNugetConfig(
-  filePath: string,
-  nugetSourceName: string,
-  nugetSourceUrl: string,
-  nugetSourceUsername?: string,
-  nugetSourcePassword?: string,
-  excludedPaths?: string
-): Promise<string> {
+/**
+ * Finds NuGet.config at the root of the zip, matching the file name
+ * case-insensitively. Returns the entry name as stored in the zip.
+ */
+function findRootNuGetConfig(zip: JSZip): string | undefined {
+  return Object.keys(zip.files).find(
+    (name) =>
+      !zip.files[name].dir &&
+      name.toLowerCase() === DEFAULT_NUGET_CONFIG_NAME.toLowerCase()
+  )
+}
+
+async function injectNuGetConfig(
+  zip: JSZip,
+  config: { name: string; source: string; username?: string; password?: string }
+): Promise<void> {
   core.info(
     'NuGet source configuration provided. Injecting NuGet.config into zip...'
   )
 
-  // Load the zip file
-  const data = fs.readFileSync(filePath)
-  const zip = await JSZip.loadAsync(data)
-
-  // Remove excluded paths
-  removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
-
-  // Check if NuGet.config already exists in the zip
-  let existingNugetConfig: string | undefined
-  const nugetConfigFile = zip.file('NuGet.config')
-  if (nugetConfigFile) {
+  const existingEntryName = findRootNuGetConfig(zip)
+  let existingContent: string | undefined
+  if (existingEntryName) {
     core.info(
-      'NuGet Config: Found existing NuGet.config in zip, will preserve existing content'
+      `NuGet Config: Found existing ${existingEntryName} in zip, will preserve existing content`
     )
-    existingNugetConfig = await nugetConfigFile.async('text')
-    core.debug(`NuGet Config: Existing content in zip:\n${existingNugetConfig}`)
+    existingContent = await zip.files[existingEntryName].async('text')
   } else {
     core.info(
-      'NuGet Config: No existing NuGet.config found in zip, will create new one'
+      `NuGet Config: No existing NuGet.config found in zip root, will create new one including ${NUGET_ORG_SOURCE_NAME}`
     )
+    // Seed with nuget.org unless the configured source already is nuget.org
+    // (by key or URL), which would otherwise produce a duplicate feed.
+    const isNuGetOrg =
+      config.name.toLowerCase() === NUGET_ORG_SOURCE_NAME ||
+      config.source.replace(/\/+$/, '').toLowerCase() === NUGET_ORG_SOURCE_URL
+    existingContent = isNuGetOrg ? undefined : FRESH_NUGET_CONFIG_SEED
   }
 
-  // Add or update NuGet.config using existing content if available
-  const nugetConfig = {
-    name: nugetSourceName,
-    source: nugetSourceUrl,
-    username: nugetSourceUsername,
-    password: nugetSourcePassword
-  }
+  const result = await addOrUpdateNuGetConfigSource(config, existingContent)
+  core.info(`NuGet Config: ${result.message}`)
 
-  const result = await addOrUpdateNuGetConfigSource(
-    nugetConfig,
-    existingNugetConfig || ''
-  )
-  core.info(`NuGet.config ${result.message}`)
-
-  // Add the updated NuGet.config content to zip
-  zip.file('NuGet.config', result.xmlContent)
-
-  // Process .cloud_gitignore replacement if present
-  await processCloudGitignoreInZip(zip)
-
-  // Write the updated zip back to the original file
-  const updatedData = await zip.generateAsync({
-    type: 'nodebuffer',
-    compression: 'DEFLATE',
-    compressionOptions: { level: 9 }
-  })
-
-  fs.writeFileSync(filePath, updatedData)
-  core.info(
-    `Zip file size after processing: ${fs.statSync(filePath).size} bytes`
-  )
-  core.info(
-    'Successfully injected NuGet.config and processed excluded paths in artifact zip'
-  )
-
-  return filePath
+  zip.file(existingEntryName ?? DEFAULT_NUGET_CONFIG_NAME, result.xmlContent)
 }
 
-async function validateArtifactGitRepository(filePath: string): Promise<void> {
-  core.info('Validating artifact contains git repository...')
-
-  // Create temporary directory for validation
-  const validationDir = path.join(process.cwd(), 'temp-validation')
-
-  try {
-    if (!fs.existsSync(validationDir)) {
-      fs.mkdirSync(validationDir, { recursive: true })
-    }
-
-    // Extract zip to validation directory using JSZip (cross-platform)
-    const zipData = fs.readFileSync(filePath)
-    const zip = await JSZip.loadAsync(zipData)
-    const extractPromises = Object.keys(zip.files).map(async (relativePath) => {
-      const zipEntry = zip.files[relativePath]
-      const destPath = path.join(validationDir, relativePath)
-      if (zipEntry.dir) {
-        fs.mkdirSync(destPath, { recursive: true })
-      } else {
-        fs.mkdirSync(path.dirname(destPath), { recursive: true })
-        const content = await zipEntry.async('nodebuffer')
-        fs.writeFileSync(destPath, content)
-      }
-    })
-    await Promise.all(extractPromises)
-
-    // Validate git repository
-    await validateGitRepository(validationDir, 'in artifact')
-  } finally {
-    // Clean up validation directory
-    if (fs.existsSync(validationDir)) {
-      fs.rmSync(validationDir, { recursive: true, force: true })
-    }
-  }
-}
-
-async function validateGitRepository(
-  directoryPath: string,
-  context: string
-): Promise<void> {
-  core.info(`Validating git repository ${context}...`)
-  try {
-    // Store current working directory
-    const originalCwd = process.cwd()
-
-    try {
-      // Change to the specified directory
-      process.chdir(directoryPath)
-
-      // First, check if this directory itself is a git repository
-      try {
-        await exec.exec('git', ['rev-parse', '--git-dir'])
-        core.info(
-          `Git repository validation successful ${context} (found in root)`
-        )
-        return
-      } catch (rootError) {
-        core.debug(`No git repository found in root directory: ${rootError}`)
-      }
-
-      // If not found in root, search for .git directory in subdirectories
-      const items = fs.readdirSync(directoryPath)
-      for (const item of items) {
-        const itemPath = path.join(directoryPath, item)
-        const stats = fs.statSync(itemPath)
-
-        if (stats.isDirectory()) {
-          // Check if this subdirectory contains a .git folder
-          const gitPath = path.join(itemPath, '.git')
-          if (fs.existsSync(gitPath)) {
-            // Change to the subdirectory and validate
-            process.chdir(itemPath)
-            await exec.exec('git', ['rev-parse', '--git-dir'])
-            core.info(
-              `Git repository validation successful ${context} (found in subdirectory: ${item})`
-            )
-            return
-          }
-        }
-      }
-
-      // If we get here, no git repository was found
-      throw new Error(
-        'No git repository found in any directory or subdirectory'
-      )
-    } finally {
-      // Always restore original working directory
-      process.chdir(originalCwd)
-    }
-  } catch (error) {
-    core.setFailed(`Failed to validate git repository ${context}: ${error}`)
-    throw error
-  }
-}
-
-async function processCloudGitignore(
-  filePath: string,
-  excludedPaths?: string
-): Promise<string> {
-  core.info('Checking for .cloud_gitignore file to replace .gitignore...')
-
-  // Load the zip file
-  const data = fs.readFileSync(filePath)
-  const zip = await JSZip.loadAsync(data)
-
-  // Remove excluded paths first
-  removeExcludedPaths(zip, excludedPaths || '.git/,.github/')
-
-  // Process .cloud_gitignore replacement
-  const wasProcessed = await processCloudGitignoreInZip(zip)
-
-  if (wasProcessed) {
-    // Write the updated zip back to the original file
-    const updatedData = await zip.generateAsync({
-      type: 'nodebuffer',
-      compression: 'DEFLATE',
-      compressionOptions: { level: 9 }
-    })
-
-    fs.writeFileSync(filePath, updatedData)
-    core.info('Successfully replaced .gitignore with .cloud_gitignore content')
-  }
-
-  return filePath
-}
-
+/**
+ * Replaces every .gitignore in the zip with the content of .cloud_gitignore,
+ * if one is present.
+ *
+ * @returns true when the zip was modified
+ */
 async function processCloudGitignoreInZip(zip: JSZip): Promise<boolean> {
-  // Look for .cloud_gitignore file in the zip
   const cloudGitignoreFile = Object.keys(zip.files).find(
     (filename) =>
-      filename === '.cloud_gitignore' || filename.endsWith('/.cloud_gitignore')
+      !zip.files[filename].dir &&
+      (filename === '.cloud_gitignore' ||
+        filename.endsWith('/.cloud_gitignore'))
   )
 
   if (!cloudGitignoreFile) {
     core.info(
-      '.cloud_gitignore file not found - .gitignore file will not be modified'
+      '.cloud_gitignore file not found - .gitignore files will not be modified'
     )
     return false
   }
 
-  const cloudGitignoreZipFile = zip.files[cloudGitignoreFile]
-  if (!cloudGitignoreZipFile || cloudGitignoreZipFile.dir) {
+  const cloudGitignoreContent =
+    await zip.files[cloudGitignoreFile].async('string')
+
+  const gitignoreFiles = Object.keys(zip.files).filter(
+    (filename) =>
+      !zip.files[filename].dir &&
+      (filename === '.gitignore' || filename.endsWith('/.gitignore'))
+  )
+
+  if (gitignoreFiles.length === 0) {
+    core.info('No .gitignore files found in artifact to replace')
+    return false
+  }
+
+  for (const gitignoreFile of gitignoreFiles) {
+    zip.file(gitignoreFile, cloudGitignoreContent)
     core.info(
-      '.cloud_gitignore found but is not a valid file - .gitignore file will not be modified'
+      `Replaced ${gitignoreFile} with content from ${cloudGitignoreFile}`
     )
-    return false
   }
 
-  try {
-    // Read the .cloud_gitignore content
-    const cloudGitignoreContent = await cloudGitignoreZipFile.async('string')
-
-    // Look for .gitignore files in the zip
-    const gitignoreFiles = Object.keys(zip.files).filter(
-      (filename) =>
-        filename.endsWith('.gitignore') &&
-        !filename.endsWith('.cloud_gitignore')
-    )
-
-    if (gitignoreFiles.length === 0) {
-      core.info('No .gitignore files found in artifact to replace')
-      return true
-    }
-
-    // Replace all .gitignore files with .cloud_gitignore content
-    for (const gitignoreFile of gitignoreFiles) {
-      const file = zip.files[gitignoreFile]
-      if (file && !file.dir) {
-        zip.file(gitignoreFile, cloudGitignoreContent)
-        core.info(
-          `Replaced ${gitignoreFile} with content from ${cloudGitignoreFile}`
-        )
-      }
-    }
-
-    return true
-  } catch (error) {
-    core.warning(`Failed to process .cloud_gitignore: ${error}`)
-    return false
-  }
+  return true
 }

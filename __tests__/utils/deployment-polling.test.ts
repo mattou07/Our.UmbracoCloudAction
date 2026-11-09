@@ -1,248 +1,323 @@
 import { jest } from '@jest/globals'
+import type { DeploymentResponse } from '../../src/types/index.js'
 
-// ESM mock setup
+const sleepMock = jest.fn<(ms: number) => Promise<void>>()
+const warning = jest.fn()
+const info = jest.fn()
+
 jest.unstable_mockModule('@actions/core', () => ({
-  info: jest.fn(),
-  warning: jest.fn(),
+  info,
+  warning,
+  debug: jest.fn(),
   error: jest.fn()
 }))
 
-// Helper to create a mock Response object
-function createMockResponse({
-  ok,
-  status,
-  statusText,
-  json
-}: {
-  ok: boolean
-  status: number
-  statusText: string
-  json: () => Promise<any>
-}): Response {
+jest.unstable_mockModule('../../src/utils/helpers.js', () => ({
+  sleep: sleepMock
+}))
+
+type PollingModule = typeof import('../../src/utils/deployment-polling.js')
+type ApiModule = typeof import('../../src/api/umbraco-cloud-api.js')
+
+function status(
+  deploymentState: string,
+  modifiedUtc = '',
+  messages: string[] = []
+): DeploymentResponse {
   return {
-    ok,
-    status,
-    statusText,
-    json,
-    headers: new Headers(),
-    redirected: false,
-    type: 'basic',
-    url: '',
-    clone: () => ({}) as Response,
-    body: null,
-    bodyUsed: false,
-    arrayBuffer: async () => new ArrayBuffer(0),
-    blob: async () => new Blob([]),
-    formData: async () => new FormData(),
-    text: async () => ''
-  } as Response
+    deploymentId: 'dep-1',
+    deploymentState,
+    modifiedUtc,
+    deploymentStatusMessages: messages.map((message, i) => ({
+      timestampUtc: `t${i}`,
+      message
+    }))
+  }
 }
 
-const mockFetch = jest.fn() as any
-global.fetch = mockFetch
-
 describe('pollDeploymentStatus', () => {
-  let core: any
-  let pollDeploymentStatus: any
-  const validResponse = {
-    deploymentId: 'dep-123',
-    deploymentState: 'Completed',
-    modifiedUtc: '2025-09-03T12:00:00Z',
-    deploymentStatusMessages: [
-      { timestampUtc: '2025-09-03T12:00:00Z', message: 'Deployment started' },
-      { timestampUtc: '2025-09-03T12:01:00Z', message: 'Deployment completed' }
-    ]
-  }
+  let polling: PollingModule
+  let apiModule: ApiModule
+  let getDeploymentStatus: jest.Mock<
+    (id: string, lastModifiedUtc?: string) => Promise<DeploymentResponse>
+  >
 
   beforeAll(async () => {
-    core = await import('@actions/core')
-    pollDeploymentStatus = (
-      await import('../../src/utils/deployment-polling.js')
-    ).pollDeploymentStatus
+    polling = await import('../../src/utils/deployment-polling.js')
+    apiModule = await import('../../src/api/umbraco-cloud-api.js')
   })
+
   beforeEach(() => {
-    jest.clearAllMocks()
-    jest.useFakeTimers()
-  })
-  afterEach(() => {
-    jest.useRealTimers()
+    getDeploymentStatus = jest.fn()
+    sleepMock.mockReset()
+    sleepMock.mockResolvedValue(undefined)
+    warning.mockReset()
+    info.mockReset()
   })
 
-  test('returns deployment response when completed', async () => {
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: async () => validResponse
+  function poll(maxDurationMs = 60_000, intervalMs = 1000) {
+    return polling.pollDeploymentStatus(
+      { getDeploymentStatus },
+      'dep-1',
+      maxDurationMs,
+      intervalMs
+    )
+  }
+
+  it('prints each status message once even when Cloud repeats the boundary message', async () => {
+    // Cloud returns messages at-or-after lastModifiedUtc, so the last message
+    // of one poll comes back as the first message of the next.
+    const boundary = { timestampUtc: 't1', message: 'NuGet Restore' }
+    getDeploymentStatus
+      .mockResolvedValueOnce({
+        ...status('InProgress', 't1'),
+        deploymentStatusMessages: [
+          { timestampUtc: 't0', message: 'Git Commit' },
+          boundary
+        ]
       })
+      .mockResolvedValueOnce({
+        ...status('InProgress', 't2'),
+        deploymentStatusMessages: [
+          boundary,
+          { timestampUtc: 't2', message: 'Dotnet Build' }
+        ]
+      })
+      .mockResolvedValueOnce({
+        ...status('Completed', 't2'),
+        deploymentStatusMessages: [
+          { timestampUtc: 't2', message: 'Dotnet Build' }
+        ]
+      })
+
+    await poll()
+
+    const printed = info.mock.calls
+      .map((c) => c[0] as string)
+      .filter((line) => line.startsWith('[t'))
+    expect(printed).toEqual([
+      '[t0] Git Commit',
+      '[t1] NuGet Restore',
+      '[t2] Dotnet Build'
+    ])
+  })
+
+  it('returns when the deployment completes', async () => {
+    const done = status('Completed')
+    getDeploymentStatus
+      .mockResolvedValueOnce(status('InProgress'))
+      .mockResolvedValueOnce(done)
+
+    await expect(poll()).resolves.toBe(done)
+    expect(getDeploymentStatus).toHaveBeenCalledTimes(2)
+    expect(sleepMock).toHaveBeenCalledTimes(1)
+    expect(sleepMock).toHaveBeenCalledWith(1000)
+  })
+
+  it('returns when the deployment fails', async () => {
+    const failed = status('Failed')
+    getDeploymentStatus.mockResolvedValue(failed)
+    await expect(poll()).resolves.toBe(failed)
+    expect(sleepMock).not.toHaveBeenCalled()
+  })
+
+  it.each(['Cancelled', 'SomethingNew'])(
+    'treats %s as a terminal state',
+    async (state) => {
+      getDeploymentStatus
+        .mockResolvedValueOnce(status('Pending'))
+        .mockResolvedValueOnce(status('Queued'))
+        .mockResolvedValueOnce(status(state))
+
+      await expect(poll()).resolves.toMatchObject({ deploymentState: state })
+      expect(getDeploymentStatus).toHaveBeenCalledTimes(3)
+    }
+  )
+
+  it('passes modifiedUtc from the previous response as lastModifiedUtc', async () => {
+    getDeploymentStatus
+      .mockResolvedValueOnce(status('InProgress', '2024-01-01T00:00:01Z'))
+      .mockResolvedValueOnce(status('InProgress', ''))
+      .mockResolvedValueOnce(status('InProgress', '2024-01-01T00:00:03Z'))
+      .mockResolvedValueOnce(status('Completed'))
+
+    await poll()
+
+    expect(getDeploymentStatus.mock.calls).toEqual([
+      ['dep-1', undefined],
+      ['dep-1', '2024-01-01T00:00:01Z'],
+      // empty modifiedUtc keeps the previous value
+      ['dep-1', '2024-01-01T00:00:01Z'],
+      ['dep-1', '2024-01-01T00:00:03Z']
+    ])
+  })
+
+  it('retries transient errors', async () => {
+    getDeploymentStatus
+      .mockRejectedValueOnce(
+        new apiModule.UmbracoCloudApiError('unavailable', 503, '')
+      )
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValueOnce(status('Completed'))
+
+    await expect(poll()).resolves.toMatchObject({
+      deploymentState: 'Completed'
+    })
+    expect(getDeploymentStatus).toHaveBeenCalledTimes(3)
+    expect(warning).toHaveBeenCalledTimes(2)
+  })
+
+  it('throws immediately on 401 with a helpful message', async () => {
+    getDeploymentStatus.mockRejectedValue(
+      new apiModule.UmbracoCloudApiError('bad key', 401, '')
     )
-    const promise = pollDeploymentStatus('key', 'proj', 'dep', 1000, 10)
-    jest.advanceTimersByTime(10)
-    const result = await promise
-    expect(result.deploymentState).toBe('Completed')
-    expect(core.info).toHaveBeenCalledWith(
-      expect.stringContaining('Deployment status: Completed')
+
+    await expect(poll()).rejects.toThrow(
+      /Unauthorized while polling deployment dep-1.*bad key/
+    )
+    expect(getDeploymentStatus).toHaveBeenCalledTimes(1)
+    expect(sleepMock).not.toHaveBeenCalled()
+  })
+
+  it('throws immediately on 404', async () => {
+    const notFound = new apiModule.UmbracoCloudApiError('not found', 404, '')
+    getDeploymentStatus.mockRejectedValue(notFound)
+
+    await expect(poll()).rejects.toBe(notFound)
+    expect(getDeploymentStatus).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows the updating-marker warning only once', async () => {
+    const marker = 'blocked with the following markers: updating'
+    getDeploymentStatus
+      .mockResolvedValueOnce(status('InProgress', '', [marker]))
+      .mockResolvedValueOnce(status('InProgress', '', [marker]))
+      .mockResolvedValueOnce(status('Failed', '', ['CheckBlockingMarkers']))
+
+    await poll()
+
+    const markerWarnings = warning.mock.calls.filter((c) =>
+      String(c[0]).includes('leftover upgrade markers')
+    )
+    expect(markerWarnings).toHaveLength(1)
+  })
+
+  it('uses a 20 minute timeout and 25s interval by default', async () => {
+    getDeploymentStatus.mockResolvedValue(status('Completed'))
+
+    await polling.pollDeploymentStatus({ getDeploymentStatus }, 'dep-1')
+
+    expect(info).toHaveBeenCalledWith(
+      'Polling deployment status (timeout: 20 minutes, interval: 25000ms)'
     )
   })
 
-  test('retries on 401 Unauthorized', async () => {
-    jest.setTimeout(10000)
-    mockFetch
-      .mockResolvedValueOnce(
-        createMockResponse({
-          ok: false,
-          status: 401,
-          statusText: 'Unauthorized',
-          json: async () => ({})
-        })
-      )
-      .mockResolvedValueOnce(
-        createMockResponse({
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          json: async () => validResponse
-        })
-      )
-    const promise = pollDeploymentStatus('key', 'proj', 'dep', 1000, 10)
-    await jest.advanceTimersByTimeAsync(20) // enough for one retry
-    await Promise.resolve()
-    const result = await promise
-    expect(core.warning).toHaveBeenCalledWith(
-      'Unauthorized: The API key may have expired or lost permissions. Will retry.'
-    )
-    expect(result.deploymentState).toBe('Completed')
+  it('tolerates a status response without a message list', async () => {
+    getDeploymentStatus.mockResolvedValue({
+      deploymentId: 'dep-1',
+      deploymentState: 'Completed'
+    } as DeploymentResponse)
+
+    await expect(poll()).resolves.toMatchObject({
+      deploymentState: 'Completed'
+    })
   })
 
-  test('retries on 404 Not Found', async () => {
-    jest.setTimeout(10000)
-    mockFetch
-      .mockResolvedValueOnce(
-        createMockResponse({
-          ok: false,
-          status: 404,
-          statusText: 'Not Found',
-          json: async () => ({})
-        })
+  it('stops without sleeping when the deadline passes during a poll', async () => {
+    let now = 1_000
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
+    getDeploymentStatus.mockImplementation(async () => {
+      now += 60_000
+      return status('InProgress')
+    })
+
+    try {
+      await expect(poll(60_000, 1000)).rejects.toThrow(
+        /did not complete within 1m 00s\..*Last state: InProgress\./
       )
-      .mockResolvedValueOnce(
-        createMockResponse({
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          json: async () => validResponse
-        })
-      )
-    const promise = pollDeploymentStatus('key', 'proj', 'dep', 1000, 10)
-    await jest.advanceTimersByTimeAsync(20) // enough for one retry
-    await Promise.resolve()
-    const result = await promise
-    expect(core.warning).toHaveBeenCalledWith(
-      'Not Found: The project or deployment ID could not be found. Will retry.'
-    )
-    expect(result.deploymentState).toBe('Completed')
+    } finally {
+      nowSpy.mockRestore()
+    }
+    expect(getDeploymentStatus).toHaveBeenCalledTimes(1)
+    expect(sleepMock).not.toHaveBeenCalled()
   })
 
-  test('retries on network error', async () => {
-    jest.setTimeout(10000)
-    mockFetch
-      .mockRejectedValueOnce(new Error('Network down'))
-      .mockResolvedValueOnce(
-        createMockResponse({
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          json: async () => validResponse
-        })
-      )
-    const promise = pollDeploymentStatus('key', 'proj', 'dep', 1000, 10)
-    await jest.advanceTimersByTimeAsync(20) // enough for one retry
-    await Promise.resolve()
-    const result = await promise
-    expect(core.warning).toHaveBeenCalledWith(
-      expect.stringContaining('Network error while polling deployment status:')
+  it('times out when the deployment never finishes', async () => {
+    getDeploymentStatus.mockResolvedValue(status('InProgress'))
+    // Real time must pass for the deadline to be reached
+    sleepMock.mockImplementation(
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms))
     )
-    expect(result.deploymentState).toBe('Completed')
+
+    await expect(poll(30, 5)).rejects.toThrow(
+      /^Deployment dep-1 did not complete within 0s\. It may still be running in Umbraco Cloud — check the project's deployment history before re-running\. Last state: InProgress\. Elapsed: \d+s\.$/
+    )
+    expect(getDeploymentStatus.mock.calls.length).toBeGreaterThan(1)
+    // Never sleeps longer than the interval
+    for (const [ms] of sleepMock.mock.calls) {
+      expect(ms).toBeLessThanOrEqual(5)
+    }
+  })
+})
+
+describe('pollDeploymentStatus timeout message', () => {
+  let polling: PollingModule
+  let apiModule: ApiModule
+
+  beforeAll(async () => {
+    polling = await import('../../src/utils/deployment-polling.js')
+    apiModule = await import('../../src/api/umbraco-cloud-api.js')
   })
 
-  test('warns if deployment is blocked by updating marker', async () => {
-    jest.setTimeout(10000)
-    const blockedResponse = {
-      ...validResponse,
-      deploymentState: 'InProgress',
-      deploymentStatusMessages: [
+  it('reports an unknown last state when no status was ever read', async () => {
+    const getDeploymentStatus = jest
+      .fn<(id: string) => Promise<DeploymentResponse>>()
+      .mockRejectedValue(new TypeError('fetch failed'))
+    sleepMock.mockReset()
+    sleepMock.mockImplementation(
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    )
+
+    await expect(
+      polling.pollDeploymentStatus({ getDeploymentStatus }, 'dep-2', 20, 5)
+    ).rejects.toThrow(/did not complete within 0s\..*Last state: unknown\./)
+  })
+
+  it.each([
+    [0, '0s'],
+    [45_000, '45s'],
+    [65_000, '1m 05s'],
+    [60_000, '1m 00s'],
+    [20 * 60_000, '20m 00s'],
+    [3_723_000, '1h 02m 03s']
+  ])('formats %ims as %s', (ms, expected) => {
+    expect(apiModule.formatDuration(ms)).toBe(expected)
+  })
+})
+
+describe('hasUpdatingMarkerError', () => {
+  let polling: PollingModule
+
+  beforeAll(async () => {
+    polling = await import('../../src/utils/deployment-polling.js')
+  })
+
+  it('detects marker messages', () => {
+    expect(
+      polling.hasUpdatingMarkerError([
         {
-          timestampUtc: '2025-09-03T12:00:00Z',
+          timestampUtc: 't',
           message:
             "The site can't be upgraded as it's blocked with the following markers: updating"
         }
-      ]
-    }
-    mockFetch
-      .mockResolvedValueOnce(
-        createMockResponse({
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          json: async () => blockedResponse
-        })
-      )
-      .mockResolvedValueOnce(
-        createMockResponse({
-          ok: true,
-          status: 200,
-          statusText: 'OK',
-          json: async () => validResponse
-        })
-      )
-    const promise = pollDeploymentStatus('key', 'proj', 'dep', 1000, 10)
-    await jest.advanceTimersByTimeAsync(20) // enough for one poll and one retry
-    await Promise.resolve()
-    const result = await promise
-    expect(core.warning).toHaveBeenCalledWith(
-      expect.stringContaining(
-        'Deployment is blocked by leftover upgrade markers!'
-      )
-    )
-    expect(result.deploymentState).toBe('Completed')
+      ])
+    ).toBe(true)
   })
 
-  test('throws error if deployment does not complete in time', async () => {
-    jest.setTimeout(10000)
-    // Use real timers for this test since it relies on Date.now()
-    jest.useRealTimers()
-
-    mockFetch.mockResolvedValue(
-      createMockResponse({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: async () => ({ ...validResponse, deploymentState: 'InProgress' })
-      })
-    )
-
-    // Act & Assert - use very short timeout and interval to quickly trigger timeout
-    await expect(
-      pollDeploymentStatus('key', 'proj', 'dep', 10, 5) // 10ms max, 5ms interval
-    ).rejects.toThrow('Deployment did not complete within the expected time.')
-
-    // Restore fake timers for other tests
-    jest.useFakeTimers()
-  })
-
-  test('returns DeploymentResponse type', async () => {
-    mockFetch.mockResolvedValueOnce(
-      createMockResponse({
-        ok: true,
-        status: 200,
-        statusText: 'OK',
-        json: async () => validResponse
-      })
-    )
-    const result = await pollDeploymentStatus('key', 'proj', 'dep', 1000, 10)
-    expect(result).toHaveProperty('deploymentId')
-    expect(result).toHaveProperty('deploymentState')
-    expect(result).toHaveProperty('deploymentStatusMessages')
+  it('returns false for no or unrelated messages', () => {
+    expect(polling.hasUpdatingMarkerError(undefined)).toBe(false)
+    expect(
+      polling.hasUpdatingMarkerError([{ timestampUtc: 't', message: 'ok' }])
+    ).toBe(false)
   })
 })

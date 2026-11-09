@@ -14,6 +14,12 @@ export interface DeploymentResponse {
     timestampUtc: string
     message: string
   }>
+  /**
+   * True once this deployment has pushed a commit to the Cloud environment's
+   * git repository (it can be true on a Failed deployment, e.g. when Kudu's
+   * build fails after the push).
+   */
+  cloudRepositoryUpdated?: boolean
   // Additional properties for compatibility
   id?: string
   projectId?: string
@@ -61,7 +67,6 @@ export interface NuGetSourceConfig {
 export interface NuGetConfigModificationResult {
   success: boolean
   message: string
-  nugetConfigPath?: string
 }
 
 export interface DeploymentListResponse {
@@ -93,9 +98,9 @@ export interface ActionInputs {
   timeoutSeconds?: number
   description?: string
   version?: string
-  changeId?: string
   baseUrl?: string
   baseBranch?: string
+  githubToken?: string
   uploadRetries?: number
   uploadRetryDelay?: number
   uploadTimeout?: number
