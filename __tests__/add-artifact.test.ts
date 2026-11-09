@@ -5,6 +5,7 @@ import * as path from 'path'
 import JSZip from 'jszip'
 import type { UmbracoCloudAPI } from '../src/api/umbraco-cloud-api.js'
 import type { ActionInputs } from '../src/types/index.js'
+import { STATUS_MESSAGES } from './fixtures/umbraco-cloud-responses.js'
 
 jest.unstable_mockModule('@actions/core', () => ({
   info: jest.fn(),
@@ -52,8 +53,20 @@ describe('add-artifact', () => {
     fs.rmSync(tempDir, { recursive: true, force: true })
   })
 
-  async function writeZip(files: Record<string, string>): Promise<string> {
+  const UMBRACO_FILE = '{"project":"src/Web/Web.csproj"}'
+
+  /**
+   * Builds a test artifact. A root .umbraco file is added unless
+   * `withUmbraco` is false, since Umbraco Cloud requires one.
+   */
+  async function writeZip(
+    files: Record<string, string>,
+    { withUmbraco = true }: { withUmbraco?: boolean } = {}
+  ): Promise<string> {
     const zip = new JSZip()
+    if (withUmbraco) {
+      zip.file('.umbraco', UMBRACO_FILE)
+    }
     for (const [name, content] of Object.entries(files)) {
       zip.file(name, content)
     }
@@ -102,7 +115,10 @@ describe('add-artifact', () => {
 
       expect(result.artifactId).toBe('artifact-123')
       expect(result.nugetSourceStatus).toBe('')
-      expect(fileNames(await readZip(zipPath))).toEqual(['src/Program.cs'])
+      expect(fileNames(await readZip(zipPath))).toEqual([
+        '.umbraco',
+        'src/Program.cs'
+      ])
       expect(mockAddDeploymentArtifact).toHaveBeenCalledWith(
         zipPath,
         undefined,
@@ -124,7 +140,10 @@ describe('add-artifact', () => {
 
       await handleAddArtifact(api, inputs({ filePath: zipPath }))
 
-      expect(fileNames(await readZip(zipPath))).toEqual(['site/web.config'])
+      expect(fileNames(await readZip(zipPath))).toEqual([
+        '.umbraco',
+        'site/web.config'
+      ])
     })
 
     test('.git exclusion does not remove .gitignore or .github/', async () => {
@@ -144,6 +163,7 @@ describe('add-artifact', () => {
       expect(fileNames(await readZip(zipPath))).toEqual([
         '.github/workflows/ci.yml',
         '.gitignore',
+        '.umbraco',
         'src/.gitignore',
         'src/Program.cs'
       ])
@@ -166,6 +186,7 @@ describe('add-artifact', () => {
       )
 
       expect(fileNames(await readZip(zipPath))).toEqual([
+        '.umbraco',
         'src/Client.RCLProject/Client.csproj',
         'src/Client.RCLProject/binary.txt'
       ])
@@ -192,6 +213,96 @@ describe('add-artifact', () => {
       )
     })
 
+    test('.cloud_gitignore without any .gitignore leaves the zip untouched', async () => {
+      const zipPath = await writeZip({
+        '.cloud_gitignore': 'cloud-rules',
+        'src/Program.cs': 'class P {}'
+      })
+      const originalBytes = fs.readFileSync(zipPath)
+
+      await handleAddArtifact(api, inputs({ filePath: zipPath }))
+
+      expect(core.info).toHaveBeenCalledWith(
+        'No .gitignore files found in artifact to replace'
+      )
+      expect(fs.readFileSync(zipPath).equals(originalBytes)).toBe(true)
+      expect(mockAddDeploymentArtifact).toHaveBeenCalledTimes(1)
+    })
+
+    test('reports the NuGet failure when something other than an Error is thrown', async () => {
+      const zipPath = await writeZip({ 'src/Program.cs': 'class P {}' })
+      const originalFile = JSZip.prototype.file
+      const fileSpy = jest
+        .spyOn(JSZip.prototype, 'file')
+        .mockImplementation(function (this: JSZip, ...args: unknown[]) {
+          if (args[0] === 'NuGet.config') {
+            throw 'disk on fire'
+          }
+          return (originalFile as (...a: unknown[]) => unknown).apply(
+            this,
+            args
+          )
+        } as never)
+
+      try {
+        await expect(
+          handleAddArtifact(
+            api,
+            inputs({
+              filePath: zipPath,
+              nugetSourceName: 'MyFeed',
+              nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+            })
+          )
+        ).rejects.toThrow('Failed to configure NuGet source: disk on fire')
+      } finally {
+        fileSpy.mockRestore()
+      }
+      expect(core.setOutput).toHaveBeenCalledWith(
+        'nuget-source-status',
+        'Failed to configure NuGet source: disk on fire'
+      )
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('reports a friendly error when filePath is a directory', async () => {
+      await expect(
+        handleAddArtifact(api, inputs({ filePath: tempDir }))
+      ).rejects.toThrow(
+        `filePath "${tempDir}" is not a file (resolved to ${path.resolve(tempDir)})`
+      )
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('reports a friendly error when the zip reader rejects with a non-Error', async () => {
+      const zipPath = await writeZip({ 'src/Program.cs': 'class P {}' })
+      const loadSpy = jest
+        .spyOn(JSZip, 'loadAsync')
+        .mockRejectedValueOnce('corrupt' as never)
+
+      try {
+        await expect(
+          handleAddArtifact(api, inputs({ filePath: zipPath }))
+        ).rejects.toThrow(
+          `filePath "${zipPath}" is not a valid zip file: corrupt`
+        )
+      } finally {
+        loadSpy.mockRestore()
+      }
+    })
+
+    test('rejects excluded-paths that normalise to nothing', async () => {
+      const zipPath = await writeZip({ 'src/Program.cs': 'class P {}' })
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({ filePath: zipPath, excludedPaths: './' })
+        )
+      ).rejects.toThrow('No valid paths found after validation.')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
     test('injects a new NuGet.config at the zip root', async () => {
       const zipPath = await writeZip({
         'src/Web/Program.cs': 'class P {}'
@@ -209,7 +320,11 @@ describe('add-artifact', () => {
       )
 
       const zip = await readZip(zipPath)
-      expect(fileNames(zip)).toEqual(['NuGet.config', 'src/Web/Program.cs'])
+      expect(fileNames(zip)).toEqual([
+        '.umbraco',
+        'NuGet.config',
+        'src/Web/Program.cs'
+      ])
       const xml = await zip.file('NuGet.config')!.async('string')
       expect(xml).toContain(
         '<add key="MyFeed" value="https://nuget.example.com/v3/index.json"/>'
@@ -284,17 +399,201 @@ describe('add-artifact', () => {
 
       expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
       expect(fs.readFileSync(zipPath).equals(originalBytes)).toBe(true)
+      // The failure is still reported through the nuget-source-status output
+      expect(core.setOutput).toHaveBeenCalledWith(
+        'nuget-source-status',
+        expect.stringContaining('Failed to configure NuGet source')
+      )
     })
 
     test('throws when the zip has no files after exclusions', async () => {
-      const zipPath = await writeZip({
-        '.git/HEAD': 'ref',
-        '.github/workflows/ci.yml': 'on: push'
-      })
+      const zipPath = await writeZip(
+        {
+          '.git/HEAD': 'ref',
+          '.github/workflows/ci.yml': 'on: push'
+        },
+        { withUmbraco: false }
+      )
 
       await expect(
         handleAddArtifact(api, inputs({ filePath: zipPath }))
       ).rejects.toThrow('Artifact contains no files')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('throws before NuGet injection when exclusions remove every file', async () => {
+      // Real run A4: every top-level entry was excluded, NuGet injection then
+      // re-created NuGet.config and a zip holding only that file was deployed.
+      const zipPath = await writeZip({
+        'src/Program.cs': 'class P {}',
+        'NuGet.config': '<configuration/>'
+      })
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({
+            filePath: zipPath,
+            excludedPaths: '.umbraco,src/,NuGet.config',
+            nugetSourceName: 'MyFeed',
+            nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+          })
+        )
+      ).rejects.toThrow('Artifact contains no files')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('throws when the artifact has no root .umbraco file', async () => {
+      const zipPath = await writeZip(
+        {
+          'src/Web/.umbraco': 'nested does not count',
+          'src/Web/Program.cs': 'class P {}'
+        },
+        { withUmbraco: false }
+      )
+
+      const error = await handleAddArtifact(
+        api,
+        inputs({ filePath: zipPath })
+      ).catch((e: unknown) => e)
+
+      expect(error).toBeInstanceOf(Error)
+      const message = (error as Error).message
+      expect(message).toContain('no .umbraco file at the root of the zip')
+      expect(message).toContain('Umbraco Cloud requires this file')
+      expect(message).toContain('project file (.csproj)')
+      expect(message).not.toContain('excluded-paths')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+      // Without this check Umbraco Cloud fails the deployment with:
+      expect(STATUS_MESSAGES.missingUmbracoFile).toContain(
+        'Incoming package has no .umbraco file in its root. It names the project folder and project file the build uses.'
+      )
+    })
+
+    test('says excluded-paths removed .umbraco when it did', async () => {
+      const zipPath = await writeZip({ 'src/Web/Program.cs': 'class P {}' })
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({ filePath: zipPath, excludedPaths: '.git/,.umbraco' })
+        )
+      ).rejects.toThrow(/removed by the excluded-paths input/)
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('does not upload an artifact without .umbraco even when NuGet would add a file', async () => {
+      const zipPath = await writeZip(
+        { 'src/Web/Program.cs': 'class P {}' },
+        { withUmbraco: false }
+      )
+
+      await expect(
+        handleAddArtifact(
+          api,
+          inputs({
+            filePath: zipPath,
+            nugetSourceName: 'MyFeed',
+            nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+          })
+        )
+      ).rejects.toThrow('.umbraco')
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('a freshly generated NuGet.config also lists nuget.org', async () => {
+      const zipPath = await writeZip({ 'src/Web/Program.cs': 'class P {}' })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          nugetSourceName: 'MyFeed',
+          nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+        })
+      )
+
+      const xml = await (await readZip(zipPath))
+        .file('NuGet.config')!
+        .async('string')
+      expect(xml).toContain(
+        '<add key="nuget.org" value="https://api.nuget.org/v3/index.json"/>'
+      )
+      expect(xml).toContain('key="MyFeed"')
+      expect(core.warning).not.toHaveBeenCalled()
+    })
+
+    test('does not duplicate nuget.org when it is the configured source', async () => {
+      const zipPath = await writeZip({ 'src/Web/Program.cs': 'class P {}' })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          nugetSourceName: 'public',
+          nugetSourceUrl: 'https://api.nuget.org/v3/index.json/'
+        })
+      )
+
+      const xml = await (await readZip(zipPath))
+        .file('NuGet.config')!
+        .async('string')
+      expect(xml.match(/api\.nuget\.org/g)).toHaveLength(1)
+    })
+
+    test('warns when excluded-paths removed the root NuGet.config but a source is configured', async () => {
+      const zipPath = await writeZip({
+        'NuGet.config':
+          '<configuration><packageSources><add key="other" value="https://other.example.com/v3/index.json"/></packageSources></configuration>',
+        'src/Web/Program.cs': 'class P {}'
+      })
+
+      await handleAddArtifact(
+        api,
+        inputs({
+          filePath: zipPath,
+          excludedPaths: '.git/,NuGet.config',
+          nugetSourceName: 'MyFeed',
+          nugetSourceUrl: 'https://nuget.example.com/v3/index.json'
+        })
+      )
+
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining(
+          'excluded-paths removed the existing root NuGet.config'
+        )
+      )
+      const xml = await (await readZip(zipPath))
+        .file('NuGet.config')!
+        .async('string')
+      expect(xml).toContain('key="MyFeed"')
+      expect(xml).toContain('key="nuget.org"')
+      expect(xml).not.toContain('key="other"')
+    })
+
+    test('reports a friendly error when filePath does not exist', async () => {
+      const missing = path.join(tempDir, 'does-not-exist.zip')
+
+      await expect(
+        handleAddArtifact(api, inputs({ filePath: missing }))
+      ).rejects.toThrow(
+        `filePath "${missing}" does not exist (resolved to ${path.resolve(missing)})`
+      )
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
+    test('reports a friendly error when filePath is not a zip', async () => {
+      const notZip = path.join(tempDir, 'not-a-zip.zip')
+      fs.writeFileSync(notZip, 'plain text, not a zip')
+
+      const error = await handleAddArtifact(
+        api,
+        inputs({ filePath: notZip })
+      ).catch((e: unknown) => e)
+
+      expect((error as Error).message).toBe(
+        `filePath "${notZip}" is not a valid zip file: Can't find end of central directory : is this a zip file ? If it is, see https://stuk.github.io/jszip/documentation/howto/read_zip.html`
+      )
       expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
     })
 

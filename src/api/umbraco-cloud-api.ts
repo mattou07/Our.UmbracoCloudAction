@@ -12,7 +12,28 @@ import { sleep } from '../utils/helpers.js'
 import { fetchWithApiLogging } from '../utils/api-logging.js'
 import { redactSignedUrls } from '../utils/redact.js'
 
+/*
+ * Structure decides, text enriches.
+ *
+ * Umbraco Cloud may reword its error and status messages at any time, so
+ * control flow here never depends on exact wording. Decisions are made from
+ * structure: HTTP status codes, problem-details `type`, deployment states,
+ * message position (e.g. "the messages just before the terminal one") and
+ * URL shape (blob host + `sig=`). Text matching is only ever used as an extra
+ * hint (to surface more detail or to keep older checks working), always with
+ * a structural fallback that still does the right thing if the text changes.
+ */
+
 export const DEFAULT_BASE_URL = 'https://api.cloud.umbraco.com'
+
+/** States in which a deployment is still running. Anything else is terminal. */
+export const IN_PROGRESS_STATES = ['Pending', 'InProgress', 'Queued']
+
+/** Umbraco Cloud's v2 artifact upload limit (multipart body length). */
+export const MAX_ARTIFACT_SIZE_BYTES = 268435456
+
+const MAX_ERROR_SUMMARY_LENGTH = 500
+const LOG_FETCH_TIMEOUT_MS = 15000
 
 /**
  * Error thrown for non-2xx responses from the Umbraco Cloud API.
@@ -22,6 +43,10 @@ export class UmbracoCloudApiError extends Error {
   readonly status: number
   readonly body: string
   readonly retryAfterSeconds?: number
+  /** Problem-details `type` from the body (e.g. 'CloudNullDeployment'), if any */
+  readonly problemType?: string
+  /** Problem-details `title` from the body, if any */
+  readonly title?: string
 
   constructor(
     message: string,
@@ -34,7 +59,89 @@ export class UmbracoCloudApiError extends Error {
     this.status = status
     this.body = body
     this.retryAfterSeconds = retryAfterSeconds
+    const parsed = parseErrorBody(body)
+    this.problemType = parsed.problemType
+    this.title = parsed.title
   }
+}
+
+interface ParsedErrorBody {
+  summary: string
+  problemType?: string
+  title?: string
+}
+
+function collapseWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim()
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
+}
+
+function flattenErrors(errors: unknown): string | undefined {
+  if (!errors || typeof errors !== 'object') return undefined
+  const parts: string[] = []
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      if (value.trim()) parts.push(value)
+    } else if (Array.isArray(value)) {
+      value.forEach(visit)
+    } else if (value && typeof value === 'object') {
+      Object.values(value).forEach(visit)
+    }
+  }
+  visit(errors)
+  return parts.length ? parts.join('; ') : undefined
+}
+
+/**
+ * Turns a Cloud error body into a single-line summary. Handles both the API
+ * gateway format `{statusCode, message}` and RFC problem details
+ * `{type, title, status, detail, errors}`, falling back to the raw text.
+ */
+export function parseErrorBody(body: string): ParsedErrorBody {
+  let summary: string | undefined
+  let problemType: string | undefined
+  let title: string | undefined
+
+  const trimmed = (body ?? '').trim()
+  if (trimmed.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmed) as Record<string, unknown>
+      problemType = nonEmptyString(parsed.type)
+      title = nonEmptyString(parsed.title)
+      summary =
+        nonEmptyString(parsed.detail) ??
+        nonEmptyString(parsed.message) ??
+        flattenErrors(parsed.errors) ??
+        title
+      // A non-URL type is a machine-readable code worth keeping in the text
+      if (summary && problemType && !/^https?:\/\//i.test(problemType)) {
+        summary = `${problemType}: ${summary}`
+      }
+    } catch {
+      // not JSON — fall back to the raw text
+    }
+  }
+
+  let single = collapseWhitespace(summary ?? trimmed)
+  if (single.length > MAX_ERROR_SUMMARY_LENGTH) {
+    single = `${single.slice(0, MAX_ERROR_SUMMARY_LENGTH)}…`
+  }
+  return { summary: single || '(empty response body)', problemType, title }
+}
+
+/** Formats milliseconds as e.g. `45s`, `1m 05s` or `1h 02m 03s`. */
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.round(ms / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  const pad = (n: number) => String(n).padStart(2, '0')
+  if (hours > 0) return `${hours}h ${pad(minutes)}m ${pad(seconds)}s`
+  if (minutes > 0) return `${minutes}m ${pad(seconds)}s`
+  return `${seconds}s`
 }
 
 export interface UmbracoCloudApiOptions {
@@ -47,17 +154,32 @@ export interface UmbracoCloudApiOptions {
 }
 
 /**
- * Status messages worth surfacing when a deployment fails. Cloud reports some
- * failures without the word "error", e.g. "Cannot apply update because the
- * following packages would be downgraded: ...".
+ * Text hint for status messages worth surfacing when a deployment fails.
+ * Cloud reports some failures without the word "error", e.g. "Cannot apply
+ * update because the following packages would be downgraded: ...". This is
+ * only a hint: the messages just before the terminal one are always surfaced
+ * too (see getDeploymentErrorDetails).
  */
 const ERROR_MESSAGE_PATTERN =
-  /error|fail|exception|cannot|could not|unable to|downgrad/i
+  /error|fail|exception|cannot|could not|unable|does not exist|no \.umbraco|downgrad|invalid/i
 
-const ENVIRONMENT_ALIAS_ERRORS = [
-  'No environments matches the provided alias',
-  'Unable to resolve target environment by Alias'
+/** Pure progress lines that never explain a failure. */
+const PROGRESS_MESSAGE_PATTERNS = [
+  /^no changes to deploy\b/i,
+  /^delete updating marker$/i,
+  /^verify deployment$/i,
+  /^git (commit|push)$/i,
+  /^(skipped\s*:\s*)?(nuget restore|dotnet build)$/i,
+  /^picking up kudu deployment stream$/i,
+  /^kudu deployment log id:/i,
+  /^kept the cloud environment's umbraco-cloud\.json/i,
+  /^(deleting repository files|copying files to repository|git stage)$/i
 ]
+
+/** Number of messages before the terminal one that are always surfaced. */
+const TRAILING_CONTEXT_MESSAGES = 3
+
+const LOG_ERROR_LINE_PATTERN = /\berror\b|NU\d{4}|CS\d{4}|Build FAILED/i
 
 /** Retry on throttling, server errors and network failures — never on other 4xx. */
 export function isRetryableError(error: unknown): boolean {
@@ -91,6 +213,59 @@ function parseRetryAfter(response: Response, body: string): number | undefined {
   return match ? parseInt(match[1], 10) : undefined
 }
 
+function isProgressMessage(message: string): boolean {
+  const trimmed = message.trim()
+  return PROGRESS_MESSAGE_PATTERNS.some((p) => p.test(trimmed))
+}
+
+/**
+ * Reduces a status message to its useful part: multi-line messages (e.g. a
+ * Kudu build output block) keep only the lines that look like errors.
+ */
+function condenseMessage(message: string): string {
+  const lines = message
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean)
+  if (lines.length <= 1) return message.trim()
+  const errorLines = lines.filter((l) => ERROR_MESSAGE_PATTERN.test(l))
+  return (errorLines.length ? errorLines : lines).join('\n')
+}
+
+const URL_PATTERN = /https:\/\/[^\s"'<>]+/gi
+
+/** Signed Azure blob URLs (e.g. Cloud build/restore logs) in a message. */
+function findSignedBlobUrls(message: string): string[] {
+  const found: string[] = []
+  for (const candidate of message.match(URL_PATTERN) ?? []) {
+    try {
+      const url = new URL(candidate)
+      if (
+        url.hostname.toLowerCase().endsWith('.blob.core.windows.net') &&
+        url.searchParams.has('sig')
+      ) {
+        found.push(candidate)
+      }
+    } catch {
+      // not a valid URL
+    }
+  }
+  return found
+}
+
+/** `.../<deploymentId>-NugetRestore.txt?sig=...` -> `NugetRestore.txt` */
+function logNameFromUrl(signedUrl: string): string {
+  // Only called with URLs findSignedBlobUrls already parsed successfully
+  const segments = new URL(signedUrl).pathname.split('/').filter(Boolean)
+  const file = decodeURIComponent(segments[segments.length - 1] ?? 'log')
+  return (
+    file.replace(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i,
+      ''
+    ) || file
+  )
+}
+
 export class UmbracoCloudAPI {
   private readonly baseUrl: string
   private readonly projectId: string
@@ -99,6 +274,11 @@ export class UmbracoCloudAPI {
   private readonly uploadRetryDelayMs: number
   private readonly uploadTimeoutMs: number
   private readonly rateLimitBaseDelayMs: number
+  /**
+   * Signed log links seen in status messages, keyed by deployment id. Kept
+   * private and in memory only: everything returned or logged is redacted.
+   */
+  private readonly signedLogUrls = new Map<string, Set<string>>()
 
   constructor(
     projectId: string,
@@ -142,8 +322,10 @@ export class UmbracoCloudAPI {
 
     if (!response.ok) {
       const body = await response.text()
+      const { summary } = parseErrorBody(body)
+      const statusText = response.statusText ? ` ${response.statusText}` : ''
       throw new UmbracoCloudApiError(
-        `${errorPrefix}: ${response.status} ${response.statusText} - ${body}`,
+        `${errorPrefix}: ${response.status}${statusText} - ${summary}`,
         response.status,
         body,
         parseRetryAfter(response, body)
@@ -151,30 +333,6 @@ export class UmbracoCloudAPI {
     }
 
     return response
-  }
-
-  private async retryWithLowercaseEnvironmentAlias<T>(
-    request: (alias: string) => Promise<T>,
-    targetEnvironmentAlias: string,
-    operationName: string
-  ): Promise<T> {
-    try {
-      return await request(targetEnvironmentAlias)
-    } catch (error) {
-      const lower = targetEnvironmentAlias.toLowerCase()
-      const isAliasError =
-        error instanceof Error &&
-        ENVIRONMENT_ALIAS_ERRORS.some((m) => error.message.includes(m))
-
-      if (!isAliasError || targetEnvironmentAlias === lower) {
-        throw error
-      }
-
-      core.info(
-        `Environment alias case sensitivity detected in ${operationName}. Retrying with lowercase: ${targetEnvironmentAlias} -> ${lower}`
-      )
-      return await request(lower)
-    }
   }
 
   private async retryWithRateLimit<T>(
@@ -206,21 +364,51 @@ export class UmbracoCloudAPI {
     }
   }
 
-  async startDeployment(request: DeploymentRequest): Promise<string> {
+  /**
+   * Structural check behind a 409: is a deployment actually running? Never
+   * throws; returns false when it can't tell, so the 409 is surfaced as-is.
+   */
+  private async hasRunningDeployment(alias: string): Promise<boolean> {
+    const isRunning = (list: DeploymentListResponse) =>
+      (list?.data ?? []).some((d) => IN_PROGRESS_STATES.includes(d.state))
+    try {
+      return isRunning(await this.getDeployments(0, 5, true, alias))
+    } catch (error) {
+      core.debug(`Could not list deployments for ${alias}: ${error}`)
+    }
+    try {
+      return isRunning(await this.getDeployments(0, 5, true))
+    } catch (error) {
+      core.debug(`Could not list deployments: ${error}`)
+      return false
+    }
+  }
+
+  async startDeployment(
+    request: DeploymentRequest,
+    options: {
+      waitForRunningDeploymentMs?: number
+      pollIntervalMs?: number
+    } = {}
+  ): Promise<string> {
     const url = `${this.projectUrl}/deployments`
+    const waitMs = Math.max(0, options.waitForRunningDeploymentMs ?? 0)
+    const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? 30000)
 
     core.debug(`Starting deployment at ${url}`)
 
-    return this.retryWithLowercaseEnvironmentAlias(
-      async (alias) => {
-        const body = { ...request, targetEnvironmentAlias: alias }
+    const alias = request.targetEnvironmentAlias
+    let waitedMs = 0
+
+    for (;;) {
+      try {
         const response = await this.retryWithRateLimit(() =>
           this.send(
             url,
             {
               method: 'POST',
               headers: this.getHeaders(),
-              body: JSON.stringify(body)
+              body: JSON.stringify(request)
             },
             'startDeployment',
             'Failed to start deployment',
@@ -231,10 +419,39 @@ export class UmbracoCloudAPI {
         const data = (await response.json()) as DeploymentResponse
         core.debug(`Deployment started successfully: ${JSON.stringify(data)}`)
         return data.deploymentId
-      },
-      request.targetEnvironmentAlias,
-      'startDeployment'
-    )
+      } catch (error) {
+        // Structure decides: a 409 *and* a deployment listed as running.
+        // The 409's wording is only logged.
+        if (
+          waitMs <= 0 ||
+          !(error instanceof UmbracoCloudApiError) ||
+          error.status !== 409 ||
+          !(await this.hasRunningDeployment(alias))
+        ) {
+          throw error
+        }
+
+        if (waitedMs >= waitMs) {
+          const minutes = Math.round((waitMs / 60000) * 10) / 10
+          throw new UmbracoCloudApiError(
+            `Another deployment was still in progress after waiting ${minutes} minute${minutes === 1 ? '' : 's'}. ` +
+              'Use a `concurrency:` group in your workflow to serialise deployments. ' +
+              `(${error.message})`,
+            error.status,
+            error.body,
+            error.retryAfterSeconds
+          )
+        }
+
+        const delay = Math.min(pollIntervalMs, waitMs - waitedMs)
+        core.info(
+          `Another deployment is in progress on ${alias}; waiting ${Math.round(delay / 1000)}s before retrying…` +
+            (error.title ? ` (${error.title})` : '')
+        )
+        await sleep(delay)
+        waitedMs += delay
+      }
+    }
   }
 
   /**
@@ -265,6 +482,18 @@ export class UmbracoCloudAPI {
     // restore log. They end up in job logs, outputs and PR bodies, so strip
     // the signature before anything else sees them.
     if (Array.isArray(data.deploymentStatusMessages)) {
+      // Keep the signed log links privately first, so getFailureLogExcerpts
+      // can still read them after the returned copy has been redacted.
+      for (const msg of data.deploymentStatusMessages) {
+        for (const signed of findSignedBlobUrls(msg.message ?? '')) {
+          let urls = this.signedLogUrls.get(deploymentId)
+          if (!urls) {
+            urls = new Set()
+            this.signedLogUrls.set(deploymentId, urls)
+          }
+          urls.add(signed)
+        }
+      }
       data.deploymentStatusMessages = data.deploymentStatusMessages.map(
         (msg) => ({ ...msg, message: redactSignedUrls(msg.message ?? '') })
       )
@@ -287,6 +516,16 @@ export class UmbracoCloudAPI {
       throw new Error(`File does not exist: ${filePath}`)
     }
 
+    const size = fs.statSync(filePath).size
+    if (size > MAX_ARTIFACT_SIZE_BYTES) {
+      const toMb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1)
+      throw new Error(
+        `Artifact ${path.basename(filePath)} is ${toMb(size)} MB (${size} bytes), ` +
+          `which exceeds Umbraco Cloud's upload limit of ${toMb(MAX_ARTIFACT_SIZE_BYTES)} MB ` +
+          `(${MAX_ARTIFACT_SIZE_BYTES} bytes). Exclude unneeded files from the artifact.`
+      )
+    }
+
     core.debug(`Uploading artifact: ${filePath}`)
 
     // openAsBlob streams from disk lazily and can be re-sent on every attempt
@@ -294,7 +533,8 @@ export class UmbracoCloudAPI {
     const blob = await fs.openAsBlob(filePath, { type: 'application/zip' })
     const fileName = path.basename(filePath) || 'artifact.zip'
 
-    for (let attempt = 1; attempt <= this.uploadRetries; attempt++) {
+    // Every attempt either returns or, on the last one, throws
+    for (let attempt = 1; ; attempt++) {
       core.info(`Upload attempt ${attempt}/${this.uploadRetries}...`)
 
       const formData = new FormData()
@@ -336,6 +576,15 @@ export class UmbracoCloudAPI {
         }
 
         if (attempt >= this.uploadRetries || !isRetryableError(error)) {
+          if (error instanceof Error && error.name === 'AbortError') {
+            const timeoutError = new Error(
+              `Artifact upload timed out after ${attempt} attempt(s) of ${this.uploadTimeoutMs}ms each. ` +
+                'Increase the upload-timeout input (milliseconds) or reduce the artifact size.',
+              { cause: error }
+            )
+            timeoutError.name = 'UploadTimeoutError'
+            throw timeoutError
+          }
           throw error
         }
 
@@ -349,9 +598,6 @@ export class UmbracoCloudAPI {
         clearTimeout(timeoutId)
       }
     }
-
-    // Unreachable: the loop either returns or throws on the last attempt
-    throw new Error('Upload failed after all retry attempts')
   }
 
   async getChangesById(
@@ -364,44 +610,44 @@ export class UmbracoCloudAPI {
       `Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`
     )
 
-    const fetchChanges = async (alias: string): Promise<ChangesResponse> => {
-      const url = `${this.projectUrl}/deployments/${encodeURIComponent(deploymentId)}/diff?targetEnvironmentAlias=${encodeURIComponent(alias)}`
+    const alias = targetEnvironmentAlias
+    const url = `${this.projectUrl}/deployments/${encodeURIComponent(deploymentId)}/diff?targetEnvironmentAlias=${encodeURIComponent(alias)}`
 
-      for (let attempt = 1; ; attempt++) {
-        try {
-          const response = await this.send(
-            url,
-            { method: 'GET', headers: this.getHeaders() },
-            'getChangesById',
-            'Failed to get changes',
-            { deploymentId, targetEnvironmentAlias: alias }
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const response = await this.send(
+          url,
+          { method: 'GET', headers: this.getHeaders() },
+          'getChangesById',
+          'Failed to get changes',
+          { deploymentId, targetEnvironmentAlias: alias }
+        )
+
+        if (response.status === 204) {
+          return { changes: '' }
+        }
+        return { changes: await response.text() }
+      } catch (error) {
+        // The Cloud site extension is sometimes briefly unavailable right
+        // after a deployment; those surface as 5xx and are worth retrying.
+        if (!isRetryableError(error) || attempt >= maxRetries) {
+          throw error
+        }
+        const delay = retryDelayFor(error, retryDelayMs)
+        const seconds = delay / 1000
+        if (error instanceof UmbracoCloudApiError && error.status === 429) {
+          core.warning(
+            `Rate limited by Umbraco Cloud (attempt ${attempt}/${maxRetries}). Retrying in ${seconds}s...`
           )
-
-          if (response.status === 204) {
-            return { changes: '' }
-          }
-          return { changes: await response.text() }
-        } catch (error) {
-          // The Cloud site extension is sometimes briefly unavailable right
-          // after a deployment; those surface as 5xx and are worth retrying.
-          if (!isRetryableError(error) || attempt >= maxRetries) {
-            throw error
-          }
-          const delay = retryDelayFor(error, retryDelayMs)
+        } else {
           core.warning(
             `Changes endpoint not responding (attempt ${attempt}/${maxRetries}). ` +
-              `Retrying in ${delay / 1000} seconds...`
+              `Retrying in ${seconds} seconds...`
           )
-          await sleep(delay)
         }
+        await sleep(delay)
       }
     }
-
-    return this.retryWithLowercaseEnvironmentAlias(
-      fetchChanges,
-      targetEnvironmentAlias,
-      'getChangesById'
-    )
   }
 
   async getDeployments(
@@ -466,18 +712,104 @@ export class UmbracoCloudAPI {
   }
 
   /**
-   * Returns status messages that look like errors for the given deployment.
+   * Returns the status messages that explain why a deployment failed.
    * Fetches the full message history (no lastModifiedUtc filter).
+   *
+   * Structural: the last few non-progress messages before the terminal one
+   * are always included, whatever their wording. Text hint: messages that
+   * look like errors anywhere in the history are included too.
    */
   async getDeploymentErrorDetails(deploymentId: string): Promise<string[]> {
     try {
       const deployment = await this.getDeploymentStatus(deploymentId)
-      return (deployment.deploymentStatusMessages || [])
-        .filter((msg) => ERROR_MESSAGE_PATTERN.test(msg.message))
-        .map((msg) => `[${msg.timestampUtc}] ${msg.message}`)
+      const messages = (deployment.deploymentStatusMessages || []).filter(
+        (msg) => typeof msg?.message === 'string' && msg.message.trim()
+      )
+
+      // The final message is the terminal "Deployment <id> failed" one when
+      // it names this deployment (wording-independent) or reads like it.
+      const last = messages[messages.length - 1]
+      const hasTerminal =
+        last !== undefined &&
+        (last.message.includes(deploymentId) ||
+          /^\s*deployment \S+ failed\s*$/i.test(last.message))
+      const candidates = hasTerminal ? messages.slice(0, -1) : messages
+
+      const selected = new Set<number>()
+      candidates.forEach((msg, i) => {
+        if (ERROR_MESSAGE_PATTERN.test(msg.message)) selected.add(i)
+      })
+      const meaningful = candidates
+        .map((msg, i) => ({ msg, i }))
+        .filter(({ msg }) => !isProgressMessage(msg.message))
+      for (const { i } of meaningful.slice(-TRAILING_CONTEXT_MESSAGES)) {
+        selected.add(i)
+      }
+
+      const seen = new Set<string>()
+      const details: string[] = []
+      for (const i of [...selected].sort((a, b) => a - b)) {
+        const msg = candidates[i]
+        const text = condenseMessage(msg.message)
+        if (!text || seen.has(text)) continue
+        seen.add(text)
+        details.push(`[${msg.timestampUtc}] ${text}`)
+      }
+      return details
     } catch (error) {
       core.debug(`Could not retrieve deployment error details: ${error}`)
       return []
     }
+  }
+
+  /**
+   * Fetches the signed build/restore logs Cloud linked to in this
+   * deployment's status messages (captured by getDeploymentStatus) and
+   * returns their error lines. Never throws.
+   */
+  async getFailureLogExcerpts(
+    deploymentId: string,
+    maxLines = 40
+  ): Promise<Array<{ name: string; lines: string[] }>> {
+    const urls = [...(this.signedLogUrls.get(deploymentId) ?? [])]
+    const excerpts: Array<{ name: string; lines: string[] }> = []
+
+    for (const signedUrl of urls) {
+      const safeUrl = redactSignedUrls(signedUrl)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(
+        () => controller.abort(),
+        LOG_FETCH_TIMEOUT_MS
+      )
+      try {
+        // Third-party host: plain fetch, never the Cloud API key header.
+        const response = await fetch(signedUrl, { signal: controller.signal })
+        if (!response.ok) {
+          core.debug(`Could not fetch log ${safeUrl}: HTTP ${response.status}`)
+          continue
+        }
+        const text = await response.text()
+        const lines = [
+          ...new Set(
+            text
+              .split(/\r?\n/)
+              .filter((line) => LOG_ERROR_LINE_PATTERN.test(line))
+              .map((line) => line.trim())
+              .filter(Boolean)
+          )
+        ].slice(0, Math.max(0, maxLines))
+        if (lines.length) {
+          excerpts.push({ name: logNameFromUrl(signedUrl), lines })
+        }
+      } catch (error) {
+        core.debug(
+          `Could not fetch log ${safeUrl}: ${redactSignedUrls(String(error))}`
+        )
+      } finally {
+        clearTimeout(timeoutId)
+      }
+    }
+
+    return excerpts
   }
 }

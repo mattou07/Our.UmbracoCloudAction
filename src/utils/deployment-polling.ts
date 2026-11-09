@@ -1,14 +1,16 @@
 import * as core from '@actions/core'
 import { DeploymentResponse } from '../types/index.js'
 import {
+  IN_PROGRESS_STATES,
   UmbracoCloudAPI,
   UmbracoCloudApiError,
+  formatDuration,
   isRetryableError
 } from '../api/umbraco-cloud-api.js'
 import { sleep } from './helpers.js'
 
 /** States in which a deployment is still running. Anything else is terminal. */
-export const IN_PROGRESS_STATES = ['Pending', 'InProgress', 'Queued']
+export { IN_PROGRESS_STATES }
 
 export const UPDATING_MARKER_PATTERNS = [
   "The site can't be upgraded as it's blocked with the following markers: updating",
@@ -41,6 +43,7 @@ export async function pollDeploymentStatus(
   const deadline = start + maxDurationMs
   let lastModifiedUtc: string | undefined
   let markerWarningShown = false
+  let lastState: string | undefined
   // Cloud returns messages *at or after* lastModifiedUtc, so the boundary
   // message comes back on every poll. Track what we've printed.
   const printedMessages = new Set<string>()
@@ -67,6 +70,7 @@ export async function pollDeploymentStatus(
     }
 
     if (data) {
+      lastState = data.deploymentState
       const elapsedMinutes = Math.round((Date.now() - start) / 60000)
       core.info(
         `Deployment status: ${data.deploymentState} (elapsed: ${elapsedMinutes}m, timeout: ${timeoutMinutes}m)`
@@ -102,8 +106,9 @@ export async function pollDeploymentStatus(
     await sleep(Math.min(intervalMs, remaining))
   }
 
-  const elapsedMinutes = Math.round((Date.now() - start) / 60000)
   throw new Error(
-    `Deployment did not complete within the expected time. Elapsed: ${elapsedMinutes} minutes, Timeout: ${timeoutMinutes} minutes.`
+    `Deployment ${deploymentId} did not complete within ${formatDuration(maxDurationMs)}. ` +
+      "It may still be running in Umbraco Cloud — check the project's deployment history before re-running. " +
+      `Last state: ${lastState ?? 'unknown'}. Elapsed: ${formatDuration(Date.now() - start)}.`
   )
 }

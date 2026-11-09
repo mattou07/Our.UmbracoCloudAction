@@ -11,7 +11,7 @@ export default {
   transformIgnorePatterns: [],
   collectCoverageFrom: ['src/**/*.ts', '!src/**/*.d.ts', '!src/index.ts'],
   coverageThreshold: {
-    global: { statements: 90, branches: 85, functions: 90, lines: 90 }
+    global: { statements: 100, branches: 100, functions: 100, lines: 100 }
   },
   testMatch: ['**/__tests__/**/*.test.ts'],
   verbose: true

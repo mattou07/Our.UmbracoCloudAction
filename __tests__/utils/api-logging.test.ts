@@ -2,6 +2,7 @@ import { jest } from '@jest/globals'
 import * as fs from 'fs'
 import * as os from 'os'
 import * as path from 'path'
+import { ERROR_BODIES } from '../fixtures/umbraco-cloud-responses.js'
 
 const uploadArtifact = jest.fn<(...args: unknown[]) => Promise<unknown>>()
 
@@ -112,6 +113,23 @@ describe('api-logging', () => {
       }
     })
 
+    it('writes nothing when logging is switched off while a request is in flight', async () => {
+      const logPath = apiLogging.getApiLogPath()
+      fetchMock.mockImplementation(async () => {
+        apiLogging.initializeApiLogging(false)
+        return new Response('{}', { status: 200 })
+      })
+
+      const response = await apiLogging.fetchWithApiLogging(
+        'https://example.test/x',
+        { method: 'GET' },
+        { operation: 'op' }
+      )
+
+      expect(response.status).toBe(200)
+      expect(fs.readFileSync(logPath, 'utf8')).toBe('')
+    })
+
     it('creates the log file under RUNNER_TEMP', () => {
       expect(apiLogging.isApiLoggingEnabled()).toBe(true)
       const logPath = apiLogging.getApiLogPath()
@@ -181,6 +199,49 @@ describe('api-logging', () => {
       const [entry] = readEntries()
       expect(entry.responseBody).toBe(`[redacted diff: ${patch.length} chars]`)
       expect(JSON.stringify(entry)).not.toContain('secret source')
+    })
+
+    it.each([
+      ['429 rate limit', 429, ERROR_BODIES.rateLimited429],
+      ['409 CloudNullDeployment', 409, ERROR_BODIES.cloudNullDeployment409]
+    ])(
+      'keeps diff error bodies (%s) so failures are diagnosable',
+      async (_name, status, body) => {
+        fetchMock.mockResolvedValue(
+          new Response(JSON.stringify(body), { status })
+        )
+
+        await apiLogging.fetchWithApiLogging(
+          'https://api.test/diff',
+          { method: 'GET' },
+          { operation: 'getChangesById' }
+        )
+
+        const [entry] = readEntries()
+        expect(entry.status).toBe(status)
+        expect(entry.responseBody).toEqual(body)
+      }
+    )
+
+    it('still strips signed URLs from diff error bodies', async () => {
+      const signed =
+        'https://acct.blob.core.windows.net/logs/x.txt?sv=1&sig=SECRET%3D'
+      fetchMock.mockResolvedValue(
+        new Response(JSON.stringify({ message: `see ${signed}` }), {
+          status: 500
+        })
+      )
+
+      await apiLogging.fetchWithApiLogging(
+        'https://api.test/diff',
+        { method: 'GET' },
+        { operation: 'getChangesById' }
+      )
+
+      const [entry] = readEntries()
+      expect(entry.responseBody).toEqual({
+        message: 'see https://acct.blob.core.windows.net/logs/x.txt?[redacted]'
+      })
     })
 
     it('redacts blobUrl keys at any depth, case-insensitively', async () => {

@@ -202,6 +202,46 @@ describe('pollDeploymentStatus', () => {
     expect(markerWarnings).toHaveLength(1)
   })
 
+  it('uses a 20 minute timeout and 25s interval by default', async () => {
+    getDeploymentStatus.mockResolvedValue(status('Completed'))
+
+    await polling.pollDeploymentStatus({ getDeploymentStatus }, 'dep-1')
+
+    expect(info).toHaveBeenCalledWith(
+      'Polling deployment status (timeout: 20 minutes, interval: 25000ms)'
+    )
+  })
+
+  it('tolerates a status response without a message list', async () => {
+    getDeploymentStatus.mockResolvedValue({
+      deploymentId: 'dep-1',
+      deploymentState: 'Completed'
+    } as DeploymentResponse)
+
+    await expect(poll()).resolves.toMatchObject({
+      deploymentState: 'Completed'
+    })
+  })
+
+  it('stops without sleeping when the deadline passes during a poll', async () => {
+    let now = 1_000
+    const nowSpy = jest.spyOn(Date, 'now').mockImplementation(() => now)
+    getDeploymentStatus.mockImplementation(async () => {
+      now += 60_000
+      return status('InProgress')
+    })
+
+    try {
+      await expect(poll(60_000, 1000)).rejects.toThrow(
+        /did not complete within 1m 00s\..*Last state: InProgress\./
+      )
+    } finally {
+      nowSpy.mockRestore()
+    }
+    expect(getDeploymentStatus).toHaveBeenCalledTimes(1)
+    expect(sleepMock).not.toHaveBeenCalled()
+  })
+
   it('times out when the deployment never finishes', async () => {
     getDeploymentStatus.mockResolvedValue(status('InProgress'))
     // Real time must pass for the deadline to be reached
@@ -210,13 +250,48 @@ describe('pollDeploymentStatus', () => {
     )
 
     await expect(poll(30, 5)).rejects.toThrow(
-      'Deployment did not complete within the expected time'
+      /^Deployment dep-1 did not complete within 0s\. It may still be running in Umbraco Cloud — check the project's deployment history before re-running\. Last state: InProgress\. Elapsed: \d+s\.$/
     )
     expect(getDeploymentStatus.mock.calls.length).toBeGreaterThan(1)
     // Never sleeps longer than the interval
     for (const [ms] of sleepMock.mock.calls) {
       expect(ms).toBeLessThanOrEqual(5)
     }
+  })
+})
+
+describe('pollDeploymentStatus timeout message', () => {
+  let polling: PollingModule
+  let apiModule: ApiModule
+
+  beforeAll(async () => {
+    polling = await import('../../src/utils/deployment-polling.js')
+    apiModule = await import('../../src/api/umbraco-cloud-api.js')
+  })
+
+  it('reports an unknown last state when no status was ever read', async () => {
+    const getDeploymentStatus = jest
+      .fn<(id: string) => Promise<DeploymentResponse>>()
+      .mockRejectedValue(new TypeError('fetch failed'))
+    sleepMock.mockReset()
+    sleepMock.mockImplementation(
+      (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+    )
+
+    await expect(
+      polling.pollDeploymentStatus({ getDeploymentStatus }, 'dep-2', 20, 5)
+    ).rejects.toThrow(/did not complete within 0s\..*Last state: unknown\./)
+  })
+
+  it.each([
+    [0, '0s'],
+    [45_000, '45s'],
+    [65_000, '1m 05s'],
+    [60_000, '1m 00s'],
+    [20 * 60_000, '20m 00s'],
+    [3_723_000, '1h 02m 03s']
+  ])('formats %ims as %s', (ms, expected) => {
+    expect(apiModule.formatDuration(ms)).toBe(expected)
   })
 })
 

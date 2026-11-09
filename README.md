@@ -273,11 +273,6 @@ jobs:
   .cloud_gitignore and replace all .gitignore files in the artifact sent to
   cloud
 
-## Small features
-
-- **Environment casing retry**: If the Environment Alias is accidentally defined
-  with casing and fails. The action will retry with lowercase (Live => live)
-
 ## Error Handling
 
 The action attempts to handle most common errors during a build process and

@@ -122,7 +122,9 @@ async function safeReadResponseBody(
   try {
     const bodyText = await response.clone().text()
     // The diff endpoint returns source-code patches: never persist them.
-    if (isDiffOperation(context)) {
+    // Error responses (409/429/5xx) carry no source, and are kept (redacted)
+    // so failures stay diagnosable.
+    if (isDiffOperation(context) && response.ok) {
       return `[redacted diff: ${bodyText.length} chars]`
     }
     return redactValue(tryParseJson(truncate(bodyText)))

@@ -1,5 +1,6 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
+import * as path from 'path'
 import JSZip from 'jszip'
 import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
 import { ActionInputs, ActionOutputs } from '../types/index.js'
@@ -8,6 +9,59 @@ import { addOrUpdateNuGetConfigSource } from '../utils/nuget-config.js'
 
 const DEFAULT_EXCLUDED_PATHS = '.git/,.github/'
 const DEFAULT_NUGET_CONFIG_NAME = 'NuGet.config'
+const UMBRACO_MARKER_FILE = '.umbraco'
+const NUGET_ORG_SOURCE_NAME = 'nuget.org'
+const NUGET_ORG_SOURCE_URL = 'https://api.nuget.org/v3/index.json'
+
+/**
+ * Seed used when the artifact has no root NuGet.config. A repository-level
+ * NuGet.config that only lists the private feed relies on the build machine's
+ * user-level config for nuget.org; listing nuget.org explicitly keeps restore
+ * of public packages working regardless of how the build host is configured.
+ */
+const FRESH_NUGET_CONFIG_SEED = `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="${NUGET_ORG_SOURCE_NAME}" value="${NUGET_ORG_SOURCE_URL}" />
+  </packageSources>
+</configuration>`
+
+function countFiles(zip: JSZip): number {
+  return Object.values(zip.files).filter((f) => !f.dir).length
+}
+
+/** True when the zip has a `.umbraco` file at its root. */
+function hasRootUmbracoFile(zip: JSZip): boolean {
+  const entry = zip.files[UMBRACO_MARKER_FILE]
+  return Boolean(entry && !entry.dir)
+}
+
+/**
+ * Reads and parses the artifact zip, turning file-system and JSZip errors into
+ * messages that name the filePath input.
+ */
+async function loadArtifactZip(filePath: string): Promise<JSZip> {
+  const resolved = path.resolve(filePath)
+  if (!fs.existsSync(filePath)) {
+    throw new Error(
+      `filePath "${filePath}" does not exist (resolved to ${resolved})`
+    )
+  }
+  if (!fs.statSync(filePath).isFile()) {
+    throw new Error(
+      `filePath "${filePath}" is not a file (resolved to ${resolved})`
+    )
+  }
+  const data = fs.readFileSync(filePath)
+  try {
+    return await JSZip.loadAsync(data)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(
+      `filePath "${filePath}" is not a valid zip file: ${message}`
+    )
+  }
+}
 
 /**
  * Normalises a path for comparison against zip entry names:
@@ -63,11 +117,6 @@ function removeExcludedPaths(zip: JSZip, excludedPaths: string): boolean {
     .split(',')
     .map((p) => p.trim())
     .filter((p) => p.length > 0)
-
-  // This should never happen after our validation as we have defaults
-  if (rawPaths.length === 0) {
-    throw new Error('No valid paths found after validation.')
-  }
 
   for (const rawPath of rawPaths) {
     // Reject mixed path separators
@@ -153,14 +202,38 @@ export async function handleAddArtifact(
   )
 
   // Single pipeline: load once, apply all modifications, write back once
-  const data = fs.readFileSync(filePath)
-  const zip = await JSZip.loadAsync(data)
+  const zip = await loadArtifactZip(filePath)
   let modified = false
+
+  const hadUmbracoFile = hasRootUmbracoFile(zip)
+  const hadRootNuGetConfig = findRootNuGetConfig(zip) !== undefined
 
   if (
     removeExcludedPaths(zip, inputs.excludedPaths || DEFAULT_EXCLUDED_PATHS)
   ) {
     modified = true
+  }
+
+  // Check before any step that can add files (NuGet injection creates
+  // NuGet.config), otherwise an artifact emptied by excluded-paths would be
+  // uploaded containing only the generated NuGet.config.
+  if (countFiles(zip) === 0) {
+    throw new Error(
+      'Artifact contains no files after applying excluded-paths. Check the excluded-paths input and the contents of the artifact zip.'
+    )
+  }
+
+  // Umbraco Cloud rejects packages without a root .umbraco file, failing the
+  // deployment with: "Incoming package has no .umbraco file in its root. It
+  // names the project folder and project file the build uses."
+  if (!hasRootUmbracoFile(zip)) {
+    const base =
+      'Artifact has no .umbraco file at the root of the zip. Umbraco Cloud requires this file: it names the project folder and project file (.csproj) the build uses, and deployments without it are rejected.'
+    throw new Error(
+      hadUmbracoFile
+        ? `${base} The .umbraco file was present in the artifact but was removed by the excluded-paths input ("${inputs.excludedPaths}"); remove the matching entry from excluded-paths.`
+        : `${base} Add a .umbraco file to the root of the artifact before uploading.`
+    )
   }
 
   if (await processCloudGitignoreInZip(zip)) {
@@ -169,6 +242,11 @@ export async function handleAddArtifact(
 
   let nugetSourceStatus = ''
   if (nugetConfigured) {
+    if (hadRootNuGetConfig && findRootNuGetConfig(zip) === undefined) {
+      core.warning(
+        `excluded-paths removed the existing root NuGet.config from the artifact. Because a NuGet source is configured, a new NuGet.config is being generated containing only '${inputs.nugetSourceName}' and ${NUGET_ORG_SOURCE_NAME}; any other sources or settings from the excluded file are not included.`
+      )
+    }
     try {
       await injectNuGetConfig(zip, {
         name: inputs.nugetSourceName!,
@@ -178,18 +256,15 @@ export async function handleAddArtifact(
       })
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`Failed to configure NuGet source: ${message}`)
+      nugetSourceStatus = `Failed to configure NuGet source: ${message}`
+      core.setOutput('nuget-source-status', nugetSourceStatus)
+      throw new Error(nugetSourceStatus)
     }
     modified = true
     nugetSourceStatus = 'NuGet.config successfully injected into artifact'
   }
 
-  const fileCount = Object.values(zip.files).filter((f) => !f.dir).length
-  if (fileCount === 0) {
-    throw new Error(
-      'Artifact contains no files after applying excluded-paths. Check the excluded-paths input and the contents of the artifact zip.'
-    )
-  }
+  const fileCount = countFiles(zip)
 
   if (modified) {
     const updatedData = await zip.generateAsync({
@@ -252,14 +327,17 @@ async function injectNuGetConfig(
     existingContent = await zip.files[existingEntryName].async('text')
   } else {
     core.info(
-      'NuGet Config: No existing NuGet.config found in zip root, will create new one'
+      `NuGet Config: No existing NuGet.config found in zip root, will create new one including ${NUGET_ORG_SOURCE_NAME}`
     )
+    // Seed with nuget.org unless the configured source already is nuget.org
+    // (by key or URL), which would otherwise produce a duplicate feed.
+    const isNuGetOrg =
+      config.name.toLowerCase() === NUGET_ORG_SOURCE_NAME ||
+      config.source.replace(/\/+$/, '').toLowerCase() === NUGET_ORG_SOURCE_URL
+    existingContent = isNuGetOrg ? undefined : FRESH_NUGET_CONFIG_SEED
   }
 
   const result = await addOrUpdateNuGetConfigSource(config, existingContent)
-  if (!result.success) {
-    throw new Error(result.message)
-  }
   core.info(`NuGet Config: ${result.message}`)
 
   zip.file(existingEntryName ?? DEFAULT_NUGET_CONFIG_NAME, result.xmlContent)

@@ -14,6 +14,12 @@ export interface DeploymentResponse {
     timestampUtc: string
     message: string
   }>
+  /**
+   * True once this deployment has pushed a commit to the Cloud environment's
+   * git repository (it can be true on a Failed deployment, e.g. when Kudu's
+   * build fails after the push).
+   */
+  cloudRepositoryUpdated?: boolean
   // Additional properties for compatibility
   id?: string
   projectId?: string

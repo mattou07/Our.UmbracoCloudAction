@@ -206,6 +206,39 @@ describe('nuget-config', () => {
     expect(parsed.configuration.config[0].add[0].$.key).toBe('x')
   })
 
+  test('replaces an empty <packageSources/> element', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'MyFeed', source: 'https://a' },
+      '<configuration><packageSources/></configuration>'
+    )
+    const parsed = await parse(result.xmlContent)
+    expect(sourcesOf(parsed)).toEqual({ MyFeed: 'https://a' })
+  })
+
+  test('replaces an empty <packageSourceCredentials/> element when adding credentials', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'MyFeed', source: 'https://a', username: 'u', password: '%PW%' },
+      '<configuration><packageSourceCredentials/></configuration>'
+    )
+    const parsed = await parse(result.xmlContent)
+    const creds = parsed.configuration.packageSourceCredentials[0].MyFeed[0].add
+    expect(creds.map((c: AddEntry) => [c.$.key, c.$.value])).toEqual([
+      ['Username', 'u'],
+      ['ClearTextPassword', '%PW%']
+    ])
+    expect(sourcesOf(parsed)).toEqual({ MyFeed: 'https://a' })
+  })
+
+  test('adds a source when <packageSources> has no <add> children', async () => {
+    const result = await addOrUpdateNuGetConfigSource(
+      { name: 'MyFeed', source: 'https://a' },
+      '<configuration><packageSources><clear/></packageSources></configuration>'
+    )
+    const parsed = await parse(result.xmlContent)
+    expect(parsed.configuration.packageSources[0].clear).toHaveLength(1)
+    expect(sourcesOf(parsed)).toEqual({ MyFeed: 'https://a' })
+  })
+
   test('handles an empty <configuration/> element', async () => {
     const result = await addOrUpdateNuGetConfigSource(
       { name: 'MyFeed', source: 'https://a' },

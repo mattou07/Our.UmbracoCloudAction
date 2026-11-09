@@ -198185,7 +198185,9 @@ async function safeReadResponseBody(response, context) {
     try {
         const bodyText = await response.clone().text();
         // The diff endpoint returns source-code patches: never persist them.
-        if (isDiffOperation(context)) {
+        // Error responses (409/429/5xx) carry no source, and are kept (redacted)
+        // so failures stay diagnosable.
+        if (isDiffOperation(context) && response.ok) {
             return `[redacted diff: ${bodyText.length} chars]`;
         }
         return redactValue(tryParseJson(truncate(bodyText)));
@@ -198277,7 +198279,24 @@ async function uploadApiLogArtifactIfAvailable() {
     coreExports.info(`Uploaded API log artifact: ${artifactName} (${stats.size} bytes)`);
 }
 
+/*
+ * Structure decides, text enriches.
+ *
+ * Umbraco Cloud may reword its error and status messages at any time, so
+ * control flow here never depends on exact wording. Decisions are made from
+ * structure: HTTP status codes, problem-details `type`, deployment states,
+ * message position (e.g. "the messages just before the terminal one") and
+ * URL shape (blob host + `sig=`). Text matching is only ever used as an extra
+ * hint (to surface more detail or to keep older checks working), always with
+ * a structural fallback that still does the right thing if the text changes.
+ */
 const DEFAULT_BASE_URL$1 = 'https://api.cloud.umbraco.com';
+/** States in which a deployment is still running. Anything else is terminal. */
+const IN_PROGRESS_STATES = ['Pending', 'InProgress', 'Queued'];
+/** Umbraco Cloud's v2 artifact upload limit (multipart body length). */
+const MAX_ARTIFACT_SIZE_BYTES = 268435456;
+const MAX_ERROR_SUMMARY_LENGTH = 500;
+const LOG_FETCH_TIMEOUT_MS = 15000;
 /**
  * Error thrown for non-2xx responses from the Umbraco Cloud API.
  * Carries the HTTP status so callers can decide whether to retry.
@@ -198286,24 +198305,117 @@ class UmbracoCloudApiError extends Error {
     status;
     body;
     retryAfterSeconds;
+    /** Problem-details `type` from the body (e.g. 'CloudNullDeployment'), if any */
+    problemType;
+    /** Problem-details `title` from the body, if any */
+    title;
     constructor(message, status, body, retryAfterSeconds) {
         super(message);
         this.name = 'UmbracoCloudApiError';
         this.status = status;
         this.body = body;
         this.retryAfterSeconds = retryAfterSeconds;
+        const parsed = parseErrorBody(body);
+        this.problemType = parsed.problemType;
+        this.title = parsed.title;
     }
 }
+function collapseWhitespace(value) {
+    return value.replace(/\s+/g, ' ').trim();
+}
+function nonEmptyString(value) {
+    return typeof value === 'string' && value.trim() ? value : undefined;
+}
+function flattenErrors(errors) {
+    if (!errors || typeof errors !== 'object')
+        return undefined;
+    const parts = [];
+    const visit = (value) => {
+        if (typeof value === 'string') {
+            if (value.trim())
+                parts.push(value);
+        }
+        else if (Array.isArray(value)) {
+            value.forEach(visit);
+        }
+        else if (value && typeof value === 'object') {
+            Object.values(value).forEach(visit);
+        }
+    };
+    visit(errors);
+    return parts.length ? parts.join('; ') : undefined;
+}
 /**
- * Status messages worth surfacing when a deployment fails. Cloud reports some
- * failures without the word "error", e.g. "Cannot apply update because the
- * following packages would be downgraded: ...".
+ * Turns a Cloud error body into a single-line summary. Handles both the API
+ * gateway format `{statusCode, message}` and RFC problem details
+ * `{type, title, status, detail, errors}`, falling back to the raw text.
  */
-const ERROR_MESSAGE_PATTERN = /error|fail|exception|cannot|could not|unable to|downgrad/i;
-const ENVIRONMENT_ALIAS_ERRORS = [
-    'No environments matches the provided alias',
-    'Unable to resolve target environment by Alias'
+function parseErrorBody(body) {
+    let summary;
+    let problemType;
+    let title;
+    const trimmed = (body ?? '').trim();
+    if (trimmed.startsWith('{')) {
+        try {
+            const parsed = JSON.parse(trimmed);
+            problemType = nonEmptyString(parsed.type);
+            title = nonEmptyString(parsed.title);
+            summary =
+                nonEmptyString(parsed.detail) ??
+                    nonEmptyString(parsed.message) ??
+                    flattenErrors(parsed.errors) ??
+                    title;
+            // A non-URL type is a machine-readable code worth keeping in the text
+            if (summary && problemType && !/^https?:\/\//i.test(problemType)) {
+                summary = `${problemType}: ${summary}`;
+            }
+        }
+        catch {
+            // not JSON — fall back to the raw text
+        }
+    }
+    let single = collapseWhitespace(summary ?? trimmed);
+    if (single.length > MAX_ERROR_SUMMARY_LENGTH) {
+        single = `${single.slice(0, MAX_ERROR_SUMMARY_LENGTH)}…`;
+    }
+    return { summary: single || '(empty response body)', problemType, title };
+}
+/** Formats milliseconds as e.g. `45s`, `1m 05s` or `1h 02m 03s`. */
+function formatDuration(ms) {
+    const totalSeconds = Math.max(0, Math.round(ms / 1000));
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor((totalSeconds % 3600) / 60);
+    const seconds = totalSeconds % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    if (hours > 0)
+        return `${hours}h ${pad(minutes)}m ${pad(seconds)}s`;
+    if (minutes > 0)
+        return `${minutes}m ${pad(seconds)}s`;
+    return `${seconds}s`;
+}
+/**
+ * Text hint for status messages worth surfacing when a deployment fails.
+ * Cloud reports some failures without the word "error", e.g. "Cannot apply
+ * update because the following packages would be downgraded: ...". This is
+ * only a hint: the messages just before the terminal one are always surfaced
+ * too (see getDeploymentErrorDetails).
+ */
+const ERROR_MESSAGE_PATTERN = /error|fail|exception|cannot|could not|unable|does not exist|no \.umbraco|downgrad|invalid/i;
+/** Pure progress lines that never explain a failure. */
+const PROGRESS_MESSAGE_PATTERNS = [
+    /^no changes to deploy\b/i,
+    /^delete updating marker$/i,
+    /^verify deployment$/i,
+    /^git (commit|push)$/i,
+    /^(skipped\s*:\s*)?(nuget restore|dotnet build)$/i,
+    /^picking up kudu deployment stream$/i,
+    /^kudu deployment log id:/i,
+    /^kept the cloud environment's umbraco-cloud\.json/i,
+    /^(deleting repository files|copying files to repository|git stage)$/i
 ];
+/** Number of messages before the terminal one that are always surfaced. */
+const TRAILING_CONTEXT_MESSAGES = 3;
+const LOG_ERROR_LINE_PATTERN = /\berror\b|NU\d{4}|CS\d{4}|Build FAILED/i;
 /** Retry on throttling, server errors and network failures — never on other 4xx. */
 function isRetryableError(error) {
     if (error instanceof UmbracoCloudApiError) {
@@ -198329,6 +198441,49 @@ function parseRetryAfter(response, body) {
     const match = body.match(/Try again in (\d+) seconds/i);
     return match ? parseInt(match[1], 10) : undefined;
 }
+function isProgressMessage(message) {
+    const trimmed = message.trim();
+    return PROGRESS_MESSAGE_PATTERNS.some((p) => p.test(trimmed));
+}
+/**
+ * Reduces a status message to its useful part: multi-line messages (e.g. a
+ * Kudu build output block) keep only the lines that look like errors.
+ */
+function condenseMessage(message) {
+    const lines = message
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter(Boolean);
+    if (lines.length <= 1)
+        return message.trim();
+    const errorLines = lines.filter((l) => ERROR_MESSAGE_PATTERN.test(l));
+    return (errorLines.length ? errorLines : lines).join('\n');
+}
+const URL_PATTERN = /https:\/\/[^\s"'<>]+/gi;
+/** Signed Azure blob URLs (e.g. Cloud build/restore logs) in a message. */
+function findSignedBlobUrls(message) {
+    const found = [];
+    for (const candidate of message.match(URL_PATTERN) ?? []) {
+        try {
+            const url = new URL(candidate);
+            if (url.hostname.toLowerCase().endsWith('.blob.core.windows.net') &&
+                url.searchParams.has('sig')) {
+                found.push(candidate);
+            }
+        }
+        catch {
+            // not a valid URL
+        }
+    }
+    return found;
+}
+/** `.../<deploymentId>-NugetRestore.txt?sig=...` -> `NugetRestore.txt` */
+function logNameFromUrl(signedUrl) {
+    // Only called with URLs findSignedBlobUrls already parsed successfully
+    const segments = new URL(signedUrl).pathname.split('/').filter(Boolean);
+    const file = decodeURIComponent(segments[segments.length - 1] ?? 'log');
+    return (file.replace(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}-/i, '') || file);
+}
 class UmbracoCloudAPI {
     baseUrl;
     projectId;
@@ -198337,6 +198492,11 @@ class UmbracoCloudAPI {
     uploadRetryDelayMs;
     uploadTimeoutMs;
     rateLimitBaseDelayMs;
+    /**
+     * Signed log links seen in status messages, keyed by deployment id. Kept
+     * private and in memory only: everything returned or logged is redacted.
+     */
+    signedLogUrls = new Map();
     constructor(projectId, apiKey, options = {}) {
         this.projectId = projectId;
         this.apiKey = apiKey;
@@ -198365,24 +198525,11 @@ class UmbracoCloudAPI {
         });
         if (!response.ok) {
             const body = await response.text();
-            throw new UmbracoCloudApiError(`${errorPrefix}: ${response.status} ${response.statusText} - ${body}`, response.status, body, parseRetryAfter(response, body));
+            const { summary } = parseErrorBody(body);
+            const statusText = response.statusText ? ` ${response.statusText}` : '';
+            throw new UmbracoCloudApiError(`${errorPrefix}: ${response.status}${statusText} - ${summary}`, response.status, body, parseRetryAfter(response, body));
         }
         return response;
-    }
-    async retryWithLowercaseEnvironmentAlias(request, targetEnvironmentAlias, operationName) {
-        try {
-            return await request(targetEnvironmentAlias);
-        }
-        catch (error) {
-            const lower = targetEnvironmentAlias.toLowerCase();
-            const isAliasError = error instanceof Error &&
-                ENVIRONMENT_ALIAS_ERRORS.some((m) => error.message.includes(m));
-            if (!isAliasError || targetEnvironmentAlias === lower) {
-                throw error;
-            }
-            coreExports.info(`Environment alias case sensitivity detected in ${operationName}. Retrying with lowercase: ${targetEnvironmentAlias} -> ${lower}`);
-            return await request(lower);
-        }
     }
     async retryWithRateLimit(request, maxRetries = 3) {
         for (let attempt = 1;; attempt++) {
@@ -198401,20 +198548,66 @@ class UmbracoCloudAPI {
             }
         }
     }
-    async startDeployment(request) {
+    /**
+     * Structural check behind a 409: is a deployment actually running? Never
+     * throws; returns false when it can't tell, so the 409 is surfaced as-is.
+     */
+    async hasRunningDeployment(alias) {
+        const isRunning = (list) => (list?.data ?? []).some((d) => IN_PROGRESS_STATES.includes(d.state));
+        try {
+            return isRunning(await this.getDeployments(0, 5, true, alias));
+        }
+        catch (error) {
+            coreExports.debug(`Could not list deployments for ${alias}: ${error}`);
+        }
+        try {
+            return isRunning(await this.getDeployments(0, 5, true));
+        }
+        catch (error) {
+            coreExports.debug(`Could not list deployments: ${error}`);
+            return false;
+        }
+    }
+    async startDeployment(request, options = {}) {
         const url = `${this.projectUrl}/deployments`;
+        const waitMs = Math.max(0, options.waitForRunningDeploymentMs ?? 0);
+        const pollIntervalMs = Math.max(1, options.pollIntervalMs ?? 30000);
         coreExports.debug(`Starting deployment at ${url}`);
-        return this.retryWithLowercaseEnvironmentAlias(async (alias) => {
-            const body = { ...request, targetEnvironmentAlias: alias };
-            const response = await this.retryWithRateLimit(() => this.send(url, {
-                method: 'POST',
-                headers: this.getHeaders(),
-                body: JSON.stringify(body)
-            }, 'startDeployment', 'Failed to start deployment', { targetEnvironmentAlias: alias }));
-            const data = (await response.json());
-            coreExports.debug(`Deployment started successfully: ${JSON.stringify(data)}`);
-            return data.deploymentId;
-        }, request.targetEnvironmentAlias, 'startDeployment');
+        const alias = request.targetEnvironmentAlias;
+        let waitedMs = 0;
+        for (;;) {
+            try {
+                const response = await this.retryWithRateLimit(() => this.send(url, {
+                    method: 'POST',
+                    headers: this.getHeaders(),
+                    body: JSON.stringify(request)
+                }, 'startDeployment', 'Failed to start deployment', { targetEnvironmentAlias: alias }));
+                const data = (await response.json());
+                coreExports.debug(`Deployment started successfully: ${JSON.stringify(data)}`);
+                return data.deploymentId;
+            }
+            catch (error) {
+                // Structure decides: a 409 *and* a deployment listed as running.
+                // The 409's wording is only logged.
+                if (waitMs <= 0 ||
+                    !(error instanceof UmbracoCloudApiError) ||
+                    error.status !== 409 ||
+                    !(await this.hasRunningDeployment(alias))) {
+                    throw error;
+                }
+                if (waitedMs >= waitMs) {
+                    const minutes = Math.round((waitMs / 60000) * 10) / 10;
+                    throw new UmbracoCloudApiError(`Another deployment was still in progress after waiting ${minutes} minute${minutes === 1 ? '' : 's'}. ` +
+                        'Use a `concurrency:` group in your workflow to serialise deployments. ' +
+                        `(${error.message})`, error.status, error.body, error.retryAfterSeconds);
+                }
+                const delay = Math.min(pollIntervalMs, waitMs - waitedMs);
+                coreExports.info(`Another deployment is in progress on ${alias}; waiting ${Math.round(delay / 1000)}s before retrying…` +
+                    (error.title ? ` (${error.title})` : ''));
+                await sleep(delay);
+                waitedMs += delay;
+            }
+        }
     }
     /**
      * Fetches the current deployment status once. When `lastModifiedUtc` is
@@ -198431,6 +198624,18 @@ class UmbracoCloudAPI {
         // restore log. They end up in job logs, outputs and PR bodies, so strip
         // the signature before anything else sees them.
         if (Array.isArray(data.deploymentStatusMessages)) {
+            // Keep the signed log links privately first, so getFailureLogExcerpts
+            // can still read them after the returned copy has been redacted.
+            for (const msg of data.deploymentStatusMessages) {
+                for (const signed of findSignedBlobUrls(msg.message ?? '')) {
+                    let urls = this.signedLogUrls.get(deploymentId);
+                    if (!urls) {
+                        urls = new Set();
+                        this.signedLogUrls.set(deploymentId, urls);
+                    }
+                    urls.add(signed);
+                }
+            }
             data.deploymentStatusMessages = data.deploymentStatusMessages.map((msg) => ({ ...msg, message: redactSignedUrls(msg.message ?? '') }));
         }
         return data;
@@ -198443,12 +198648,20 @@ class UmbracoCloudAPI {
         if (!fs.existsSync(filePath)) {
             throw new Error(`File does not exist: ${filePath}`);
         }
+        const size = fs.statSync(filePath).size;
+        if (size > MAX_ARTIFACT_SIZE_BYTES) {
+            const toMb = (bytes) => (bytes / (1024 * 1024)).toFixed(1);
+            throw new Error(`Artifact ${path$1.basename(filePath)} is ${toMb(size)} MB (${size} bytes), ` +
+                `which exceeds Umbraco Cloud's upload limit of ${toMb(MAX_ARTIFACT_SIZE_BYTES)} MB ` +
+                `(${MAX_ARTIFACT_SIZE_BYTES} bytes). Exclude unneeded files from the artifact.`);
+        }
         coreExports.debug(`Uploading artifact: ${filePath}`);
         // openAsBlob streams from disk lazily and can be re-sent on every attempt
         // without holding the whole zip in memory.
         const blob = await fs.openAsBlob(filePath, { type: 'application/zip' });
         const fileName = path$1.basename(filePath) || 'artifact.zip';
-        for (let attempt = 1; attempt <= this.uploadRetries; attempt++) {
+        // Every attempt either returns or, on the last one, throws
+        for (let attempt = 1;; attempt++) {
             coreExports.info(`Upload attempt ${attempt}/${this.uploadRetries}...`);
             const formData = new FormData();
             formData.append('file', blob, fileName);
@@ -198478,6 +198691,12 @@ class UmbracoCloudAPI {
                     coreExports.warning(`Upload attempt ${attempt} failed: ${error}`);
                 }
                 if (attempt >= this.uploadRetries || !isRetryableError(error)) {
+                    if (error instanceof Error && error.name === 'AbortError') {
+                        const timeoutError = new Error(`Artifact upload timed out after ${attempt} attempt(s) of ${this.uploadTimeoutMs}ms each. ` +
+                            'Increase the upload-timeout input (milliseconds) or reduce the artifact size.', { cause: error });
+                        timeoutError.name = 'UploadTimeoutError';
+                        throw timeoutError;
+                    }
                     throw error;
                 }
                 const delay = retryDelayFor(error, this.uploadRetryDelayMs * Math.pow(2, attempt - 1));
@@ -198488,35 +198707,37 @@ class UmbracoCloudAPI {
                 clearTimeout(timeoutId);
             }
         }
-        // Unreachable: the loop either returns or throws on the last attempt
-        throw new Error('Upload failed after all retry attempts');
     }
     async getChangesById(deploymentId, targetEnvironmentAlias, maxRetries = 5, retryDelayMs = 10000) {
         coreExports.debug(`Getting changes for deploymentId: ${deploymentId}, targetEnvironmentAlias: ${targetEnvironmentAlias}`);
-        const fetchChanges = async (alias) => {
-            const url = `${this.projectUrl}/deployments/${encodeURIComponent(deploymentId)}/diff?targetEnvironmentAlias=${encodeURIComponent(alias)}`;
-            for (let attempt = 1;; attempt++) {
-                try {
-                    const response = await this.send(url, { method: 'GET', headers: this.getHeaders() }, 'getChangesById', 'Failed to get changes', { deploymentId, targetEnvironmentAlias: alias });
-                    if (response.status === 204) {
-                        return { changes: '' };
-                    }
-                    return { changes: await response.text() };
+        const alias = targetEnvironmentAlias;
+        const url = `${this.projectUrl}/deployments/${encodeURIComponent(deploymentId)}/diff?targetEnvironmentAlias=${encodeURIComponent(alias)}`;
+        for (let attempt = 1;; attempt++) {
+            try {
+                const response = await this.send(url, { method: 'GET', headers: this.getHeaders() }, 'getChangesById', 'Failed to get changes', { deploymentId, targetEnvironmentAlias: alias });
+                if (response.status === 204) {
+                    return { changes: '' };
                 }
-                catch (error) {
-                    // The Cloud site extension is sometimes briefly unavailable right
-                    // after a deployment; those surface as 5xx and are worth retrying.
-                    if (!isRetryableError(error) || attempt >= maxRetries) {
-                        throw error;
-                    }
-                    const delay = retryDelayFor(error, retryDelayMs);
-                    coreExports.warning(`Changes endpoint not responding (attempt ${attempt}/${maxRetries}). ` +
-                        `Retrying in ${delay / 1000} seconds...`);
-                    await sleep(delay);
-                }
+                return { changes: await response.text() };
             }
-        };
-        return this.retryWithLowercaseEnvironmentAlias(fetchChanges, targetEnvironmentAlias, 'getChangesById');
+            catch (error) {
+                // The Cloud site extension is sometimes briefly unavailable right
+                // after a deployment; those surface as 5xx and are worth retrying.
+                if (!isRetryableError(error) || attempt >= maxRetries) {
+                    throw error;
+                }
+                const delay = retryDelayFor(error, retryDelayMs);
+                const seconds = delay / 1000;
+                if (error instanceof UmbracoCloudApiError && error.status === 429) {
+                    coreExports.warning(`Rate limited by Umbraco Cloud (attempt ${attempt}/${maxRetries}). Retrying in ${seconds}s...`);
+                }
+                else {
+                    coreExports.warning(`Changes endpoint not responding (attempt ${attempt}/${maxRetries}). ` +
+                        `Retrying in ${seconds} seconds...`);
+                }
+                await sleep(delay);
+            }
+        }
     }
     async getDeployments(skip = 0, take = 100, includeNullDeployments = true, targetEnvironmentAlias) {
         let url = `${this.projectUrl}/deployments?skip=${skip}&take=${take}&includeNullDeployments=${includeNullDeployments}`;
@@ -198548,20 +198769,91 @@ class UmbracoCloudAPI {
         return null;
     }
     /**
-     * Returns status messages that look like errors for the given deployment.
+     * Returns the status messages that explain why a deployment failed.
      * Fetches the full message history (no lastModifiedUtc filter).
+     *
+     * Structural: the last few non-progress messages before the terminal one
+     * are always included, whatever their wording. Text hint: messages that
+     * look like errors anywhere in the history are included too.
      */
     async getDeploymentErrorDetails(deploymentId) {
         try {
             const deployment = await this.getDeploymentStatus(deploymentId);
-            return (deployment.deploymentStatusMessages || [])
-                .filter((msg) => ERROR_MESSAGE_PATTERN.test(msg.message))
-                .map((msg) => `[${msg.timestampUtc}] ${msg.message}`);
+            const messages = (deployment.deploymentStatusMessages || []).filter((msg) => typeof msg?.message === 'string' && msg.message.trim());
+            // The final message is the terminal "Deployment <id> failed" one when
+            // it names this deployment (wording-independent) or reads like it.
+            const last = messages[messages.length - 1];
+            const hasTerminal = last !== undefined &&
+                (last.message.includes(deploymentId) ||
+                    /^\s*deployment \S+ failed\s*$/i.test(last.message));
+            const candidates = hasTerminal ? messages.slice(0, -1) : messages;
+            const selected = new Set();
+            candidates.forEach((msg, i) => {
+                if (ERROR_MESSAGE_PATTERN.test(msg.message))
+                    selected.add(i);
+            });
+            const meaningful = candidates
+                .map((msg, i) => ({ msg, i }))
+                .filter(({ msg }) => !isProgressMessage(msg.message));
+            for (const { i } of meaningful.slice(-TRAILING_CONTEXT_MESSAGES)) {
+                selected.add(i);
+            }
+            const seen = new Set();
+            const details = [];
+            for (const i of [...selected].sort((a, b) => a - b)) {
+                const msg = candidates[i];
+                const text = condenseMessage(msg.message);
+                if (!text || seen.has(text))
+                    continue;
+                seen.add(text);
+                details.push(`[${msg.timestampUtc}] ${text}`);
+            }
+            return details;
         }
         catch (error) {
             coreExports.debug(`Could not retrieve deployment error details: ${error}`);
             return [];
         }
+    }
+    /**
+     * Fetches the signed build/restore logs Cloud linked to in this
+     * deployment's status messages (captured by getDeploymentStatus) and
+     * returns their error lines. Never throws.
+     */
+    async getFailureLogExcerpts(deploymentId, maxLines = 40) {
+        const urls = [...(this.signedLogUrls.get(deploymentId) ?? [])];
+        const excerpts = [];
+        for (const signedUrl of urls) {
+            const safeUrl = redactSignedUrls(signedUrl);
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), LOG_FETCH_TIMEOUT_MS);
+            try {
+                // Third-party host: plain fetch, never the Cloud API key header.
+                const response = await fetch(signedUrl, { signal: controller.signal });
+                if (!response.ok) {
+                    coreExports.debug(`Could not fetch log ${safeUrl}: HTTP ${response.status}`);
+                    continue;
+                }
+                const text = await response.text();
+                const lines = [
+                    ...new Set(text
+                        .split(/\r?\n/)
+                        .filter((line) => LOG_ERROR_LINE_PATTERN.test(line))
+                        .map((line) => line.trim())
+                        .filter(Boolean))
+                ].slice(0, Math.max(0, maxLines));
+                if (lines.length) {
+                    excerpts.push({ name: logNameFromUrl(signedUrl), lines });
+                }
+            }
+            catch (error) {
+                coreExports.debug(`Could not fetch log ${safeUrl}: ${redactSignedUrls(String(error))}`);
+            }
+            finally {
+                clearTimeout(timeoutId);
+            }
+        }
+        return excerpts;
     }
 }
 
@@ -219886,10 +220178,10 @@ function encodeXmlLocalName(name) {
 function isEnvironmentVariableReference(value) {
     return /^%[^%\s]+%$/.test(value);
 }
+// xml2js (default explicitArray) always yields arrays for child elements, so a
+// missing element is the only non-array case.
 function toArray(value) {
-    if (value === undefined)
-        return [];
-    return Array.isArray(value) ? value : [value];
+    return value ?? [];
 }
 /**
  * Adds or updates a NuGet package source in NuGet.config XML content.
@@ -220009,6 +220301,50 @@ async function addOrUpdateNuGetConfigSource(config, existingXmlContent) {
 
 const DEFAULT_EXCLUDED_PATHS = '.git/,.github/';
 const DEFAULT_NUGET_CONFIG_NAME = 'NuGet.config';
+const UMBRACO_MARKER_FILE = '.umbraco';
+const NUGET_ORG_SOURCE_NAME = 'nuget.org';
+const NUGET_ORG_SOURCE_URL = 'https://api.nuget.org/v3/index.json';
+/**
+ * Seed used when the artifact has no root NuGet.config. A repository-level
+ * NuGet.config that only lists the private feed relies on the build machine's
+ * user-level config for nuget.org; listing nuget.org explicitly keeps restore
+ * of public packages working regardless of how the build host is configured.
+ */
+const FRESH_NUGET_CONFIG_SEED = `<?xml version="1.0" encoding="utf-8"?>
+<configuration>
+  <packageSources>
+    <add key="${NUGET_ORG_SOURCE_NAME}" value="${NUGET_ORG_SOURCE_URL}" />
+  </packageSources>
+</configuration>`;
+function countFiles(zip) {
+    return Object.values(zip.files).filter((f) => !f.dir).length;
+}
+/** True when the zip has a `.umbraco` file at its root. */
+function hasRootUmbracoFile(zip) {
+    const entry = zip.files[UMBRACO_MARKER_FILE];
+    return Boolean(entry && !entry.dir);
+}
+/**
+ * Reads and parses the artifact zip, turning file-system and JSZip errors into
+ * messages that name the filePath input.
+ */
+async function loadArtifactZip(filePath) {
+    const resolved = path$1.resolve(filePath);
+    if (!fs.existsSync(filePath)) {
+        throw new Error(`filePath "${filePath}" does not exist (resolved to ${resolved})`);
+    }
+    if (!fs.statSync(filePath).isFile()) {
+        throw new Error(`filePath "${filePath}" is not a file (resolved to ${resolved})`);
+    }
+    const data = fs.readFileSync(filePath);
+    try {
+        return await JSZip.loadAsync(data);
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new Error(`filePath "${filePath}" is not a valid zip file: ${message}`);
+    }
+}
 /**
  * Normalises a path for comparison against zip entry names:
  * backslashes become forward slashes and a leading "./" is stripped.
@@ -220056,10 +220392,6 @@ function removeExcludedPaths(zip, excludedPaths) {
         .split(',')
         .map((p) => p.trim())
         .filter((p) => p.length > 0);
-    // This should never happen after our validation as we have defaults
-    if (rawPaths.length === 0) {
-        throw new Error('No valid paths found after validation.');
-    }
     for (const rawPath of rawPaths) {
         // Reject mixed path separators
         if (rawPath.includes('/') && rawPath.includes('\\')) {
@@ -220115,17 +220447,36 @@ async function handleAddArtifact(api, inputs) {
     const filePath = inputs.filePath;
     const nugetConfigured = Boolean(inputs.nugetSourceName && inputs.nugetSourceUrl);
     // Single pipeline: load once, apply all modifications, write back once
-    const data = fs.readFileSync(filePath);
-    const zip = await JSZip.loadAsync(data);
+    const zip = await loadArtifactZip(filePath);
     let modified = false;
+    const hadUmbracoFile = hasRootUmbracoFile(zip);
+    const hadRootNuGetConfig = findRootNuGetConfig(zip) !== undefined;
     if (removeExcludedPaths(zip, inputs.excludedPaths || DEFAULT_EXCLUDED_PATHS)) {
         modified = true;
+    }
+    // Check before any step that can add files (NuGet injection creates
+    // NuGet.config), otherwise an artifact emptied by excluded-paths would be
+    // uploaded containing only the generated NuGet.config.
+    if (countFiles(zip) === 0) {
+        throw new Error('Artifact contains no files after applying excluded-paths. Check the excluded-paths input and the contents of the artifact zip.');
+    }
+    // Umbraco Cloud rejects packages without a root .umbraco file, failing the
+    // deployment with: "Incoming package has no .umbraco file in its root. It
+    // names the project folder and project file the build uses."
+    if (!hasRootUmbracoFile(zip)) {
+        const base = 'Artifact has no .umbraco file at the root of the zip. Umbraco Cloud requires this file: it names the project folder and project file (.csproj) the build uses, and deployments without it are rejected.';
+        throw new Error(hadUmbracoFile
+            ? `${base} The .umbraco file was present in the artifact but was removed by the excluded-paths input ("${inputs.excludedPaths}"); remove the matching entry from excluded-paths.`
+            : `${base} Add a .umbraco file to the root of the artifact before uploading.`);
     }
     if (await processCloudGitignoreInZip(zip)) {
         modified = true;
     }
     let nugetSourceStatus = '';
     if (nugetConfigured) {
+        if (hadRootNuGetConfig && findRootNuGetConfig(zip) === undefined) {
+            coreExports.warning(`excluded-paths removed the existing root NuGet.config from the artifact. Because a NuGet source is configured, a new NuGet.config is being generated containing only '${inputs.nugetSourceName}' and ${NUGET_ORG_SOURCE_NAME}; any other sources or settings from the excluded file are not included.`);
+        }
         try {
             await injectNuGetConfig(zip, {
                 name: inputs.nugetSourceName,
@@ -220136,15 +220487,14 @@ async function handleAddArtifact(api, inputs) {
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
-            throw new Error(`Failed to configure NuGet source: ${message}`);
+            nugetSourceStatus = `Failed to configure NuGet source: ${message}`;
+            coreExports.setOutput('nuget-source-status', nugetSourceStatus);
+            throw new Error(nugetSourceStatus);
         }
         modified = true;
         nugetSourceStatus = 'NuGet.config successfully injected into artifact';
     }
-    const fileCount = Object.values(zip.files).filter((f) => !f.dir).length;
-    if (fileCount === 0) {
-        throw new Error('Artifact contains no files after applying excluded-paths. Check the excluded-paths input and the contents of the artifact zip.');
-    }
+    const fileCount = countFiles(zip);
     if (modified) {
         const updatedData = await zip.generateAsync({
             type: 'nodebuffer',
@@ -220185,12 +220535,14 @@ async function injectNuGetConfig(zip, config) {
         existingContent = await zip.files[existingEntryName].async('text');
     }
     else {
-        coreExports.info('NuGet Config: No existing NuGet.config found in zip root, will create new one');
+        coreExports.info(`NuGet Config: No existing NuGet.config found in zip root, will create new one including ${NUGET_ORG_SOURCE_NAME}`);
+        // Seed with nuget.org unless the configured source already is nuget.org
+        // (by key or URL), which would otherwise produce a duplicate feed.
+        const isNuGetOrg = config.name.toLowerCase() === NUGET_ORG_SOURCE_NAME ||
+            config.source.replace(/\/+$/, '').toLowerCase() === NUGET_ORG_SOURCE_URL;
+        existingContent = isNuGetOrg ? undefined : FRESH_NUGET_CONFIG_SEED;
     }
     const result = await addOrUpdateNuGetConfigSource(config, existingContent);
-    if (!result.success) {
-        throw new Error(result.message);
-    }
     coreExports.info(`NuGet Config: ${result.message}`);
     zip.file(existingEntryName ?? DEFAULT_NUGET_CONFIG_NAME, result.xmlContent);
 }
@@ -220233,7 +220585,7 @@ async function handleStartDeployment(api, inputs) {
         commitMessage: inputs.commitMessage || 'Deployment from GitHub Actions',
         noBuildAndRestore: inputs.noBuildAndRestore || false,
         skipVersionCheck: inputs.skipVersionCheck || false
-    });
+    }, { waitForRunningDeploymentMs: (inputs.timeoutSeconds || 1200) * 1000 });
     coreExports.info(`Deployment started successfully with ID: ${deploymentId}`);
     coreExports.setOutput('deploymentId', deploymentId);
     return { deploymentId };
@@ -224084,8 +224436,6 @@ function requireGithub () {
 
 var githubExports = requireGithub();
 
-/** States in which a deployment is still running. Anything else is terminal. */
-const IN_PROGRESS_STATES = ['Pending', 'InProgress', 'Queued'];
 const UPDATING_MARKER_PATTERNS = [
     "The site can't be upgraded as it's blocked with the following markers: updating",
     'CheckBlockingMarkers',
@@ -224106,6 +224456,7 @@ async function pollDeploymentStatus(api, deploymentId, maxDurationMs = 20 * 60 *
     const deadline = start + maxDurationMs;
     let lastModifiedUtc;
     let markerWarningShown = false;
+    let lastState;
     // Cloud returns messages *at or after* lastModifiedUtc, so the boundary
     // message comes back on every poll. Track what we've printed.
     const printedMessages = new Set();
@@ -224126,6 +224477,7 @@ async function pollDeploymentStatus(api, deploymentId, maxDurationMs = 20 * 60 *
             coreExports.warning(`Transient error while polling deployment status: ${error}`);
         }
         if (data) {
+            lastState = data.deploymentState;
             const elapsedMinutes = Math.round((Date.now() - start) / 60000);
             coreExports.info(`Deployment status: ${data.deploymentState} (elapsed: ${elapsedMinutes}m, timeout: ${timeoutMinutes}m)`);
             for (const msg of data.deploymentStatusMessages || []) {
@@ -224151,8 +224503,9 @@ async function pollDeploymentStatus(api, deploymentId, maxDurationMs = 20 * 60 *
             break;
         await sleep(Math.min(intervalMs, remaining));
     }
-    const elapsedMinutes = Math.round((Date.now() - start) / 60000);
-    throw new Error(`Deployment did not complete within the expected time. Elapsed: ${elapsedMinutes} minutes, Timeout: ${timeoutMinutes} minutes.`);
+    throw new Error(`Deployment ${deploymentId} did not complete within ${formatDuration(maxDurationMs)}. ` +
+        "It may still be running in Umbraco Cloud — check the project's deployment history before re-running. " +
+        `Last state: ${lastState ?? 'unknown'}. Elapsed: ${formatDuration(Date.now() - start)}.`);
 }
 
 function getUserAgent() {
@@ -227764,8 +228117,28 @@ async function createPullRequestWithPatch(gitPatch, baseBranch, title, body, lat
 }
 
 const DEPLOYMENT_FAILED_DOCS_URL = 'https://docs.umbraco.com/umbraco-cloud/optimize-and-maintain-your-site/monitor-and-troubleshoot/resolve-issues-quickly-and-efficiently/deployments/deployment-failed';
-/** Errors that a git patch from Cloud can typically fix (package version drift). */
+/*
+ * Decision rules: structure decides, text only enriches.
+ *
+ * Success/failure, whether a fix PR may be opened at all and whether "no
+ * changes" is benign are decided from structured data: the deployment state,
+ * `cloudRepositoryUpdated`, HTTP status codes and the problem-details `type`.
+ * Umbraco Cloud can reword its messages at any time, so message text is only
+ * used to enrich output and to narrow down when a PR is worth trying. Every
+ * text-based check must fail safe: when nothing matches, no PR is opened and
+ * the action still fails with all the details shown.
+ */
+/** Text hint: errors a git patch from Cloud can typically fix (package version drift). */
 const VERSION_FAILURE_PATTERN = /downgrad|version (mismatch|conflict|check)|NU1605|NU1107/i;
+/** Text hint: NuGet credential/feed failures; a patch won't help. */
+const NUGET_FAILURE_PATTERN = /error restoring packages|nu1301|nu1302/i;
+/**
+ * Text hint: one entry of Cloud's downgrade message, e.g.
+ * "Package: Umbraco.Cms, Version: 17.7.2 ==> Referencing file: src/X.csproj contains lower Version: 17.4.2 ."
+ */
+const DOWNGRADE_ENTRY_PATTERN = /Package:\s*([^,\s]+),\s*Version:\s*(\S+)\s*==>\s*Referencing file:\s*(.+?)\s+contains lower Version:\s*(\S+)/gi;
+const NO_FIX_PR_MESSAGE = 'No fix PR attempted: this failure is not caused by changes made in Umbraco Cloud.';
+const DOWNGRADE_FALLBACK_ADVICE = 'Your source may reference older package versions than Umbraco Cloud; compare your .csproj package versions with the Cloud environment.';
 /**
  * Waits for the deployment to reach a terminal state.
  *
@@ -227788,11 +228161,12 @@ async function handleCheckStatus(api, inputs) {
         throw new Error(`Deployment ${deploymentId} failed: it is blocked by leftover upgrade markers. Remove them via KUDU (site/locks) and retry. See: ${DEPLOYMENT_FAILED_DOCS_URL}`);
     }
     if (deploymentStatus.deploymentState === 'Failed') {
-        const outputs = await handleFailedDeployment(api, inputs, deploymentStatus);
+        const { outputs, summary } = await handleFailedDeployment(api, inputs, deploymentStatus);
         const prNote = outputs.prUrl
             ? `. A pull request with the Umbraco Cloud changes was opened: ${outputs.prUrl}`
             : '';
-        throw new Error(`Deployment ${deploymentId} failed${prNote}`);
+        const summaryNote = summary ? `. ${summary}` : '';
+        throw new Error(`Deployment ${deploymentId} failed${prNote}${summaryNote}`);
     }
     throw new Error(`Deployment ended in unexpected state: ${deploymentStatus.deploymentState}`);
 }
@@ -227815,12 +228189,14 @@ function baseOutputs(deploymentStatus) {
         deploymentStatus: JSON.stringify(deploymentStatus)
     };
 }
+/** Structural check: 409 with problem type CloudNullDeployment ("no changes"). */
 function isCloudNullDeployment(error) {
-    if (!(error instanceof Error))
+    if (!(error instanceof UmbracoCloudApiError) || error.status !== 409) {
         return false;
-    const status = error.status;
-    const is409 = status === 409 || error.message.includes('409');
-    return is409 && error.message.includes('CloudNullDeployment');
+    }
+    const problemType = error.problemType;
+    return (problemType === 'CloudNullDeployment' ||
+        /CloudNullDeployment/.test(error.body));
 }
 async function handleCompletedDeployment(api, inputs, deploymentStatus) {
     coreExports.info('Deployment completed successfully');
@@ -227850,30 +228226,59 @@ async function handleCompletedDeployment(api, inputs, deploymentStatus) {
     }
 }
 async function handleFailedDeployment(api, inputs, deploymentStatus) {
-    coreExports.warning('Deployment failed - attempting to retrieve git patch to fix the issue');
-    const errorDetails = await getErrorDetails(api, inputs.deploymentId);
-    // NuGet failures are credential/configuration issues; a patch won't help.
-    const isNuGetFailure = errorDetails.some((error) => /error restoring packages|nu1301|nu1302/i.test(error));
-    if (isNuGetFailure) {
-        coreExports.warning('NuGet-related failure detected. Skipping PR creation as this is likely a credential or configuration issue.');
-        return baseOutputs(deploymentStatus);
+    const deploymentId = inputs.deploymentId;
+    coreExports.warning('Deployment failed - collecting error details');
+    const errorDetails = await getErrorDetails(api, deploymentId);
+    await reportFailureLogExcerpts(api, deploymentId);
+    // Structural gate: Cloud already pushed this deployment's commit, so any
+    // Cloud -> source diff would contain the failing changes themselves.
+    if (deploymentStatus.cloudRepositoryUpdated === true) {
+        coreExports.warning('This deployment already changed the Umbraco Cloud repository, so a sync PR would include the failing changes. Skipping PR creation: fix the problem in your source repository and redeploy.');
+        return { outputs: baseOutputs(deploymentStatus) };
     }
-    const isVersionFailure = errorDetails.some((error) => VERSION_FAILURE_PATTERN.test(error));
-    if (isVersionFailure) {
-        coreExports.info('Version-related deployment failure detected. Attempting to get git patch to synchronise versions...');
-        let patch;
-        try {
-            const changes = await api.getChangesById(inputs.deploymentId, inputs.targetEnvironmentAlias);
-            patch = changes.changes;
-            coreExports.info('Successfully retrieved git patch from failed deployment');
-            coreExports.setOutput('changes', JSON.stringify(changes));
+    // Text hints from here on; each fails safe (no match => no PR).
+    const failureTexts = [
+        ...errorDetails,
+        ...(deploymentStatus.deploymentStatusMessages || []).map((m) => m.message)
+    ];
+    // NuGet failures are credential/configuration issues; a patch won't help.
+    if (failureTexts.some((text) => NUGET_FAILURE_PATTERN.test(text))) {
+        coreExports.warning('NuGet-related failure detected. Skipping PR creation as this is likely a credential or configuration issue.');
+        return { outputs: baseOutputs(deploymentStatus) };
+    }
+    const versionFailureTexts = [
+        ...new Set(failureTexts.filter((text) => VERSION_FAILURE_PATTERN.test(text)))
+    ];
+    if (versionFailureTexts.length === 0) {
+        coreExports.info(NO_FIX_PR_MESSAGE);
+        return { outputs: baseOutputs(deploymentStatus) };
+    }
+    const outputs = await attemptVersionFixPullRequest(api, inputs, deploymentStatus, errorDetails);
+    if (outputs.prUrl) {
+        return { outputs };
+    }
+    return { outputs, summary: reportDowngradeGuidance(versionFailureTexts) };
+}
+async function attemptVersionFixPullRequest(api, inputs, deploymentStatus, errorDetails) {
+    coreExports.info('Version-related deployment failure detected. Attempting to get git patch to synchronise versions...');
+    let patch;
+    try {
+        const changes = await api.getChangesById(inputs.deploymentId, inputs.targetEnvironmentAlias);
+        patch = changes.changes;
+        coreExports.info('Successfully retrieved git patch from failed deployment');
+        coreExports.setOutput('changes', JSON.stringify(changes));
+    }
+    catch (patchError) {
+        if (isCloudNullDeployment(patchError)) {
+            coreExports.info('The failed deployment made no changes to the Umbraco Cloud repository.');
         }
-        catch (patchError) {
+        else {
             coreExports.warning(`Could not retrieve git patch from failed deployment: ${patchError}`);
         }
-        if (patch && patch.trim()) {
-            const prTitle = `Fix: Update package versions for deployment ${inputs.deploymentId}`;
-            const prBody = `This PR applies the git patch from Umbraco Cloud to fix package version issues in deployment ${inputs.deploymentId}.
+    }
+    if (patch && patch.trim()) {
+        const prTitle = `Fix: Update package versions for deployment ${inputs.deploymentId}`;
+        const prBody = `This PR applies the git patch from Umbraco Cloud to fix package version issues in deployment ${inputs.deploymentId}.
 
 **Failed Deployment ID:** ${inputs.deploymentId}
 **Target Environment:** ${inputs.targetEnvironmentAlias}
@@ -227883,16 +228288,77 @@ async function handleFailedDeployment(api, inputs, deploymentStatus) {
 ${errorDetails.map((error) => `- ${error}`).join('\n')}
 
 The changes in this PR contain the necessary package version updates from Umbraco Cloud.`;
-            const pr = await tryCreatePullRequest(inputs, patch, prTitle, prBody, inputs.deploymentId);
-            return {
-                ...baseOutputs(deploymentStatus),
-                changes: JSON.stringify({ changes: patch }),
-                ...prOutputs(pr)
-            };
-        }
-        coreExports.info('Falling back to latest completed deployment approach...');
+        const pr = await tryCreatePullRequest(inputs, patch, prTitle, prBody, inputs.deploymentId);
+        return {
+            ...baseOutputs(deploymentStatus),
+            changes: JSON.stringify({ changes: patch }),
+            ...prOutputs(pr)
+        };
     }
+    coreExports.info('Falling back to latest completed deployment approach...');
     return await attemptPullRequestCreation(api, inputs, deploymentStatus);
+}
+/** Parses Cloud's downgrade message into package entries (text hint). */
+function parseDowngradedPackages(texts) {
+    const packages = new Map();
+    for (const text of texts) {
+        for (const match of text.matchAll(DOWNGRADE_ENTRY_PATTERN)) {
+            const [, name, cloudVersion, file, sourceVersion] = match;
+            const entry = {
+                name,
+                cloudVersion: cloudVersion.replace(/\.+$/, ''),
+                sourceVersion: sourceVersion.replace(/\.+$/, ''),
+                file: file.trim()
+            };
+            packages.set(`${entry.name}|${entry.file}`, entry);
+        }
+    }
+    return [...packages.values()];
+}
+/**
+ * Explains a version failure no PR could fix: the source itself references
+ * older packages than Cloud runs. Returns a short summary for the thrown error.
+ */
+function reportDowngradeGuidance(versionFailureTexts) {
+    const packages = parseDowngradedPackages(versionFailureTexts);
+    if (packages.length === 0) {
+        // Wording changed or unexpected format: show the raw text with generic advice.
+        coreExports.error(DOWNGRADE_FALLBACK_ADVICE);
+        versionFailureTexts.forEach((text) => coreExports.error(text));
+        return DOWNGRADE_FALLBACK_ADVICE;
+    }
+    coreExports.error('Your source references older package versions than Umbraco Cloud is running. Update these in your repository and redeploy:');
+    for (const pkg of packages) {
+        coreExports.error(`- ${pkg.name}: ${pkg.sourceVersion} → ${pkg.cloudVersion} (${pkg.file})`);
+    }
+    const short = packages
+        .map((pkg) => `${pkg.name} ${pkg.sourceVersion} → ${pkg.cloudVersion}`)
+        .join(', ');
+    return `Your source references older package versions than Umbraco Cloud is running (${short}); update them in your repository and redeploy.`;
+}
+/** Prints error lines from Cloud's signed build/restore logs, if any. */
+async function reportFailureLogExcerpts(api, deploymentId) {
+    let excerpts;
+    try {
+        excerpts = (await api.getFailureLogExcerpts(deploymentId)) || [];
+    }
+    catch (error) {
+        coreExports.debug(`Could not read Umbraco Cloud logs: ${error}`);
+        return;
+    }
+    const withLines = excerpts.filter((e) => e.lines && e.lines.length > 0);
+    if (withLines.length === 0)
+        return;
+    coreExports.startGroup('Errors from Umbraco Cloud logs');
+    try {
+        for (const excerpt of withLines) {
+            coreExports.info(`${excerpt.name}:`);
+            excerpt.lines.forEach((line) => coreExports.error(line));
+        }
+    }
+    finally {
+        coreExports.endGroup();
+    }
 }
 async function getErrorDetails(api, deploymentId) {
     try {

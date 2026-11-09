@@ -14,17 +14,17 @@ interface NuGetXmlAttribute {
 }
 
 interface NuGetPackageSources {
-  add: NuGetXmlAttribute[] | NuGetXmlAttribute
+  add?: NuGetXmlAttribute[]
   [key: string]: unknown
 }
 
 interface NuGetCredentialEntry {
-  add: NuGetXmlAttribute[] | NuGetXmlAttribute
+  add?: NuGetXmlAttribute[]
   [key: string]: unknown
 }
 
 interface NuGetPackageSourceCredentials {
-  [sourceName: string]: NuGetCredentialEntry[] | NuGetCredentialEntry
+  [sourceName: string]: NuGetCredentialEntry[]
 }
 
 interface NuGetConfiguration {
@@ -101,9 +101,10 @@ function isEnvironmentVariableReference(value: string): boolean {
   return /^%[^%\s]+%$/.test(value)
 }
 
-function toArray<T>(value: T[] | T | undefined): T[] {
-  if (value === undefined) return []
-  return Array.isArray(value) ? value : [value]
+// xml2js (default explicitArray) always yields arrays for child elements, so a
+// missing element is the only non-array case.
+function toArray<T>(value: T[] | undefined): T[] {
+  return value ?? []
 }
 
 /**

@@ -30,7 +30,12 @@ describe('handleStartDeployment', () => {
   let handleStartDeployment: typeof import('../../src/actions/start-deployment.js').handleStartDeployment
 
   const mockStartDeployment =
-    jest.fn<(request: DeploymentRequest) => Promise<string>>()
+    jest.fn<
+      (
+        request: DeploymentRequest,
+        options?: { waitForRunningDeploymentMs?: number }
+      ) => Promise<string>
+    >()
   const api = { startDeployment: mockStartDeployment }
 
   beforeAll(async () => {
@@ -54,25 +59,45 @@ describe('handleStartDeployment', () => {
       })
     )
 
-    expect(mockStartDeployment).toHaveBeenCalledWith({
-      targetEnvironmentAlias: 'staging',
-      artifactId: 'artifact-123',
-      commitMessage: 'Custom message',
-      noBuildAndRestore: true,
-      skipVersionCheck: true
-    })
+    expect(mockStartDeployment).toHaveBeenCalledWith(
+      {
+        targetEnvironmentAlias: 'staging',
+        artifactId: 'artifact-123',
+        commitMessage: 'Custom message',
+        noBuildAndRestore: true,
+        skipVersionCheck: true
+      },
+      expect.anything()
+    )
     expect(result).toEqual({ deploymentId: 'deployment-123' })
   })
 
   test('applies defaults for optional fields', async () => {
     await handleStartDeployment(api, baseInputs())
 
-    expect(mockStartDeployment).toHaveBeenCalledWith({
-      targetEnvironmentAlias: 'staging',
-      artifactId: 'artifact-123',
-      commitMessage: 'Deployment from GitHub Actions',
-      noBuildAndRestore: false,
-      skipVersionCheck: false
+    expect(mockStartDeployment).toHaveBeenCalledWith(
+      {
+        targetEnvironmentAlias: 'staging',
+        artifactId: 'artifact-123',
+        commitMessage: 'Deployment from GitHub Actions',
+        noBuildAndRestore: false,
+        skipVersionCheck: false
+      },
+      expect.anything()
+    )
+  })
+
+  test('waits for a running deployment for up to the timeout', async () => {
+    await handleStartDeployment(api, baseInputs({ timeoutSeconds: 1800 }))
+    expect(mockStartDeployment).toHaveBeenCalledWith(expect.any(Object), {
+      waitForRunningDeploymentMs: 1800000
+    })
+  })
+
+  test('defaults the running-deployment wait to 1200 seconds', async () => {
+    await handleStartDeployment(api, baseInputs())
+    expect(mockStartDeployment).toHaveBeenCalledWith(expect.any(Object), {
+      waitForRunningDeploymentMs: 1200000
     })
   })
 
