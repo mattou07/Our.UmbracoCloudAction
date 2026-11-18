@@ -219,6 +219,10 @@ jobs:
     name: Publish to Umbraco Cloud
     needs: [setup, build-fe, build-be]
     runs-on: ubuntu-latest
+    # Needed only if you want the action to open a fix PR when a deployment fails
+    permissions:
+      contents: write
+      pull-requests: write
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
@@ -269,11 +273,6 @@ jobs:
   .cloud_gitignore and replace all .gitignore files in the artifact sent to
   cloud
 
-## Small features
-
-- **Environment casing retry**: If the Environment Alias is accidentally defined
-  with casing and fails. The action will retry with lowercase (Live => live)
-
 ## Error Handling
 
 The action attempts to handle most common errors during a build process and
@@ -286,28 +285,31 @@ continue if possible:
 
 ## Inputs
 
-| Input                    | Description                                                            | Required | Default                          |
-| ------------------------ | ---------------------------------------------------------------------- | -------- | -------------------------------- |
-| `projectId`              | The Umbraco Cloud project ID                                           | Yes      | -                                |
-| `apiKey`                 | The Umbraco Cloud API key                                              | Yes      | -                                |
-| `filePath`               | Path to the .cloudsource ZIP file to upload and deploy                 | Yes      | -                                |
-| `targetEnvironmentAlias` | The target environment alias to deploy to (e.g., dev, staging, prod)   | Yes      | -                                |
-| `commitMessage`          | Commit message for the deployment                                      | No       | `Deployment from GitHub Actions` |
-| `noBuildAndRestore`      | Skip build and restore steps                                           | No       | `false`                          |
-| `skipVersionCheck`       | Skip version check                                                     | No       | `false`                          |
-| `timeoutSeconds`         | Timeout in seconds for deployment status checks                        | No       | `1200`                           |
-| `description`            | Description for the artifact                                           | No       | -                                |
-| `version`                | Version for the artifact                                               | No       | -                                |
-| `baseUrl`                | Base URL for Umbraco Cloud API                                         | No       | `https://api.cloud.umbraco.com`  |
-| `base-branch`            | Base branch for pull request creation                                  | No       | `main`                           |
-| `upload-retries`         | Number of retry attempts for artifact upload                           | No       | `3`                              |
-| `upload-retry-delay`     | Base delay in milliseconds between upload retries                      | No       | `10000`                          |
-| `upload-timeout`         | Timeout in milliseconds for artifact upload                            | No       | `60000`                          |
-| `nuget-source-name`      | Name for the NuGet package source                                      | No       | -                                |
-| `nuget-source-url`       | URL for the NuGet package source                                       | No       | -                                |
-| `nuget-source-username`  | Username for NuGet package source authentication                       | No       | -                                |
-| `nuget-source-password`  | Password for NuGet package source authentication                       | No       | -                                |
-| `excluded-paths`         | Comma-separated list of paths to exclude from artifact (e.g., ".git/") | No       | `.git/,.github/`                 |
+| Input                    | Description                                                                                                                                                                                  | Required | Default                                     |
+| ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- | ------------------------------------------- |
+| `projectId`              | The Umbraco Cloud project ID                                                                                                                                                                 | Yes      | -                                           |
+| `apiKey`                 | The Umbraco Cloud API key                                                                                                                                                                    | Yes      | -                                           |
+| `filePath`               | Path to the .cloudsource ZIP file to upload and deploy                                                                                                                                       | Yes      | -                                           |
+| `targetEnvironmentAlias` | The target environment alias to deploy to (e.g., dev, staging, prod)                                                                                                                         | Yes      | -                                           |
+| `commitMessage`          | Commit message for the deployment                                                                                                                                                            | No       | `Deployment from GitHub Actions`            |
+| `noBuildAndRestore`      | Skip build and restore steps                                                                                                                                                                 | No       | `false`                                     |
+| `skipVersionCheck`       | Skip version check                                                                                                                                                                           | No       | `false`                                     |
+| `timeoutSeconds`         | Timeout in seconds for deployment status checks                                                                                                                                              | No       | `1200`                                      |
+| `description`            | Description for the artifact                                                                                                                                                                 | No       | -                                           |
+| `version`                | Version for the artifact                                                                                                                                                                     | No       | -                                           |
+| `baseUrl`                | Base URL for Umbraco Cloud API                                                                                                                                                               | No       | `https://api.cloud.umbraco.com`             |
+| `base-branch`            | Base branch for the fix PR opened when a deployment fails                                                                                                                                    | No       | Triggering branch, else repo default branch |
+| `github-token`           | Token used to push the fix branch and open the PR (needs `contents: write`, `pull-requests: write`)                                                                                          | No       | `${{ github.token }}`                       |
+| `upload-retries`         | Number of retry attempts for artifact upload                                                                                                                                                 | No       | `3`                                         |
+| `upload-retry-delay`     | Base delay in milliseconds between upload retries                                                                                                                                            | No       | `10000`                                     |
+| `upload-timeout`         | Timeout in milliseconds for artifact upload                                                                                                                                                  | No       | `60000`                                     |
+| `nuget-source-name`      | Name for the NuGet package source                                                                                                                                                            | No       | -                                           |
+| `nuget-source-url`       | URL for the NuGet package source                                                                                                                                                             | No       | -                                           |
+| `nuget-source-username`  | Username for NuGet package source authentication                                                                                                                                             | No       | -                                           |
+| `nuget-source-password`  | Password for NuGet package source authentication. Use a `%SECRET_NAME%` reference to an Umbraco Cloud secret: a literal value is committed in clear text to the Cloud git repository         | No       | -                                           |
+| `excluded-paths`         | Comma-separated list of files or directories to exclude from the artifact (e.g., `.git/,src/Web/obj`). `.git` matches the `.git` directory only, not `.gitignore`                            | No       | `.git/,.github/`                            |
+| `enable-api-logging`     | Write an NDJSON log of Umbraco Cloud API calls and upload it as a workflow artifact. Diff bodies and signed URLs are redacted, but anyone with read access to the repository can download it | No       | `false`                                     |
+| `api-log-artifact-name`  | Artifact name for the API log                                                                                                                                                                | No       | `umbraco-cloud-api-log`                     |
 
 ## Outputs
 

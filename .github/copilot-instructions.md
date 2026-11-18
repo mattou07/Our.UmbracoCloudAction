@@ -33,8 +33,6 @@ API. The action automates CI/CD by eliminating manual Cloud Portal steps.
    - **Resilience features**:
      - Rate limiting: Exponential backoff with max 3 retries for 429 responses
        (extracts retry-after from headers)
-     - Environment alias case-sensitivity: Automatic fallback to lowercase if
-       API rejects uppercase
      - Network errors: Wrapped with operation context for debugging
    - **Core methods**:
      - `startDeployment(request: DeploymentRequest): Promise<string>` -
@@ -265,25 +263,20 @@ artifactId then used in subsequent start-deployment action
      can trigger this
    - **Logging**: `core.info()` emits retry attempt count and wait duration
 
-2. **Environment Alias Case-Sensitivity**
+2. **Environment Alias Casing**
 
-   - **Problem**: Umbraco Cloud API is case-sensitive for environment aliases
-     (e.g., `staging` vs `Staging`)
-   - **Solution**: `retryWithLowercaseEnvironmentAlias()` wrapper in API layer
-   - **Flow**: If initial request fails with "No environments matches the
-     provided alias", automatically retry with lowercase
-   - **Example**: User provides `Staging` → first call fails → automatically
-     retries with `staging`
-   - **Logging**: Emits info log when fallback occurs so users understand what
-     happened
+   - Umbraco Cloud matches environment aliases case-insensitively (`Live` and
+     `live` both work, verified against a live project), so the action passes
+     the alias through unchanged and has no lowercase retry. An unknown alias
+     fails immediately with Cloud's 400 "Invalid target environment" detail.
 
 3. **API Error Wrapping**
 
-   - All API calls wrapped with operation context: operation name, details
-   - Example:
-     `Error in checkDeploymentStatus (retry with lowercase): <error message>`
-   - Enables debugging by showing which operation failed and what retry strategy
-     was attempted
+   - Non-2xx responses throw `UmbracoCloudApiError` with `status`, raw `body`,
+     and `problemType`/`title` parsed from problem-details bodies
+   - The message is a single line built from the body's `detail`/`message`, e.g.
+     `Failed to start deployment: 400 - Deployment for project … could not be created, …`
+   - Decisions use structure (status, problem type), never exact wording
 
 4. **Polling Resilience**
    - Network errors during polling don't fail immediately; logged as warnings

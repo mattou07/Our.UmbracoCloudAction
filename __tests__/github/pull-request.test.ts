@@ -1,8 +1,10 @@
 import { jest } from '@jest/globals'
+import * as path from 'path'
 
 // ESM mock setup
 jest.unstable_mockModule('@actions/core', () => ({
   info: jest.fn(),
+  debug: jest.fn(),
   warning: jest.fn(),
   error: jest.fn()
 }))
@@ -94,7 +96,6 @@ index abc123..def456 100644
     jest.clearAllMocks()
 
     // Set up default environment variables
-    process.env.GITHUB_TOKEN = 'test-token'
     process.env.GITHUB_ACTOR = 'testuser'
     process.env.GITHUB_ACTOR_ID = '12345'
 
@@ -145,7 +146,8 @@ index abc123..def456 100644
       baseBranch,
       title,
       body,
-      deploymentId
+      deploymentId,
+      'test-token'
     )
 
     // Assert
@@ -171,10 +173,9 @@ index abc123..def456 100644
     })
   })
 
-  test('creates pull request with GH_TOKEN when GITHUB_TOKEN not available', async () => {
+  test('authenticates Octokit with the token parameter, not the environment', async () => {
     // Arrange
-    delete process.env.GITHUB_TOKEN
-    process.env.GH_TOKEN = 'gh-token'
+    process.env.GITHUB_TOKEN = 'env-token'
 
     // Act
     const result = await createPullRequestWithPatch(
@@ -182,12 +183,13 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      'dep-123'
+      'dep-123',
+      'param-token'
     )
 
     // Assert
     expect(result).toEqual(validResponse)
-    expect(Octokit.Octokit).toHaveBeenCalledWith({ auth: 'gh-token' })
+    expect(Octokit.Octokit).toHaveBeenCalledWith({ auth: 'param-token' })
   })
 
   test('applies git patch and commits changes successfully', async () => {
@@ -197,7 +199,8 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      'dep-123'
+      'dep-123',
+      'test-token'
     )
 
     // Assert
@@ -236,15 +239,33 @@ index abc123..def456 100644
 
   // Invalid Input Scenarios
   test('throws error when GitHub token is missing', async () => {
-    // Arrange
-    delete process.env.GITHUB_TOKEN
-    delete process.env.GH_TOKEN
-
     // Act & Assert
     await expect(
-      createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
-    ).rejects.toThrow(
-      'GitHub token not found. Please set GITHUB_TOKEN or GH_TOKEN environment variable.'
+      createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        'dep-123',
+        ''
+      )
+    ).rejects.toThrow('GitHub token not provided')
+    expect(mockOctokit.repos.getBranch).not.toHaveBeenCalled()
+  })
+
+  test('logs git identity details at debug level only', async () => {
+    await createPullRequestWithPatch(
+      validPatch,
+      'main',
+      'Title',
+      'Body',
+      'dep-123',
+      'test-token'
+    )
+
+    expect(core.debug).toHaveBeenCalledWith('Debug - GITHUB_ACTOR: testuser')
+    expect(core.info).not.toHaveBeenCalledWith(
+      expect.stringContaining('Debug -')
     )
   })
 
@@ -259,7 +280,14 @@ index abc123..def456 100644
 
     // Act & Assert
     await expect(
-      createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+      createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        'dep-123',
+        'test-token'
+      )
     ).rejects.toThrow('Failed to apply git patch')
   })
 
@@ -271,7 +299,14 @@ index abc123..def456 100644
 
     // Act & Assert
     await expect(
-      createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+      createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        'dep-123',
+        'test-token'
+      )
     ).rejects.toThrow('API rate limit exceeded')
   })
 
@@ -281,7 +316,14 @@ index abc123..def456 100644
 
     // Act & Assert
     await expect(
-      createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+      createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        'dep-123',
+        'test-token'
+      )
     ).rejects.toThrow('Validation failed')
   })
 
@@ -302,7 +344,8 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      'dep-123'
+      'dep-123',
+      'test-token'
     )
 
     // Assert
@@ -334,7 +377,8 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      'dep-123'
+      'dep-123',
+      'test-token'
     )
 
     // Assert
@@ -361,7 +405,14 @@ index abc123..def456 100644
 
     // Act & Assert
     await expect(
-      createPullRequestWithPatch(validPatch, 'main', 'Title', 'Body', 'dep-123')
+      createPullRequestWithPatch(
+        validPatch,
+        'main',
+        'Title',
+        'Body',
+        'dep-123',
+        'test-token'
+      )
     ).rejects.toThrow('Commit failed')
 
     expect(fs.unlinkSync).toHaveBeenCalledWith('./git-patch-dep-123.diff')
@@ -382,7 +433,8 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      'dep-123'
+      'dep-123',
+      'test-token'
     )
 
     // Assert
@@ -402,7 +454,8 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      'dep-123'
+      'dep-123',
+      'test-token'
     )
 
     // Assert
@@ -424,7 +477,8 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      guidDeploymentId
+      guidDeploymentId,
+      'test-token'
     )
 
     // Assert
@@ -448,7 +502,8 @@ index abc123..def456 100644
         'main',
         'Title',
         'Body',
-        invalidDeploymentId
+        invalidDeploymentId,
+        'test-token'
       )
     ).rejects.toThrow(
       'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
@@ -466,7 +521,8 @@ index abc123..def456 100644
         'main',
         'Title',
         'Body',
-        invalidDeploymentId
+        invalidDeploymentId,
+        'test-token'
       )
     ).rejects.toThrow(
       'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
@@ -492,7 +548,8 @@ index abc123..def456 100644
         'main',
         'Title',
         'Body',
-        deploymentId
+        deploymentId,
+        'test-token'
       )
       expect(result).toEqual(validResponse)
     }
@@ -517,7 +574,8 @@ index abc123..def456 100644
           'main',
           'Title',
           'Body',
-          testCase.id
+          testCase.id,
+          'test-token'
         )
       ).rejects.toThrow(
         'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
@@ -541,7 +599,8 @@ index abc123..def456 100644
         'main',
         'Title',
         'Body',
-        guid
+        guid,
+        'test-token'
       )
       expect(result).toEqual(validResponse)
     }
@@ -555,7 +614,8 @@ index abc123..def456 100644
       'main',
       'Title',
       'Body',
-      'dep-123'
+      'dep-123',
+      'test-token'
     )
 
     // Assert - Validate interface compliance
@@ -583,7 +643,8 @@ index abc123..def456 100644
       validInputs.baseBranch,
       validInputs.title,
       validInputs.body,
-      validInputs.latestCompletedDeploymentId
+      validInputs.latestCompletedDeploymentId,
+      'test-token'
     )
 
     // Assert - All parameters should be used as strings
@@ -685,7 +746,8 @@ index abc123..def456 100644
         inputs.branch,
         inputs.title,
         inputs.body,
-        inputs.latestCompletedDeploymentId
+        inputs.latestCompletedDeploymentId,
+        'test-token'
       )
 
       // Assert
@@ -818,7 +880,8 @@ index abc123..def456 100644
         inputs.branch,
         inputs.title,
         inputs.body,
-        inputs.latestCompletedDeploymentId
+        inputs.latestCompletedDeploymentId,
+        'test-token'
       )
 
       // Assert
@@ -869,7 +932,8 @@ index abc123..def456 100644
           inputs.branch,
           inputs.title,
           inputs.body,
-          inputs.latestCompletedDeploymentId
+          inputs.latestCompletedDeploymentId,
+          'test-token'
         )
       ).rejects.toThrow('Failed to apply git patch')
 
@@ -926,7 +990,8 @@ index abc123..def456 100644
         inputs.branch,
         inputs.title,
         inputs.body,
-        inputs.latestCompletedDeploymentId
+        inputs.latestCompletedDeploymentId,
+        'test-token'
       )
 
       // Assert
@@ -991,7 +1056,8 @@ index abc123..def456 100644
         inputs.branch,
         inputs.title,
         inputs.body,
-        inputs.latestCompletedDeploymentId
+        inputs.latestCompletedDeploymentId,
+        'test-token'
       )
 
       // Assert
@@ -1037,12 +1103,64 @@ index abc123..def456 100644
         inputs.branch,
         inputs.title,
         inputs.body,
-        inputs.latestCompletedDeploymentId
+        inputs.latestCompletedDeploymentId,
+        'test-token'
       )
 
       // Assert - Verify the correct log message for clean apply
       expect(core.info).toHaveBeenCalledWith(
         'Git patch applied cleanly with --reject flag'
+      )
+    })
+
+    it('preserves relative paths of nested .rej files so same-named files do not collide', async () => {
+      const workspace = process.cwd()
+      fs.readdirSync.mockImplementation((dir: string) => {
+        if (dir === workspace) {
+          return [
+            { name: 'a', isFile: () => false, isDirectory: () => true },
+            { name: 'b', isFile: () => false, isDirectory: () => true }
+          ]
+        }
+        return [
+          {
+            name: 'app.csproj.rej',
+            isFile: () => true,
+            isDirectory: () => false
+          }
+        ]
+      })
+      fs.existsSync.mockReturnValue(false)
+      fs.copyFileSync.mockImplementation(() => {})
+      exec.exec.mockImplementation((command: string, args?: string[]) =>
+        Promise.resolve(args && args.includes('apply') ? 1 : 0)
+      )
+
+      await createPullRequestWithPatch(
+        createComplexFailingPatch(),
+        'main',
+        'Title',
+        'Body',
+        'deploy-nested',
+        'test-token'
+      )
+
+      const rejectDir = path.join('/tmp', 'reject-files-deploy-nested')
+      const targetA = path.join(rejectDir, 'a', 'app.csproj.rej')
+      const targetB = path.join(rejectDir, 'b', 'app.csproj.rej')
+      expect(fs.copyFileSync).toHaveBeenCalledWith(
+        path.join(workspace, 'a', 'app.csproj.rej'),
+        targetA
+      )
+      expect(fs.copyFileSync).toHaveBeenCalledWith(
+        path.join(workspace, 'b', 'app.csproj.rej'),
+        targetB
+      )
+      expect(fs.mkdirSync).toHaveBeenCalledWith(path.dirname(targetA), {
+        recursive: true
+      })
+      expect(core.info).toHaveBeenCalledWith(
+        `Collected reject file: ${path.join('a', 'app.csproj.rej')}`
       )
     })
 
@@ -1103,7 +1221,8 @@ index abc123..def456 100644
           inputs.branch,
           inputs.title,
           inputs.body,
-          inputs.latestCompletedDeploymentId
+          inputs.latestCompletedDeploymentId,
+          'test-token'
         )
       ).rejects.toThrow('Failed to apply git patch')
     })

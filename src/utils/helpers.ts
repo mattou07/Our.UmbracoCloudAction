@@ -1,58 +1,3 @@
-import * as core from '@actions/core'
-import * as exec from '@actions/exec'
-import * as fs from 'fs'
-
-/**
- * Helper function to validate git repository in a directory
- */
-export async function validateGitRepository(
-  directoryPath: string,
-  context: string
-): Promise<void> {
-  core.info(`Validating git repository ${context}...`)
-  try {
-    // Store current working directory
-    const originalCwd = process.cwd()
-
-    try {
-      process.chdir(directoryPath)
-
-      // Check if .git directory exists
-      if (!fs.existsSync('.git')) {
-        throw new Error(`No .git directory found in ${directoryPath}`)
-      }
-
-      // Run basic git validation
-      const exitCode = await exec.exec('git', ['status', '--porcelain'], {
-        silent: true,
-        ignoreReturnCode: true
-      })
-
-      if (exitCode !== 0) {
-        throw new Error('Git status command failed')
-      }
-
-      core.info(`Git repository validation successful ${context}`)
-    } finally {
-      process.chdir(originalCwd)
-    }
-  } catch (error) {
-    core.setFailed(`Failed to validate git repository ${context}: ${error}`)
-    throw error
-  }
-}
-
-/**
- * Create a timeout promise that rejects after the specified duration
- */
-export function createTimeoutPromise(timeoutMs: number): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => {
-      reject(new Error(`Operation timed out after ${timeoutMs}ms`))
-    }, timeoutMs)
-  })
-}
-
 /**
  * Helper function to sleep for a specified duration
  */
@@ -64,31 +9,64 @@ export function sleep(ms: number): Promise<void> {
  * Validate required inputs for actions
  */
 export function validateRequiredInputs(
-  inputs: Record<string, unknown>,
+  inputs: object,
   required: string[]
 ): void {
-  const missing = required.filter((key) => !inputs[key])
+  const record = inputs as Record<string, unknown>
+  const missing = required.filter((key) => !record[key])
   if (missing.length > 0) {
     throw new Error(`Missing required inputs: ${missing.join(', ')}`)
   }
 }
 
 /**
- * Parse boolean input from GitHub Actions
+ * Parse an integer input, falling back to a default when empty.
+ * Throws when the value is not a whole number at or above `min`, so a typo
+ * fails the run immediately instead of producing NaN-driven behaviour later.
  */
-export function parseBooleanInput(value: string | undefined): boolean {
-  if (!value) return false
-  return value.toLowerCase() === 'true'
+export function parseIntegerInput(
+  name: string,
+  value: string | undefined,
+  defaultValue: number,
+  min = 1
+): number {
+  const trimmed = value?.trim()
+  if (!trimmed) return defaultValue
+
+  if (!/^-?\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid value for input "${name}": "${value}" is not a whole number`
+    )
+  }
+
+  const parsed = parseInt(trimmed, 10)
+  if (parsed < min) {
+    throw new Error(
+      `Invalid value for input "${name}": ${parsed} must be at least ${min}`
+    )
+  }
+  return parsed
 }
 
 /**
- * Parse integer input from GitHub Actions
+ * Validate that a base URL uses HTTPS (the API key is sent with every request)
+ * and return it without a trailing slash.
  */
-export function parseIntegerInput(
-  value: string | undefined,
-  defaultValue: number
-): number {
-  if (!value) return defaultValue
-  const parsed = parseInt(value, 10)
-  return isNaN(parsed) ? defaultValue : parsed
+export function parseHttpsBaseUrl(name: string, value: string): string {
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new Error(
+      `Invalid value for input "${name}": "${value}" is not a URL`
+    )
+  }
+
+  if (url.protocol !== 'https:') {
+    throw new Error(
+      `Invalid value for input "${name}": "${value}" must use https so the API key is not sent in clear text`
+    )
+  }
+
+  return value.replace(/\/+$/, '')
 }

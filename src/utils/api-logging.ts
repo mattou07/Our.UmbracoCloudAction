@@ -1,7 +1,9 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import { DefaultArtifactClient } from '@actions/artifact'
+import { REDACTED, redactSignedUrls } from './redact.js'
 
 const DEFAULT_ARTIFACT_NAME = 'umbraco-cloud-api-log'
 const MAX_LOGGED_BODY_LENGTH = 100_000
@@ -29,6 +31,41 @@ interface ApiLogEntry {
 let loggingEnabled = false
 let logFilePath = ''
 let artifactName = DEFAULT_ARTIFACT_NAME
+
+// Fallback for bodies that could not be parsed (e.g. truncated JSON)
+const RAW_BLOB_URL_PATTERN = /("blobUrl"\s*:\s*)"(?:[^"\\]|\\.)*"/gi
+
+function redactString(value: string): string {
+  return redactSignedUrls(
+    value.replace(RAW_BLOB_URL_PATTERN, `$1"${REDACTED}"`)
+  )
+}
+
+/** Recursively redacts blobUrl keys and signed URLs in a parsed body. */
+function redactValue(value: unknown): unknown {
+  if (typeof value === 'string') {
+    return redactString(value)
+  }
+
+  if (Array.isArray(value)) {
+    return value.map(redactValue)
+  }
+
+  if (value !== null && typeof value === 'object') {
+    const result: Record<string, unknown> = {}
+    for (const [key, child] of Object.entries(value)) {
+      result[key] =
+        key.toLowerCase() === 'bloburl' ? REDACTED : redactValue(child)
+    }
+    return result
+  }
+
+  return value
+}
+
+function isDiffOperation(context: ApiLogContext): boolean {
+  return context.operation?.startsWith('getChangesById') ?? false
+}
 
 function tryParseJson(value: string): unknown {
   const trimmed = value.trimStart()
@@ -78,10 +115,19 @@ function serializeRequestBody(body: unknown): unknown {
   return `[request-body type=${Object.prototype.toString.call(body)}]`
 }
 
-async function safeReadResponseBody(response: Response): Promise<unknown> {
+async function safeReadResponseBody(
+  response: Response,
+  context: ApiLogContext
+): Promise<unknown> {
   try {
     const bodyText = await response.clone().text()
-    return tryParseJson(truncate(bodyText))
+    // The diff endpoint returns source-code patches: never persist them.
+    // Error responses (409/429/5xx) carry no source, and are kept (redacted)
+    // so failures stay diagnosable.
+    if (isDiffOperation(context) && response.ok) {
+      return `[redacted diff: ${bodyText.length} chars]`
+    }
+    return redactValue(tryParseJson(truncate(bodyText)))
   } catch (error) {
     return `[response-body read failed: ${error}]`
   }
@@ -109,7 +155,9 @@ export function initializeApiLogging(
     return
   }
 
-  const baseDir = process.env.RUNNER_TEMP || process.cwd()
+  // Outside a runner (e.g. local-action) use the OS temp dir rather than the
+  // working directory, so the log never lands inside the user's repository.
+  const baseDir = process.env.RUNNER_TEMP || os.tmpdir()
   const fileName = `umbraco-cloud-api-${Date.now()}.ndjson`
   logFilePath = path.join(baseDir, fileName)
 
@@ -132,26 +180,34 @@ export async function fetchWithApiLogging(
   init: RequestInit,
   context: ApiLogContext = {}
 ): Promise<Response> {
+  if (!loggingEnabled || !logFilePath) {
+    return fetch(url, init)
+  }
+
   const startedAt = Date.now()
   const method = init.method || 'GET'
-  const requestBody = serializeRequestBody(init.body)
+  const loggedUrl = redactSignedUrls(url)
+  const requestBody = redactValue(serializeRequestBody(init.body))
+  const metadata = context.metadata
+    ? (redactValue(context.metadata) as Record<string, unknown>)
+    : undefined
 
   try {
     const response = await fetch(url, init)
-    const responseBody = await safeReadResponseBody(response)
+    const responseBody = await safeReadResponseBody(response, context)
 
     appendLog({
       timestampUtc: new Date().toISOString(),
       operation: context.operation,
       method,
-      url,
+      url: loggedUrl,
       durationMs: Date.now() - startedAt,
       ok: response.ok,
       status: response.status,
       statusText: response.statusText,
       requestBody,
       responseBody,
-      metadata: context.metadata
+      metadata
     })
 
     return response
@@ -160,11 +216,13 @@ export async function fetchWithApiLogging(
       timestampUtc: new Date().toISOString(),
       operation: context.operation,
       method,
-      url,
+      url: loggedUrl,
       durationMs: Date.now() - startedAt,
       requestBody,
-      error: error instanceof Error ? error.message : String(error),
-      metadata: context.metadata
+      error: redactString(
+        error instanceof Error ? error.message : String(error)
+      ),
+      metadata
     })
 
     throw error
