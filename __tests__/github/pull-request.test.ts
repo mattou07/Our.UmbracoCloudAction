@@ -6,7 +6,8 @@ jest.unstable_mockModule('@actions/core', () => ({
   info: jest.fn(),
   debug: jest.fn(),
   warning: jest.fn(),
-  error: jest.fn()
+  error: jest.fn(),
+  setSecret: jest.fn()
 }))
 
 jest.unstable_mockModule('@actions/exec', () => ({
@@ -47,20 +48,21 @@ jest.unstable_mockModule('@octokit/rest', () => ({
   Octokit: jest.fn()
 }))
 
+jest.unstable_mockModule('../../src/utils/version-fixes.js', () => ({
+  applyVersionFixes: jest.fn()
+}))
+
 describe('createPullRequestWithPatch', () => {
   let core: any
   let exec: any
   let fs: any
   let Octokit: any
   let createPullRequestWithPatch: any
+  let validateBaseBranch: any
+  let gitAuthArgs: any
+  let applyVersionFixes: any
 
   const mockOctokit = {
-    repos: {
-      getBranch: jest.fn() as any
-    },
-    git: {
-      createRef: jest.fn() as any
-    },
     pulls: {
       create: jest.fn() as any
     }
@@ -79,6 +81,53 @@ index abc123..def456 100644
     number: 123
   }
 
+  const AUTH_B64 = Buffer.from('x-access-token:test-token').toString('base64')
+  const AUTH_ARGS = ['-c', `http.extraheader=AUTHORIZATION: basic ${AUTH_B64}`]
+
+  /**
+   * Fake git: ls-remote reports the branch missing (exit 2) unless told
+   * otherwise, ls-files lists the given .rej files (NUL separated), apply
+   * returns applyCode, and any command containing throwOn throws.
+   */
+  function mockGit(
+    opts: {
+      applyCode?: number
+      lsRemoteCode?: number
+      rej?: string[]
+      status?: string
+      throwOn?: string
+    } = {}
+  ) {
+    exec.exec.mockImplementation((_cmd: any, args: any, options: any) => {
+      if (opts.throwOn && args.includes(opts.throwOn)) {
+        throw new Error(`${opts.throwOn} failed`)
+      }
+      if (args.includes('ls-remote')) {
+        return Promise.resolve(opts.lsRemoteCode ?? 2)
+      }
+      if (args.includes('ls-files')) {
+        const out = (opts.rej ?? []).map((f) => `${f}\0`).join('')
+        options.listeners.stdout(Buffer.from(out))
+        return Promise.resolve(0)
+      }
+      if (args.includes('status')) {
+        options.listeners.stdout(Buffer.from(opts.status ?? ' M test.txt\n'))
+        return Promise.resolve(0)
+      }
+      if (args.includes('apply')) {
+        return Promise.resolve(opts.applyCode ?? 0)
+      }
+      return Promise.resolve(0)
+    })
+  }
+
+  const run = (
+    patch: string,
+    branch = 'main',
+    id = 'dep-123',
+    token = 'test-token'
+  ) => createPullRequestWithPatch(patch, branch, 'Title', 'Body', id, token)
+
   beforeAll(async () => {
     core = await import('@actions/core')
     exec = await import('@actions/exec')
@@ -86,10 +135,13 @@ index abc123..def456 100644
     await import('os')
     await import('@actions/artifact')
     await import('@actions/github')
+    applyVersionFixes = (await import('../../src/utils/version-fixes.js'))
+      .applyVersionFixes
     Octokit = await import('@octokit/rest')
-    createPullRequestWithPatch = (
-      await import('../../src/github/pull-request.js')
-    ).createPullRequestWithPatch
+    const mod = await import('../../src/github/pull-request.js')
+    createPullRequestWithPatch = mod.createPullRequestWithPatch
+    validateBaseBranch = mod.validateBaseBranch
+    gitAuthArgs = mod.gitAuthArgs
   })
 
   beforeEach(() => {
@@ -102,16 +154,6 @@ index abc123..def456 100644
     // Set up default mocks
     Octokit.Octokit.mockImplementation(() => mockOctokit)
 
-    mockOctokit.repos.getBranch.mockResolvedValue({
-      data: {
-        commit: {
-          sha: 'abc123def456'
-        }
-      }
-    })
-
-    mockOctokit.git.createRef.mockResolvedValue({})
-
     mockOctokit.pulls.create.mockResolvedValue({
       data: {
         html_url: 'https://github.com/testowner/testrepo/pull/123',
@@ -119,8 +161,9 @@ index abc123..def456 100644
       }
     })
 
-    exec.exec.mockResolvedValue(0)
+    mockGit()
     fs.existsSync.mockReturnValue(false)
+    applyVersionFixes.mockReturnValue([])
   })
 
   afterEach(() => {
@@ -133,77 +176,38 @@ index abc123..def456 100644
 
   // Valid Input Scenarios
   test('creates pull request successfully with valid inputs', async () => {
-    // Arrange
-    const gitPatch = validPatch
-    const baseBranch = 'main'
-    const title = 'Test PR Title'
-    const body = 'Test PR body content'
-    const deploymentId = 'dep-123'
-
-    // Act
     const result = await createPullRequestWithPatch(
-      gitPatch,
-      baseBranch,
-      title,
-      body,
-      deploymentId,
+      validPatch,
+      'main',
+      'Test PR Title',
+      'Test PR body content',
+      'dep-123',
       'test-token'
     )
 
-    // Assert
     expect(result).toEqual(validResponse)
-    expect(mockOctokit.repos.getBranch).toHaveBeenCalledWith({
-      owner: 'testowner',
-      repo: 'testrepo',
-      branch: baseBranch
-    })
-    expect(mockOctokit.git.createRef).toHaveBeenCalledWith({
-      owner: 'testowner',
-      repo: 'testrepo',
-      ref: `refs/heads/umbcloud/${deploymentId}`,
-      sha: 'abc123def456'
-    })
     expect(mockOctokit.pulls.create).toHaveBeenCalledWith({
       owner: 'testowner',
       repo: 'testrepo',
-      title: title,
-      head: `umbcloud/${deploymentId}`,
-      base: baseBranch,
-      body: body
+      title: 'Test PR Title',
+      head: 'umbcloud/dep-123',
+      base: 'main',
+      body: 'Test PR body content'
     })
   })
 
   test('authenticates Octokit with the token parameter, not the environment', async () => {
-    // Arrange
     process.env.GITHUB_TOKEN = 'env-token'
 
-    // Act
-    const result = await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'param-token'
-    )
+    const result = await run(validPatch, 'main', 'dep-123', 'param-token')
 
-    // Assert
     expect(result).toEqual(validResponse)
     expect(Octokit.Octokit).toHaveBeenCalledWith({ auth: 'param-token' })
   })
 
   test('applies git patch and commits changes successfully', async () => {
-    // Arrange & Act
-    await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'test-token'
-    )
+    await run(validPatch)
 
-    // Assert
     expect(fs.writeFileSync).toHaveBeenCalledWith(
       './git-patch-dep-123.diff',
       validPatch,
@@ -231,37 +235,154 @@ index abc123..def456 100644
       'Apply Umbraco Cloud changes from deployment dep-123'
     ])
     expect(exec.exec).toHaveBeenCalledWith('git', [
+      ...AUTH_ARGS,
       'push',
       'origin',
       'umbcloud/dep-123'
     ])
   })
 
+  test('uses a local branch and a cheap git sequence (no API branch, no fetch)', async () => {
+    await run(validPatch)
+
+    const verbs = exec.exec.mock.calls.map((c: any) => {
+      const args: string[] = c[1]
+      const skip = args[0] === '-c' && args[1].startsWith('http.extraheader')
+      const rest = skip ? args.slice(2) : args
+      return rest[0] === '-c' ? 'commit' : rest[0]
+    })
+    expect(verbs).toEqual([
+      'ls-remote',
+      'checkout',
+      'apply',
+      'ls-files',
+      'status',
+      'add',
+      'commit',
+      'push',
+      'checkout'
+    ])
+    expect(exec.exec).toHaveBeenCalledWith(
+      'git',
+      [
+        ...AUTH_ARGS,
+        'ls-remote',
+        '--exit-code',
+        '--heads',
+        'origin',
+        'umbcloud/dep-123'
+      ],
+      { ignoreReturnCode: true, silent: true }
+    )
+    expect(exec.exec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-b',
+      'umbcloud/dep-123'
+    ])
+    expect(exec.exec).toHaveBeenLastCalledWith('git', ['checkout', 'main'])
+    expect(exec.exec.mock.calls.some((c: any) => c[1].includes('fetch'))).toBe(
+      false
+    )
+  })
+
+  test('authenticates network commands with an extraheader and never exposes the raw token', async () => {
+    await run(validPatch)
+
+    const networkCalls = exec.exec.mock.calls.filter((c: any) =>
+      ['ls-remote', 'push'].some((cmd) => c[1].includes(cmd))
+    )
+    expect(networkCalls).toHaveLength(2)
+    for (const call of networkCalls) {
+      expect(call[1].slice(0, 2)).toEqual(AUTH_ARGS)
+    }
+    for (const call of exec.exec.mock.calls) {
+      expect(call[1].join(' ')).not.toContain('test-token')
+    }
+    expect(core.setSecret).toHaveBeenCalledWith(AUTH_B64)
+    expect(gitAuthArgs('test-token')).toEqual(AUTH_ARGS)
+  })
+
+  // Branch name validation
+  test.each([
+    ['-delete'],
+    ['--upload-pack=x'],
+    [''],
+    ['a b'],
+    ['a\tb'],
+    ['a..b'],
+    ['a~1'],
+    ['a^'],
+    ['a:b'],
+    ['a?'],
+    ['a*'],
+    ['a[0]'],
+    ['a\\b'],
+    ['a\x01b'],
+    ['a\x7fb'],
+    ['feature/'],
+    ['feature.lock']
+  ])('rejects invalid base branch %j before any git call', async (branch) => {
+    expect(() => validateBaseBranch(branch)).toThrow(
+      `Invalid base-branch "${branch}"`
+    )
+    await expect(run(validPatch, branch)).rejects.toThrow(
+      `Invalid base-branch "${branch}"`
+    )
+    expect(exec.exec).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['main'],
+    ['release/1.2'],
+    ['feature/x_y-z'],
+    ['v1.0.0'],
+    ['a.b']
+  ])('accepts valid base branch %s', (branch) => {
+    expect(() => validateBaseBranch(branch)).not.toThrow()
+  })
+
+  // Workflow files in the patch
+  test('warns when the patch touches .github but still applies it', async () => {
+    const patch = `diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 1..2 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -1 +1 @@
+-a
++b
+${validPatch}`
+
+    const result = await run(patch)
+
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('.github/workflows/ci.yml')
+    )
+    expect(core.warning).toHaveBeenCalledWith(
+      expect.stringContaining('GITHUB_TOKEN')
+    )
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      './git-patch-dep-123.diff',
+      patch,
+      'utf8'
+    )
+    expect(result).toEqual(validResponse)
+  })
+
+  test('does not warn about CI configuration for ordinary patches', async () => {
+    await run(validPatch)
+    expect(core.warning).not.toHaveBeenCalled()
+  })
+
   // Invalid Input Scenarios
   test('throws error when GitHub token is missing', async () => {
-    // Act & Assert
-    await expect(
-      createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        'dep-123',
-        ''
-      )
-    ).rejects.toThrow('GitHub token not provided')
-    expect(mockOctokit.repos.getBranch).not.toHaveBeenCalled()
+    await expect(run(validPatch, 'main', 'dep-123', '')).rejects.toThrow(
+      'GitHub token not provided'
+    )
+    expect(exec.exec).not.toHaveBeenCalled()
   })
 
   test('logs git identity details at debug level only', async () => {
-    await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'test-token'
-    )
+    await run(validPatch)
 
     expect(core.debug).toHaveBeenCalledWith('Debug - GITHUB_ACTOR: testuser')
     expect(core.info).not.toHaveBeenCalledWith(
@@ -270,92 +391,47 @@ index abc123..def456 100644
   })
 
   test('throws error when git patch application fails', async () => {
-    // Arrange
-    exec.exec.mockImplementation((cmd: any, args: any) => {
-      if (args.includes('apply') && args.includes('--reject')) {
-        return Promise.resolve(2) // Exit code > 1 indicates actual failure
-      }
-      return Promise.resolve(0)
-    })
+    mockGit({ applyCode: 2 }) // Exit code > 1 indicates actual failure
 
-    // Act & Assert
-    await expect(
-      createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        'dep-123',
-        'test-token'
-      )
-    ).rejects.toThrow('Failed to apply git patch')
+    await expect(run(validPatch)).rejects.toThrow('Failed to apply git patch')
   })
 
-  test('throws error when branch creation fails with non-conflict error', async () => {
-    // Arrange
-    mockOctokit.git.createRef.mockRejectedValue(
-      new Error('API rate limit exceeded')
-    )
+  test('throws when ls-remote fails for a reason other than "not found"', async () => {
+    mockGit({ lsRemoteCode: 128 })
 
-    // Act & Assert
-    await expect(
-      createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        'dep-123',
-        'test-token'
-      )
-    ).rejects.toThrow('API rate limit exceeded')
+    await expect(run(validPatch)).rejects.toThrow(
+      'git ls-remote failed with exit code 128'
+    )
+    expect(mockOctokit.pulls.create).not.toHaveBeenCalled()
   })
 
   test('throws error when pull request creation fails', async () => {
-    // Arrange
     mockOctokit.pulls.create.mockRejectedValue(new Error('Validation failed'))
 
-    // Act & Assert
-    await expect(
-      createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        'dep-123',
-        'test-token'
-      )
-    ).rejects.toThrow('Validation failed')
+    await expect(run(validPatch)).rejects.toThrow('Validation failed')
   })
 
   // Edge Cases
   test('handles branch name conflict by adding timestamp', async () => {
-    // Arrange
-    const conflictError = new Error('Reference already exists')
-    mockOctokit.git.createRef
-      .mockRejectedValueOnce(conflictError)
-      .mockResolvedValueOnce({})
-
+    // ls-remote exit code 0 means the branch exists on the remote
+    mockGit({ lsRemoteCode: 0 })
     const mockTimestamp = 1693747200000
-    jest.spyOn(Date, 'now').mockReturnValue(mockTimestamp)
+    const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(mockTimestamp)
 
-    // Act
-    const result = await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'test-token'
-    )
+    const result = await run(validPatch)
+    nowSpy.mockRestore()
 
-    // Assert
-    expect(mockOctokit.git.createRef).toHaveBeenCalledTimes(2)
-    expect(mockOctokit.git.createRef).toHaveBeenLastCalledWith({
-      owner: 'testowner',
-      repo: 'testrepo',
-      ref: `refs/heads/umbcloud/dep-123-${mockTimestamp}`,
-      sha: 'abc123def456'
-    })
+    expect(exec.exec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-b',
+      `umbcloud/dep-123-${mockTimestamp}`
+    ])
+    expect(exec.exec).toHaveBeenCalledWith('git', [
+      ...AUTH_ARGS,
+      'push',
+      'origin',
+      `umbcloud/dep-123-${mockTimestamp}`
+    ])
     expect(mockOctokit.pulls.create).toHaveBeenCalledWith(
       expect.objectContaining({
         title: 'Title (Conflict Resolution)',
@@ -367,21 +443,11 @@ index abc123..def456 100644
   })
 
   test('uses fallback values when GitHub environment variables are missing', async () => {
-    // Arrange
     delete process.env.GITHUB_ACTOR
     delete process.env.GITHUB_ACTOR_ID
 
-    // Act
-    await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'test-token'
-    )
+    await run(validPatch)
 
-    // Assert
     expect(exec.exec).toHaveBeenCalledWith('git', [
       '-c',
       'user.name=github-actions[bot]',
@@ -394,143 +460,163 @@ index abc123..def456 100644
   })
 
   test('cleans up patch file even when process fails', async () => {
-    // Arrange
     fs.existsSync.mockReturnValue(true)
-    exec.exec.mockImplementation((cmd: any, args: any) => {
-      if (args.includes('commit')) {
-        throw new Error('Commit failed')
-      }
-      return Promise.resolve(0)
-    })
+    mockGit({ throwOn: 'commit' })
 
-    // Act & Assert
-    await expect(
-      createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        'dep-123',
-        'test-token'
-      )
-    ).rejects.toThrow('Commit failed')
+    await expect(run(validPatch)).rejects.toThrow('commit failed')
 
     expect(fs.unlinkSync).toHaveBeenCalledWith('./git-patch-dep-123.diff')
   })
 
   test('handles git checkout failure gracefully in cleanup', async () => {
-    // Arrange
-    exec.exec.mockImplementation((cmd: any, args: any) => {
-      if (args.includes('checkout') && args.includes('main')) {
-        throw new Error('Checkout failed')
-      }
-      return Promise.resolve(0)
-    })
+    mockGit({ throwOn: 'main' })
 
-    // Act
-    const result = await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'test-token'
-    )
+    const result = await run(validPatch)
 
-    // Assert
     expect(result).toEqual(validResponse)
     expect(core.warning).toHaveBeenCalledWith(
       expect.stringContaining('Could not return to original branch')
     )
   })
 
-  test('handles empty or invalid git patch', async () => {
-    // Arrange
-    const emptyPatch = ''
+  test('does not write or apply an empty patch', async () => {
+    const result = await run('  \n')
 
-    // Act
-    const result = await createPullRequestWithPatch(
-      emptyPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'test-token'
-    )
-
-    // Assert
-    expect(fs.writeFileSync).toHaveBeenCalledWith(
-      './git-patch-dep-123.diff',
-      emptyPatch,
-      'utf8'
+    expect(fs.writeFileSync).not.toHaveBeenCalled()
+    expect(exec.exec.mock.calls.some((c: any) => c[1].includes('apply'))).toBe(
+      false
     )
     expect(result).toEqual(validResponse)
   })
 
+  describe('version fixes', () => {
+    const fixes = [
+      { name: 'Contoso.Pkg', version: '2.0.0', file: 'src/Contoso.csproj' }
+    ]
+    const runWithFixes = (patch: string, versionFixes = fixes) =>
+      createPullRequestWithPatch(
+        patch,
+        'main',
+        'Title',
+        'Body',
+        'dep-123',
+        'test-token',
+        versionFixes
+      )
+    const applied = [
+      {
+        name: 'Contoso.Pkg',
+        file: 'src/Contoso.csproj',
+        from: '1.0.0',
+        to: '2.0.0'
+      }
+    ]
+    const commitMessage = () =>
+      exec.exec.mock.calls.find((c: any) => c[1].includes('commit'))?.[1].pop()
+    const verbs = () =>
+      exec.exec.mock.calls.map((c: any) =>
+        c[1].find(
+          (a: string) =>
+            !a.startsWith('-') &&
+            !a.startsWith('http') &&
+            !a.startsWith('user.')
+        )
+      )
+
+    test('applies the fixes after an all-rejected patch and commits with the version message', async () => {
+      mockGit({ applyCode: 1, status: ' M src/Contoso.csproj\n' })
+      applyVersionFixes.mockReturnValue(applied)
+
+      const result = await runWithFixes(validPatch)
+
+      expect(applyVersionFixes).toHaveBeenCalledWith(process.cwd(), fixes)
+      expect(commitMessage()).toBe(
+        'Update package versions to match Umbraco Cloud (deployment dep-123)'
+      )
+      expect(exec.exec).toHaveBeenCalledWith('git', [
+        ...AUTH_ARGS,
+        'push',
+        'origin',
+        'umbcloud/dep-123'
+      ])
+      expect(mockOctokit.pulls.create).toHaveBeenCalled()
+      expect(result).toEqual(validResponse)
+      // patch first, then fixes, then the change check
+      const order = verbs()
+      expect(order.indexOf('apply')).toBeLessThan(order.indexOf('status'))
+    })
+
+    test('applies fixes only when the patch is empty', async () => {
+      applyVersionFixes.mockReturnValue(applied)
+
+      const result = await runWithFixes('')
+
+      expect(fs.writeFileSync).not.toHaveBeenCalled()
+      expect(verbs()).not.toContain('apply')
+      expect(commitMessage()).toBe(
+        'Update package versions to match Umbraco Cloud (deployment dep-123)'
+      )
+      expect(result).toEqual(validResponse)
+    })
+
+    test('keeps the patch commit message when the patch changed files but no fix applied', async () => {
+      const result = await runWithFixes(validPatch)
+
+      expect(commitMessage()).toBe(
+        'Apply Umbraco Cloud changes from deployment dep-123'
+      )
+      expect(result).toEqual(validResponse)
+    })
+
+    test('creates no commit, push or PR when nothing changed', async () => {
+      mockGit({ applyCode: 1, status: '' })
+
+      const result = await runWithFixes(validPatch)
+
+      expect(result).toBeUndefined()
+      expect(core.warning).toHaveBeenCalledTimes(1)
+      expect(core.warning).toHaveBeenCalledWith(
+        'No fix PR was created: the patch from Umbraco Cloud did not apply to main and no package versions needed updating. Your repository differs from what was last deployed to Umbraco Cloud; update the package versions listed above manually.'
+      )
+      const order = verbs()
+      expect(order).not.toContain('add')
+      expect(order).not.toContain('commit')
+      expect(order).not.toContain('push')
+      expect(mockOctokit.pulls.create).not.toHaveBeenCalled()
+      expect(exec.exec).toHaveBeenLastCalledWith('git', ['checkout', 'main'])
+    })
+  })
+
   test('handles GUID-format deployment ID', async () => {
-    // Arrange
     const guidDeploymentId = '550e8400-e29b-41d4-a716-446655440000'
 
-    // Act
-    const result = await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      guidDeploymentId,
-      'test-token'
-    )
+    const result = await run(validPatch, 'main', guidDeploymentId)
 
-    // Assert
-    expect(mockOctokit.git.createRef).toHaveBeenCalledWith({
-      owner: 'testowner',
-      repo: 'testrepo',
-      ref: `refs/heads/umbcloud/${guidDeploymentId}`,
-      sha: 'abc123def456'
-    })
+    expect(exec.exec).toHaveBeenCalledWith('git', [
+      'checkout',
+      '-b',
+      `umbcloud/${guidDeploymentId}`
+    ])
     expect(result).toEqual(validResponse)
   })
 
   test('throws error for invalid deployment ID with special characters', async () => {
-    // Arrange
-    const invalidDeploymentId = '550e8400@e29b!41d4#a716$446655440000'
-
-    // Act & Assert
     await expect(
-      createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        invalidDeploymentId,
-        'test-token'
-      )
+      run(validPatch, 'main', '550e8400@e29b!41d4#a716$446655440000')
     ).rejects.toThrow(
       'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
     )
   })
 
   test('throws error for deployment ID with spaces', async () => {
-    // Arrange
-    const invalidDeploymentId = '550e8400 e29b 41d4 a716 446655440000'
-
-    // Act & Assert
     await expect(
-      createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        invalidDeploymentId,
-        'test-token'
-      )
+      run(validPatch, 'main', '550e8400 e29b 41d4 a716 446655440000')
     ).rejects.toThrow(
       'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
     )
   })
 
   test('accepts valid deployment ID formats', async () => {
-    // Arrange - Test different valid formats
     const validIds = [
       '550e8400-e29b-41d4-a716-446655440000', // Standard GUID
       '{550E8400-E29B-41D4-A716-446655440000}', // GUID with braces
@@ -541,50 +627,30 @@ index abc123..def456 100644
       '{123E4567-E89B-12D3-A456-9AC7CBDCEE52}' // GUID with braces uppercase
     ]
 
-    // Act & Assert - All should work without throwing
     for (const deploymentId of validIds) {
-      const result = await createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        deploymentId,
-        'test-token'
-      )
+      const result = await run(validPatch, 'main', deploymentId)
       expect(result).toEqual(validResponse)
     }
   })
 
   test('throws error for invalid deployment ID characters', async () => {
-    // Arrange - Test strings that don't match either GUID pattern OR simple alphanumeric pattern
     const testCases = [
-      { id: 'invalid@deployment', desc: 'Contains @ symbol' },
-      { id: 'deployment#id', desc: 'Contains # symbol' },
-      { id: 'deployment id with spaces', desc: 'Contains spaces' },
-      { id: 'deployment/id', desc: 'Contains forward slash' },
-      { id: 'deployment\\id', desc: 'Contains backslash' },
-      { id: 'deployment.id', desc: 'Contains period' }
+      'invalid@deployment',
+      'deployment#id',
+      'deployment id with spaces',
+      'deployment/id',
+      'deployment\\id',
+      'deployment.id'
     ]
 
-    // Act & Assert - Test each case individually
-    for (const testCase of testCases) {
-      await expect(
-        createPullRequestWithPatch(
-          validPatch,
-          'main',
-          'Title',
-          'Body',
-          testCase.id,
-          'test-token'
-        )
-      ).rejects.toThrow(
+    for (const id of testCases) {
+      await expect(run(validPatch, 'main', id)).rejects.toThrow(
         'Invalid deployment ID format. Must be a valid GUID or contain only alphanumeric characters and hyphens.'
       )
     }
   })
 
   test('accepts valid GUID patterns specifically', async () => {
-    // Arrange - Test that our GUID pattern correctly validates proper GUIDs
     const validGuids = [
       '123e4567-e89b-12d3-a456-426614174000', // Standard GUID
       '{123E4567-E89B-12D3-A456-426614174000}', // With braces
@@ -592,166 +658,50 @@ index abc123..def456 100644
       'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF' // All F's
     ]
 
-    // Act & Assert - All should work
     for (const guid of validGuids) {
-      const result = await createPullRequestWithPatch(
-        validPatch,
-        'main',
-        'Title',
-        'Body',
-        guid,
-        'test-token'
-      )
+      const result = await run(validPatch, 'main', guid)
       expect(result).toEqual(validResponse)
     }
   })
 
-  // TypeScript Type Safety
   test('returns PullRequestInfo type with correct structure', async () => {
-    // Arrange & Act
-    const result = await createPullRequestWithPatch(
-      validPatch,
-      'main',
-      'Title',
-      'Body',
-      'dep-123',
-      'test-token'
-    )
+    const result = await run(validPatch)
 
-    // Assert - Validate interface compliance
-    expect(result).toHaveProperty('url')
-    expect(result).toHaveProperty('number')
     expect(typeof result.url).toBe('string')
     expect(typeof result.number).toBe('number')
     expect(result.url).toMatch(/^https:\/\/github\.com\/.*\/pull\/\d+$/)
     expect(result.number).toBeGreaterThan(0)
   })
 
-  test('validates input parameter types', async () => {
-    // Arrange
-    const validInputs = {
-      gitPatch: validPatch,
-      baseBranch: 'main',
-      title: 'Test Title',
-      body: 'Test Body',
-      latestCompletedDeploymentId: 'dep-123'
-    }
-
-    // Act
-    const result = await createPullRequestWithPatch(
-      validInputs.gitPatch,
-      validInputs.baseBranch,
-      validInputs.title,
-      validInputs.body,
-      validInputs.latestCompletedDeploymentId,
-      'test-token'
-    )
-
-    // Assert - All parameters should be used as strings
-    expect(typeof validInputs.gitPatch).toBe('string')
-    expect(typeof validInputs.baseBranch).toBe('string')
-    expect(typeof validInputs.title).toBe('string')
-    expect(typeof validInputs.body).toBe('string')
-    expect(typeof validInputs.latestCompletedDeploymentId).toBe('string')
-    expect(result).toEqual(validResponse)
-  })
-
   describe('git patch --reject functionality', () => {
+    const workspace = process.cwd()
+
     beforeEach(() => {
-      // Reset all mocks for each test
-      jest.clearAllMocks()
+      fs.existsSync.mockReturnValue(true)
+    })
 
-      // Setup default successful mocks
-      mockOctokit.repos.getBranch.mockResolvedValue({
-        data: {
-          commit: { sha: 'base-sha-123' }
-        }
-      })
+    it('lists .rej files with git ls-files instead of walking the tree', async () => {
+      mockGit({ applyCode: 1, rej: ['file1.cs.rej'] })
 
-      mockOctokit.git.createRef.mockResolvedValue({
-        data: { ref: 'refs/heads/test-branch' }
-      })
+      await run(createComplexFailingPatch(), 'main', 'deploy-456')
 
-      mockOctokit.pulls.create.mockResolvedValue({
-        data: {
-          html_url: 'https://github.com/test/repo/pull/123',
-          number: 123
-        }
-      })
+      expect(exec.exec).toHaveBeenCalledWith(
+        'git',
+        ['ls-files', '-z', '--others', '--exclude-standard', '--', '*.rej'],
+        expect.objectContaining({ cwd: workspace, silent: true })
+      )
+      expect(fs.readdirSync).not.toHaveBeenCalled()
     })
 
     it('should apply patch with --reject and handle .rej files when rejections occur', async () => {
-      // Arrange
-      const inputs = {
-        repoUrl: 'https://github.com/test/repo.git',
-        branch: 'main',
-        patchContent: createComplexFailingPatch(),
-        title: 'Test PR with Patch Rejections',
-        body: 'This PR contains patch rejections that need --reject flag',
-        latestCompletedDeploymentId: 'deploy-456'
-      }
+      mockGit({ applyCode: 1, rej: ['file1.cs.rej', 'file2.csproj.rej'] })
 
-      // Mock file system operations
-      fs.writeFileSync.mockImplementation(() => {})
-      fs.copyFileSync.mockImplementation(() => {})
-      fs.readFileSync.mockImplementation((path: string) => {
-        if (path.includes('.rej')) {
-          return 'Mock rejection file content'
-        }
-        return 'Mock file content'
-      })
-      fs.readdirSync.mockImplementation((path: string, options?: unknown) => {
-        if (
-          typeof options === 'object' &&
-          options !== null &&
-          'withFileTypes' in options
-        ) {
-          // Return mock Dirent objects for recursive search - simulate workspace root with .rej files
-          return [
-            {
-              name: 'file1.cs.rej',
-              isFile: () => true,
-              isDirectory: () => false
-            },
-            {
-              name: 'file2.csproj.rej',
-              isFile: () => true,
-              isDirectory: () => false
-            }
-          ]
-        }
-        return ['file1.cs.rej', 'file2.csproj.rej']
-      })
-      fs.existsSync.mockReturnValue(true)
-      fs.mkdirSync.mockImplementation(() => {})
-      fs.rmSync.mockImplementation(() => {})
-
-      // Mock exec calls - git apply --reject succeeds with exit code 1 (has rejections)
-      exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          args.includes('--reject')
-        ) {
-          // git apply --reject succeeds but creates .rej files (exit code 1)
-          return Promise.resolve(1)
-        }
-        return Promise.resolve(0)
-      })
-
-      // Act
-      const result = await createPullRequestWithPatch(
-        inputs.patchContent,
-        inputs.branch,
-        inputs.title,
-        inputs.body,
-        inputs.latestCompletedDeploymentId,
-        'test-token'
+      const result = await run(
+        createComplexFailingPatch(),
+        'main',
+        'deploy-456'
       )
 
-      // Assert
-      // Verify git apply --reject was called with all flags
       expect(exec.exec).toHaveBeenCalledWith(
         'git',
         [
@@ -766,384 +716,99 @@ index abc123..def456 100644
           ignoreReturnCode: true
         })
       )
-
-      // Verify .rej files were found and collected
       expect(core.info).toHaveBeenCalledWith(
         'Found 2 .rej files to collect as artifacts'
       )
-
-      // Verify .rej files were cleaned up from workspace
       expect(fs.rmSync).toHaveBeenCalledWith(
         expect.stringContaining('file1.cs.rej')
       )
       expect(fs.rmSync).toHaveBeenCalledWith(
         expect.stringContaining('file2.csproj.rej')
       )
-
-      // Verify artifact upload info message (confirms upload was attempted)
       expect(core.info).toHaveBeenCalledWith(
         'Uploaded 2 reject files as artifact: patch-rejections-deploy-456'
       )
-
-      // Verify temp directory cleanup info message (confirms cleanup was attempted)
       expect(core.info).toHaveBeenCalledWith(
         'Cleaning up temporary reject files directory...'
       )
-
-      // Verify git add was called after cleanup
       expect(exec.exec).toHaveBeenCalledWith('git', ['add', '.'])
-
-      // Verify PR was created successfully
-      expect(result.url).toBe('https://github.com/test/repo/pull/123')
-      expect(result.number).toBe(123)
+      expect(result.url).toBe(validResponse.url)
     })
 
-    it('should handle recursive .rej file discovery in nested directories', async () => {
-      // Arrange
-      const inputs = {
-        repoUrl: 'https://github.com/test/repo.git',
-        branch: 'main',
-        patchContent: createComplexFailingPatch(),
-        title: 'Test PR with Nested Rejections',
-        body: 'Testing nested .rej file handling',
-        latestCompletedDeploymentId: 'deploy-789'
-      }
-
-      // Mock nested directory structure with .rej files using a call counter
-      let readDirCallCount = 0
-      fs.readdirSync.mockImplementation((path: string, options?: unknown) => {
-        if (
-          typeof options === 'object' &&
-          options !== null &&
-          'withFileTypes' in options
-        ) {
-          readDirCallCount++
-          if (readDirCallCount === 1) {
-            // First call to workspace root - has src directory and one .rej file
-            return [
-              { name: 'src', isFile: () => false, isDirectory: () => true },
-              {
-                name: 'file1.rej',
-                isFile: () => true,
-                isDirectory: () => false
-              }
-            ]
-          } else if (readDirCallCount === 2) {
-            // Second call to src directory - has ProjectA directory and one .rej file
-            return [
-              {
-                name: 'ProjectA',
-                isFile: () => false,
-                isDirectory: () => true
-              },
-              {
-                name: 'file2.cs.rej',
-                isFile: () => true,
-                isDirectory: () => false
-              }
-            ]
-          } else if (readDirCallCount === 3) {
-            // Third call to ProjectA directory - has one .rej file
-            return [
-              {
-                name: 'project.csproj.rej',
-                isFile: () => true,
-                isDirectory: () => false
-              }
-            ]
-          }
-        }
-        return []
+    it('should handle .rej files in nested directories', async () => {
+      mockGit({
+        applyCode: 1,
+        rej: [
+          'file1.rej',
+          'src/file2.cs.rej',
+          'src/ProjectA/project.csproj.rej'
+        ]
       })
 
-      fs.existsSync.mockReturnValue(true)
-      fs.writeFileSync.mockImplementation(() => {})
-      fs.mkdirSync.mockImplementation(() => {})
-      fs.rmSync.mockImplementation(() => {})
-
-      // Mock git apply --reject to succeed with exit code 1 (rejections created)
-      exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          args.includes('--reject')
-        ) {
-          return Promise.resolve(1) // Exit code 1 means rejections were created
-        }
-        return Promise.resolve(0)
-      })
-
-      // Act
-      const result = await createPullRequestWithPatch(
-        inputs.patchContent,
-        inputs.branch,
-        inputs.title,
-        inputs.body,
-        inputs.latestCompletedDeploymentId,
-        'test-token'
+      const result = await run(
+        createComplexFailingPatch(),
+        'main',
+        'deploy-789'
       )
 
-      // Assert
       expect(core.info).toHaveBeenCalledWith(
         'Found 3 .rej files to collect as artifacts'
       )
-      // Verify artifact upload was called (mocked at top level)
       expect(core.info).toHaveBeenCalledWith(
         expect.stringContaining('Uploaded 3 reject files as artifact')
       )
-
-      // Verify PR was created successfully
-      expect(result.url).toBe('https://github.com/test/repo/pull/123')
       expect(result.number).toBe(123)
     })
 
     it('should fail gracefully when git apply --reject fails', async () => {
-      // Arrange
-      const inputs = {
-        repoUrl: 'https://github.com/test/repo.git',
-        branch: 'main',
-        patchContent: createComplexFailingPatch(),
-        title: 'Test PR - Total Failure',
-        body: 'This should fail completely',
-        latestCompletedDeploymentId: 'deploy-fail'
-      }
+      mockGit({ applyCode: 2 })
 
-      fs.writeFileSync.mockImplementation(() => {})
-      fs.existsSync.mockReturnValue(true)
-
-      // Mock git apply --reject to fail with exit code > 1
-      exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          args.includes('--reject')
-        ) {
-          return Promise.resolve(2) // Exit code > 1 indicates actual failure
-        }
-        return Promise.resolve(0)
-      })
-
-      // Act & Assert
       await expect(
-        createPullRequestWithPatch(
-          inputs.patchContent,
-          inputs.branch,
-          inputs.title,
-          inputs.body,
-          inputs.latestCompletedDeploymentId,
-          'test-token'
-        )
+        run(createComplexFailingPatch(), 'main', 'deploy-fail')
       ).rejects.toThrow('Failed to apply git patch')
-
-      // Verify git apply --reject was attempted
-      expect(exec.exec).toHaveBeenCalledWith(
-        'git',
-        [
-          'apply',
-          '--reject',
-          '--ignore-space-change',
-          '--ignore-whitespace',
-          './git-patch-deploy-fail.diff'
-        ],
-        expect.objectContaining({
-          cwd: expect.any(String),
-          ignoreReturnCode: true
-        })
-      )
     })
 
     it('should proceed normally when git apply --reject succeeds cleanly', async () => {
-      // Arrange
-      const inputs = {
-        repoUrl: 'https://github.com/test/repo.git',
-        branch: 'main',
-        patchContent: createSimpleWorkingPatch(),
-        title: 'Test PR - Clean Apply',
-        body: 'This should work cleanly with --reject flag',
-        latestCompletedDeploymentId: 'deploy-clean'
-      }
+      mockGit({ applyCode: 0 })
 
-      fs.writeFileSync.mockImplementation(() => {})
-      fs.existsSync.mockReturnValue(true)
-
-      // Mock git apply --reject to succeed with exit code 0 (clean apply)
-      exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          args.includes('--reject')
-        ) {
-          return Promise.resolve(0) // Exit code 0 means clean apply
-        }
-        return Promise.resolve(0)
-      })
-
-      // Mock no .rej files found
-      fs.readdirSync.mockReturnValue([])
-
-      // Act
-      const result = await createPullRequestWithPatch(
-        inputs.patchContent,
-        inputs.branch,
-        inputs.title,
-        inputs.body,
-        inputs.latestCompletedDeploymentId,
-        'test-token'
+      const result = await run(
+        createSimpleWorkingPatch(),
+        'main',
+        'deploy-clean'
       )
 
-      // Assert
-      // Verify git apply --reject was called
-      expect(exec.exec).toHaveBeenCalledWith(
-        'git',
-        [
-          'apply',
-          '--reject',
-          '--ignore-space-change',
-          '--ignore-whitespace',
-          './git-patch-deploy-clean.diff'
-        ],
-        expect.objectContaining({
-          cwd: expect.any(String),
-          ignoreReturnCode: true
-        })
-      )
-
-      // Verify no .rej files were found
-      expect(core.info).toHaveBeenCalledWith(
-        'No .rej files found, patch applied cleanly with --reject flag'
-      )
-
-      // Verify PR was created successfully
-      expect(result.url).toBe('https://github.com/test/repo/pull/123')
-    })
-
-    it('should handle exit code 1 with zero .rej files (edge case)', async () => {
-      // Arrange
-      const inputs = {
-        repoUrl: 'https://github.com/test/repo.git',
-        branch: 'main',
-        patchContent: createSimpleWorkingPatch(),
-        title: 'Test PR - Exit 1 No Rejections',
-        body: 'Edge case: exit code 1 but no .rej files created',
-        latestCompletedDeploymentId: 'deploy-edge'
-      }
-
-      fs.writeFileSync.mockImplementation(() => {})
-      fs.existsSync.mockReturnValue(true)
-
-      // Mock git apply --reject to return exit code 1 but no .rej files found
-      exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          args.includes('--reject')
-        ) {
-          return Promise.resolve(1) // Exit code 1 but no .rej files will be found
-        }
-        return Promise.resolve(0)
-      })
-
-      // Mock no .rej files found
-      fs.readdirSync.mockReturnValue([])
-
-      // Act
-      const result = await createPullRequestWithPatch(
-        inputs.patchContent,
-        inputs.branch,
-        inputs.title,
-        inputs.body,
-        inputs.latestCompletedDeploymentId,
-        'test-token'
-      )
-
-      // Assert
-      expect(core.info).toHaveBeenCalledWith(
-        'No .rej files found, patch applied cleanly with --reject flag'
-      )
-      expect(result.url).toBe('https://github.com/test/repo/pull/123')
-    })
-
-    it('should verify log messages for different patch outcomes', async () => {
-      // Arrange - Test exit code 0 (clean apply)
-      const inputs = {
-        repoUrl: 'https://github.com/test/repo.git',
-        branch: 'main',
-        patchContent: createSimpleWorkingPatch(),
-        title: 'Test PR - Log Messages',
-        body: 'Testing different log message outputs',
-        latestCompletedDeploymentId: 'deploy-logs'
-      }
-
-      fs.writeFileSync.mockImplementation(() => {})
-      fs.existsSync.mockReturnValue(true)
-
-      // Mock git apply --reject to succeed cleanly (exit code 0)
-      exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          args.includes('--reject')
-        ) {
-          return Promise.resolve(0) // Clean apply
-        }
-        return Promise.resolve(0)
-      })
-
-      // Mock no .rej files found
-      fs.readdirSync.mockReturnValue([])
-
-      // Act
-      await createPullRequestWithPatch(
-        inputs.patchContent,
-        inputs.branch,
-        inputs.title,
-        inputs.body,
-        inputs.latestCompletedDeploymentId,
-        'test-token'
-      )
-
-      // Assert - Verify the correct log message for clean apply
       expect(core.info).toHaveBeenCalledWith(
         'Git patch applied cleanly with --reject flag'
       )
+      expect(core.info).toHaveBeenCalledWith(
+        'No .rej files found, patch applied cleanly with --reject flag'
+      )
+      expect(result.number).toBe(123)
+    })
+
+    it('should handle exit code 1 with zero .rej files (edge case)', async () => {
+      mockGit({ applyCode: 1 })
+
+      const result = await run(
+        createSimpleWorkingPatch(),
+        'main',
+        'deploy-edge'
+      )
+
+      expect(core.info).toHaveBeenCalledWith(
+        'Git patch applied with --reject flag, some hunks rejected'
+      )
+      expect(core.info).toHaveBeenCalledWith(
+        'No .rej files found, patch applied cleanly with --reject flag'
+      )
+      expect(result.number).toBe(123)
     })
 
     it('preserves relative paths of nested .rej files so same-named files do not collide', async () => {
-      const workspace = process.cwd()
-      fs.readdirSync.mockImplementation((dir: string) => {
-        if (dir === workspace) {
-          return [
-            { name: 'a', isFile: () => false, isDirectory: () => true },
-            { name: 'b', isFile: () => false, isDirectory: () => true }
-          ]
-        }
-        return [
-          {
-            name: 'app.csproj.rej',
-            isFile: () => true,
-            isDirectory: () => false
-          }
-        ]
-      })
       fs.existsSync.mockReturnValue(false)
-      fs.copyFileSync.mockImplementation(() => {})
-      exec.exec.mockImplementation((command: string, args?: string[]) =>
-        Promise.resolve(args && args.includes('apply') ? 1 : 0)
-      )
+      mockGit({ applyCode: 1, rej: ['a/app.csproj.rej', 'b/app.csproj.rej'] })
 
-      await createPullRequestWithPatch(
-        createComplexFailingPatch(),
-        'main',
-        'Title',
-        'Body',
-        'deploy-nested',
-        'test-token'
-      )
+      await run(createComplexFailingPatch(), 'main', 'deploy-nested')
 
       const rejectDir = path.join('/tmp', 'reject-files-deploy-nested')
       const targetA = path.join(rejectDir, 'a', 'app.csproj.rej')
@@ -1165,65 +830,13 @@ index abc123..def456 100644
     })
 
     it('should handle file copy failure gracefully', async () => {
-      // Arrange
-      const inputs = {
-        repoUrl: 'https://github.com/test/repo.git',
-        branch: 'main',
-        patchContent: createComplexFailingPatch(),
-        title: 'Test PR - Copy Failure',
-        body: 'Testing file copy failure handling',
-        latestCompletedDeploymentId: 'deploy-copy-fail'
-      }
-
-      fs.writeFileSync.mockImplementation(() => {})
-      fs.readdirSync.mockImplementation((path: string, options?: unknown) => {
-        if (
-          typeof options === 'object' &&
-          options !== null &&
-          'withFileTypes' in options
-        ) {
-          return [
-            {
-              name: 'test.rej',
-              isFile: () => true,
-              isDirectory: () => false
-            }
-          ]
-        }
-        return ['test.rej']
-      })
-      fs.existsSync.mockReturnValue(true)
-      fs.mkdirSync.mockImplementation(() => {})
-      fs.rmSync.mockImplementation(() => {})
-
-      // Mock copyFileSync to fail
-      fs.copyFileSync.mockImplementation(() => {
+      mockGit({ applyCode: 1, rej: ['test.rej'] })
+      fs.copyFileSync.mockImplementationOnce(() => {
         throw new Error('Permission denied')
       })
 
-      // Mock git apply --reject to succeed with rejections
-      exec.exec.mockImplementation((command: string, args?: string[]) => {
-        if (
-          command === 'git' &&
-          args &&
-          args.includes('apply') &&
-          args.includes('--reject')
-        ) {
-          return Promise.resolve(1)
-        }
-        return Promise.resolve(0)
-      })
-
-      // Act & Assert
       await expect(
-        createPullRequestWithPatch(
-          inputs.patchContent,
-          inputs.branch,
-          inputs.title,
-          inputs.body,
-          inputs.latestCompletedDeploymentId,
-          'test-token'
-        )
+        run(createComplexFailingPatch(), 'main', 'deploy-copy-fail')
       ).rejects.toThrow('Failed to apply git patch')
     })
   })
@@ -1236,37 +849,15 @@ index abc123..def456 100644
 +++ b/src/MyProject.Web/umbraco/Deploy/Revision/data-type__918d93a589ab42ffba90ad0a8812b7f3.uda
 @@ -13,7 +13,7 @@
    "Name": "Content Block - Hero Section",
-   "EditorAlias": "Umbraco.BlockList",
-   "Configuration": {
 -    "blocks": []
 +    "blocks": [{"contentElementTypeKey": "hero-block-123"}]
-   },
-   "Udi": "umb://data-type/918d93a589ab42ffba90ad0a8812b7f3"
- }
 diff --git a/src/MyProject.Extensions/MyProject.Extensions.csproj b/src/MyProject.Extensions/MyProject.Extensions.csproj
 index 789abc..012def 100644
 --- a/src/MyProject.Extensions/MyProject.Extensions.csproj
 +++ b/src/MyProject.Extensions/MyProject.Extensions.csproj
 @@ -41,7 +41,7 @@
-   </ItemGroup>
- 
-   <ItemGroup>
 -    <PackageReference Include="Umbraco.Cms" Version="16.1.1" />
-+    <PackageReference Include="Umbraco.Cms" Version="16.2.0" />
-     <PackageReference Include="Umbraco.Forms" Version="16.0.0" />
-   </ItemGroup>
- 
-diff --git a/src/MyProject.Extensions/wwwroot/App_Plugins/MyProjectExtensions/my-project-extensions.js b/src/MyProject.Extensions/wwwroot/App_Plugins/MyProjectExtensions/my-project-extensions.js
-new file mode 100644
-index 0000000..1a2b3c4
---- /dev/null
-+++ b/src/MyProject.Extensions/wwwroot/App_Plugins/MyProjectExtensions/my-project-extensions.js
-@@ -0,0 +1,5 @@
-+// MyProject Umbraco Extensions
-+angular.module('umbraco').controller('MyProjectController', function($scope) {
-+    $scope.model.value = $scope.model.value || {};
-+    $scope.test = 'MyProject Extension Loaded';
-+});`
++    <PackageReference Include="Umbraco.Cms" Version="16.2.0" />`
   }
 
   function createSimpleWorkingPatch(): string {
@@ -1276,8 +867,6 @@ index abc123..def456 100644
 +++ b/README.md
 @@ -1,3 +1,4 @@
  # Test Repository
- 
- This is a test repository for patch application.
 +Added a simple line that should apply cleanly.`
   }
 })

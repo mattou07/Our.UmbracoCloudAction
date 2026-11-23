@@ -2,6 +2,7 @@ import * as core from '@actions/core'
 import * as exec from '@actions/exec'
 import * as github from '@actions/github'
 import * as fs from 'fs'
+import * as os from 'os'
 import * as path from 'path'
 import {
   UmbracoCloudApiError,
@@ -14,11 +15,16 @@ import {
   PullRequestInfo
 } from '../types/index.js'
 import { validateRequiredInputs } from '../utils/helpers.js'
+import type { VersionFix } from '../utils/version-fixes.js'
 import {
   hasUpdatingMarkerError,
   pollDeploymentStatus
 } from '../utils/deployment-polling.js'
-import { createPullRequestWithPatch } from '../github/pull-request.js'
+import {
+  createPullRequestWithPatch,
+  gitAuthArgs,
+  validateBaseBranch
+} from '../github/pull-request.js'
 
 type CheckStatusApi = Pick<
   UmbracoCloudAPI,
@@ -178,6 +184,35 @@ function isCloudNullDeployment(error: unknown): boolean {
   )
 }
 
+const MAX_LISTED_FILES = 50
+
+/** Paths touched by a patch, from its `diff --git a/<p> b/<p>` headers. */
+function changedFiles(patch: string): string[] {
+  const files = new Set<string>()
+  for (const match of patch.matchAll(/^diff --git a\/.+? b\/(.+)$/gm)) {
+    files.add(match[1].trim())
+  }
+  return [...files]
+}
+
+/**
+ * Logs a summary of Cloud's changes instead of the patch itself: the diff is
+ * source code and the job log can be public. Every line is prefixed with "- "
+ * so untrusted paths never start a line (`::` starts a runner command).
+ */
+function reportChangeSummary(patch: string): void {
+  const files = changedFiles(patch)
+  const lineCount = patch.trimEnd().split('\n').length
+  core.info(
+    `Deployment completed. Umbraco Cloud reports changes in ${files.length} file(s) (${lineCount} lines):`
+  )
+  files.slice(0, MAX_LISTED_FILES).forEach((file) => core.info(`- ${file}`))
+  if (files.length > MAX_LISTED_FILES) {
+    core.info(`- …and ${files.length - MAX_LISTED_FILES} more`)
+  }
+  core.info('The full patch is available in the `changes` output.')
+}
+
 async function handleCompletedDeployment(
   api: CheckStatusApi,
   inputs: ActionInputs,
@@ -192,8 +227,7 @@ async function handleCompletedDeployment(
     )
 
     if (changes.changes && changes.changes.trim().length > 0) {
-      core.info('Deployment completed. Here is the diff/patch:')
-      core.info(changes.changes)
+      reportChangeSummary(changes.changes)
     } else {
       core.info('Deployment completed. No changes/diff available.')
     }
@@ -267,7 +301,8 @@ async function handleFailedDeployment(
     api,
     inputs,
     deploymentStatus,
-    errorDetails
+    errorDetails,
+    parseDowngradedPackages(versionFailureTexts)
   )
   if (outputs.prUrl) {
     return { outputs }
@@ -280,7 +315,8 @@ async function attemptVersionFixPullRequest(
   api: CheckStatusApi,
   inputs: ActionInputs,
   deploymentStatus: DeploymentResponse,
-  errorDetails: string[]
+  errorDetails: string[],
+  packages: DowngradedPackage[]
 ): Promise<ActionOutputs> {
   core.info(
     'Version-related deployment failure detected. Attempting to get git patch to synchronise versions...'
@@ -316,7 +352,7 @@ async function attemptVersionFixPullRequest(
 **Issue:** Package version downgrade detected
 
 **Errors:**
-${errorDetails.map((error) => `- ${error}`).join('\n')}
+${errorDetails.map((error) => `- ${error}`).join('\n')}${versionFixSection(packages)}
 
 The changes in this PR contain the necessary package version updates from Umbraco Cloud.`
 
@@ -325,7 +361,8 @@ The changes in this PR contain the necessary package version updates from Umbrac
       patch,
       prTitle,
       prBody,
-      inputs.deploymentId!
+      inputs.deploymentId!,
+      toVersionFixes(packages)
     )
 
     return {
@@ -336,7 +373,31 @@ The changes in this PR contain the necessary package version updates from Umbrac
   }
 
   core.info('Falling back to latest completed deployment approach...')
-  return await attemptPullRequestCreation(api, inputs, deploymentStatus)
+  return await attemptPullRequestCreation(
+    api,
+    inputs,
+    deploymentStatus,
+    errorDetails,
+    packages
+  )
+}
+
+function toVersionFixes(packages: DowngradedPackage[]): VersionFix[] {
+  return packages.map((pkg) => ({
+    name: pkg.name,
+    version: pkg.cloudVersion,
+    file: pkg.file
+  }))
+}
+
+/** PR body section listing the version bumps (empty when none were parsed). */
+function versionFixSection(packages: DowngradedPackage[]): string {
+  if (packages.length === 0) return ''
+  const lines = packages.map(
+    (pkg) =>
+      `- ${pkg.name}: ${pkg.sourceVersion} → ${pkg.cloudVersion} (${pkg.file})`
+  )
+  return `\n\n**Package versions raised to match Umbraco Cloud:**\n${lines.join('\n')}`
 }
 
 /** Parses Cloud's downgrade message into package entries (text hint). */
@@ -447,64 +508,101 @@ async function getErrorDetails(
 async function attemptPullRequestCreation(
   api: CheckStatusApi,
   inputs: ActionInputs,
-  deploymentStatus: DeploymentResponse
+  deploymentStatus: DeploymentResponse,
+  errorDetails: string[],
+  packages: DowngradedPackage[]
 ): Promise<ActionOutputs> {
+  const versionFixes = toVersionFixes(packages)
+  let latestCompletedDeploymentId: string | null | undefined
+  let changes: { changes: string } | undefined
+
   try {
     core.info(
       'Attempting to get latest completed deployment with changes and create PR...'
     )
 
-    const latestCompletedDeploymentId = await api.getLatestCompletedDeployment(
+    latestCompletedDeploymentId = await api.getLatestCompletedDeployment(
       inputs.targetEnvironmentAlias
     )
 
-    if (!latestCompletedDeploymentId) {
+    if (latestCompletedDeploymentId) {
+      core.info(
+        `Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`
+      )
+      changes = await api.getChangesById(
+        latestCompletedDeploymentId,
+        inputs.targetEnvironmentAlias
+      )
+      core.info('Retrieved changes from latest completed deployment')
+      core.setOutput(
+        'latest-completed-deployment-id',
+        latestCompletedDeploymentId
+      )
+      core.setOutput('changes', JSON.stringify(changes))
+    } else {
       core.warning('No completed deployments found to create PR from')
-      return baseOutputs(deploymentStatus)
-    }
-
-    core.info(
-      `Found latest completed deployment with changes ID: ${latestCompletedDeploymentId}`
-    )
-
-    const changes = await api.getChangesById(
-      latestCompletedDeploymentId,
-      inputs.targetEnvironmentAlias
-    )
-
-    core.info('Retrieved changes from latest completed deployment')
-    core.setOutput(
-      'latest-completed-deployment-id',
-      latestCompletedDeploymentId
-    )
-    core.setOutput('changes', JSON.stringify(changes))
-
-    const prTitle = `Fix: Apply changes from failed deployment ${inputs.deploymentId}`
-    const prBody = `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).
-
-**Failed Deployment ID:** ${inputs.deploymentId}
-**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}
-**Target Environment:** ${inputs.targetEnvironmentAlias}
-
-The changes in this PR are based on the git patch from the latest successful deployment.`
-
-    const pr = await tryCreatePullRequest(
-      inputs,
-      changes.changes,
-      prTitle,
-      prBody,
-      latestCompletedDeploymentId
-    )
-
-    return {
-      ...baseOutputs(deploymentStatus),
-      latestCompletedDeploymentId,
-      changes: JSON.stringify(changes),
-      ...prOutputs(pr)
     }
   } catch (error) {
     core.warning(`Failed to get latest completed deployment: ${error}`)
-    return baseOutputs(deploymentStatus)
+    changes = undefined
+  }
+
+  // Without a Cloud patch a PR is only possible from the parsed version fixes.
+  const patch = changes?.changes?.trim() ? changes.changes : ''
+  const completedOutputs: ActionOutputs = changes
+    ? {
+        latestCompletedDeploymentId: latestCompletedDeploymentId!,
+        changes: JSON.stringify(changes)
+      }
+    : {}
+  if (!patch && versionFixes.length === 0) {
+    core.info(
+      'The git patch from Umbraco Cloud is empty; skipping PR creation.'
+    )
+    return { ...baseOutputs(deploymentStatus), ...completedOutputs }
+  }
+
+  const usingPatch = patch !== ''
+  const sourceDeploymentId = usingPatch
+    ? latestCompletedDeploymentId!
+    : inputs.deploymentId!
+
+  const prTitle = usingPatch
+    ? `Fix: Apply changes from failed deployment ${inputs.deploymentId}`
+    : `Fix: Update package versions for deployment ${inputs.deploymentId}`
+  const intro = usingPatch
+    ? `This PR applies changes from the latest completed deployment (${latestCompletedDeploymentId}) to fix the failed deployment (${inputs.deploymentId}).`
+    : `This PR raises package versions to match Umbraco Cloud to fix the failed deployment (${inputs.deploymentId}).`
+  const completedLine = usingPatch
+    ? `\n**Latest Completed Deployment ID:** ${latestCompletedDeploymentId}`
+    : ''
+  const errorsBlock =
+    errorDetails.length > 0
+      ? `\n\n**Errors:**\n${errorDetails.map((error) => `- ${error}`).join('\n')}`
+      : ''
+  const outro = usingPatch
+    ? 'The changes in this PR are based on the git patch from the latest successful deployment.'
+    : 'The versions in this PR are taken from the downgrade message reported by Umbraco Cloud.'
+  const prBody = `${intro}
+
+**Failed Deployment ID:** ${inputs.deploymentId}${completedLine}
+**Target Environment:** ${inputs.targetEnvironmentAlias}${errorsBlock}${versionFixSection(packages)}
+
+${outro}`
+
+  const pr = await tryCreatePullRequest(
+    inputs,
+    patch,
+    prTitle,
+    prBody,
+    sourceDeploymentId,
+    versionFixes
+  )
+
+  return {
+    ...baseOutputs(deploymentStatus),
+    ...completedOutputs,
+    ...prOutputs(pr)
   }
 }
 
@@ -536,7 +634,8 @@ export function resolveBaseBranch(inputs: ActionInputs): string {
 }
 
 /**
- * Opens a PR with the given patch. Never throws: PR creation is best effort,
+ * Opens a PR with the given patch and/or version fixes (callers make sure
+ * at least one exists). Never throws: PR creation is best effort,
  * the deployment outcome decides whether the action fails.
  */
 async function tryCreatePullRequest(
@@ -544,15 +643,9 @@ async function tryCreatePullRequest(
   patch: string,
   prTitle: string,
   prBody: string,
-  sourceDeploymentId: string
+  sourceDeploymentId: string,
+  versionFixes: VersionFix[]
 ): Promise<PullRequestInfo | undefined> {
-  if (!patch || !patch.trim()) {
-    core.info(
-      'The git patch from Umbraco Cloud is empty; skipping PR creation.'
-    )
-    return undefined
-  }
-
   const token =
     inputs.githubToken || process.env.GITHUB_TOKEN || process.env.GH_TOKEN
   if (!token) {
@@ -562,17 +655,19 @@ async function tryCreatePullRequest(
     return undefined
   }
 
-  const baseBranch = resolveBaseBranch(inputs)
-
   try {
+    const baseBranch = resolveBaseBranch(inputs)
+    validateBaseBranch(baseBranch)
     const pr = await createPullRequestInWorkspace(
       patch,
       prTitle,
       prBody,
       sourceDeploymentId,
       baseBranch,
-      token
+      token,
+      versionFixes
     )
+    if (!pr) return undefined
     core.setOutput('pr-url', pr.url)
     core.setOutput('pr-number', String(pr.number))
     return pr
@@ -588,13 +683,14 @@ async function createPullRequestInWorkspace(
   prBody: string,
   sourceDeploymentId: string,
   baseBranch: string,
-  token: string
-): Promise<PullRequestInfo> {
+  token: string,
+  versionFixes: VersionFix[]
+): Promise<PullRequestInfo | undefined> {
   core.setSecret(token)
 
   const runId = process.env.GITHUB_RUN_ID || Date.now().toString()
   const prWorkspace = path.join(
-    process.env.GITHUB_WORKSPACE || process.cwd(),
+    process.env.RUNNER_TEMP || os.tmpdir(),
     `pr-workspace-${runId}`
   )
   const originalCwd = process.cwd()
@@ -608,17 +704,22 @@ async function createPullRequestInWorkspace(
     )
     const { owner, repo } = github.context.repo
     const publicUrl = `https://${host}/${owner}/${repo}.git`
-    const repoUrl = `https://x-access-token:${token}@${host}/${owner}/${repo}.git`
 
     core.info(`Cloning repository to: ${prWorkspace}`)
     core.info(`Repository URL: ${publicUrl}`)
     core.info(`Branch: ${baseBranch}`)
 
+    // Shallow clone of the plain URL; the token is passed per command and is
+    // never written to the clone's config.
     await exec.exec('git', [
+      ...gitAuthArgs(token),
       'clone',
+      '--depth',
+      '1',
+      '--single-branch',
       '--branch',
       baseBranch,
-      repoUrl,
+      publicUrl,
       prWorkspace
     ])
 
@@ -630,7 +731,8 @@ async function createPullRequestInWorkspace(
       prTitle,
       prBody,
       sourceDeploymentId,
-      token
+      token,
+      versionFixes
     )
   } catch (error) {
     core.error(`Failed to create pull request from workspace: ${error}`)

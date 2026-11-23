@@ -1,6 +1,7 @@
 import * as core from '@actions/core'
 import * as fs from 'fs'
 import * as path from 'path'
+import { pipeline } from 'stream/promises'
 import JSZip from 'jszip'
 import { UmbracoCloudAPI } from '../api/umbraco-cloud-api.js'
 import { ActionInputs, ActionOutputs } from '../types/index.js'
@@ -267,14 +268,9 @@ export async function handleAddArtifact(
   const fileCount = countFiles(zip)
 
   if (modified) {
-    const updatedData = await zip.generateAsync({
-      type: 'nodebuffer',
-      compression: 'DEFLATE',
-      compressionOptions: { level: 6 }
-    })
-    fs.writeFileSync(filePath, updatedData)
+    await writeZipInPlace(zip, filePath)
     core.info(
-      `Artifact updated (${fileCount} file(s), ${updatedData.length} bytes)`
+      `Artifact updated (${fileCount} file(s), ${fs.statSync(filePath).size} bytes)`
     )
   } else {
     core.info(`Artifact unchanged (${fileCount} file(s))`)
@@ -295,6 +291,30 @@ export async function handleAddArtifact(
   return {
     artifactId,
     nugetSourceStatus
+  }
+}
+
+/**
+ * Streams the zip to a temp file next to the target and renames it over the
+ * original, so the artifact is never held in memory twice and a failed write
+ * cannot leave a truncated artifact behind.
+ */
+async function writeZipInPlace(zip: JSZip, filePath: string): Promise<void> {
+  const tempPath = `${filePath}.tmp-${process.pid}`
+  try {
+    await pipeline(
+      zip.generateNodeStream({
+        type: 'nodebuffer',
+        streamFiles: true,
+        compression: 'DEFLATE',
+        compressionOptions: { level: 6 }
+      }),
+      fs.createWriteStream(tempPath)
+    )
+    fs.renameSync(tempPath, filePath)
+  } catch (error) {
+    fs.rmSync(tempPath, { force: true, recursive: true })
+    throw error
   }
 }
 

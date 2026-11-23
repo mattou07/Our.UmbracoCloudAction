@@ -5,7 +5,8 @@ jest.unstable_mockModule('@actions/core', () => ({
   info: jest.fn(),
   debug: jest.fn(),
   warning: jest.fn(),
-  error: jest.fn()
+  error: jest.fn(),
+  setSecret: jest.fn()
 }))
 
 type AddEntry = { $: { key: string; value: string } }
@@ -362,5 +363,93 @@ describe('nuget-config', () => {
         '<settings/>'
       )
     ).rejects.toThrow('<configuration>')
+  })
+
+  describe('source URL handling', () => {
+    test.each(['not a url', 'ftp://feed.example.com/index.json', ''])(
+      'rejects invalid source URL %p without echoing it',
+      async (source) => {
+        await expect(
+          addOrUpdateNuGetConfigSource({ name: 'MyFeed', source })
+        ).rejects.toThrow(/^Invalid NuGet source URL for 'MyFeed'$/)
+      }
+    )
+
+    test('does not echo credentials from an unparseable URL', async () => {
+      await expect(
+        addOrUpdateNuGetConfigSource({
+          name: 'MyFeed',
+          source: 'ftp://user:hunter2@feed.example.com'
+        })
+      ).rejects.not.toThrow(/hunter2/)
+    })
+
+    test('warns about http: sources but still writes them', async () => {
+      const result = await addOrUpdateNuGetConfigSource({
+        name: 'MyFeed',
+        source: 'http://feed.example.com/index.json'
+      })
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('clear text')
+      )
+      expect(sourcesOf(await parse(result.xmlContent))).toEqual({
+        MyFeed: 'http://feed.example.com/index.json'
+      })
+    })
+
+    test('strips and masks userinfo in logs but writes the value as given', async () => {
+      const source = 'https://user:p%40ss@feed.example.com/index.json'
+      const result = await addOrUpdateNuGetConfigSource({
+        name: 'MyFeed',
+        source
+      })
+      expect(core.setSecret).toHaveBeenCalledWith('p%40ss')
+      expect(core.setSecret).toHaveBeenCalledWith('p@ss')
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('nuget-source-password')
+      )
+      const logged = (core.info as jest.Mock).mock.calls.flat().join('\n')
+      expect(logged).toContain('https://feed.example.com/index.json')
+      expect(logged).not.toContain('p%40ss')
+      expect(logged).not.toContain('user:')
+      expect(sourcesOf(await parse(result.xmlContent))).toEqual({
+        MyFeed: source
+      })
+    })
+
+    test('masks a username-only userinfo, which is the credential itself', async () => {
+      await addOrUpdateNuGetConfigSource({
+        name: 'MyFeed',
+        source: 'https://tok%2Fen@feed.example.com/index.json'
+      })
+      expect(core.setSecret).toHaveBeenCalledWith('tok%2Fen')
+      expect(core.setSecret).toHaveBeenCalledWith('tok/en')
+      const logged = (core.info as jest.Mock).mock.calls.flat().join(' ')
+      expect(logged).not.toContain('tok%2Fen')
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('embedded credentials')
+      )
+    })
+
+    test('masks a credential that is not valid percent-encoding', async () => {
+      await addOrUpdateNuGetConfigSource({
+        name: 'MyFeed',
+        source: 'https://user:p%zzss@feed.example.com/index.json'
+      })
+      expect(core.setSecret).toHaveBeenCalledTimes(1)
+      expect(core.setSecret).toHaveBeenCalledWith('p%zzss')
+    })
+
+    test('strips userinfo when updating an existing source', async () => {
+      await addOrUpdateNuGetConfigSource(
+        { name: 'MyFeed', source: 'https://u:pw@new.example.com/' },
+        '<configuration><packageSources><add key="MyFeed" value="https://old/" /></packageSources></configuration>'
+      )
+      const logged = (core.info as jest.Mock).mock.calls.flat().join('\n')
+      expect(logged).toContain(
+        "Updating existing source 'MyFeed' to 'https://new.example.com/'"
+      )
+      expect(logged).not.toContain('pw')
+    })
   })
 })

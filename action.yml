@@ -72,9 +72,10 @@ inputs:
     required: false
     default: '10000'
   upload-timeout:
-    description: 'Timeout in milliseconds for artifact upload (default: 60000)'
+    description:
+      'Timeout in milliseconds for each artifact upload attempt. When not set,
+      it is 60 seconds plus 1 second per MB of artifact.'
     required: false
-    default: '60000'
   nuget-source-name:
     description: 'Name for the NuGet package source (optional)'
     required: false

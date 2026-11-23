@@ -213,6 +213,41 @@ describe('add-artifact', () => {
       )
     })
 
+    test('streams the modified zip to disk without leaving temp files', async () => {
+      const zipPath = await writeZip({
+        '.cloud_gitignore': 'cloud-rules',
+        '.gitignore': 'old'
+      })
+
+      await handleAddArtifact(api, inputs({ filePath: zipPath }))
+
+      expect(fs.readdirSync(tempDir)).toEqual(['artifact.zip'])
+      const size = fs.statSync(zipPath).size
+      expect(core.info).toHaveBeenCalledWith(
+        expect.stringContaining(`${size} bytes)`)
+      )
+      const zip = await readZip(zipPath)
+      expect(await zip.file('.gitignore')!.async('string')).toBe('cloud-rules')
+    })
+
+    test('keeps the original and cleans up when writing the new zip fails', async () => {
+      const zipPath = await writeZip({
+        '.cloud_gitignore': 'cloud-rules',
+        '.gitignore': 'old'
+      })
+      const originalBytes = fs.readFileSync(zipPath)
+      // A directory squatting on the temp path makes the write stream fail
+      fs.mkdirSync(`${zipPath}.tmp-${process.pid}`)
+
+      await expect(
+        handleAddArtifact(api, inputs({ filePath: zipPath }))
+      ).rejects.toThrow()
+
+      expect(fs.existsSync(`${zipPath}.tmp-${process.pid}`)).toBe(false)
+      expect(fs.readFileSync(zipPath).equals(originalBytes)).toBe(true)
+      expect(mockAddDeploymentArtifact).not.toHaveBeenCalled()
+    })
+
     test('.cloud_gitignore without any .gitignore leaves the zip untouched', async () => {
       const zipPath = await writeZip({
         '.cloud_gitignore': 'cloud-rules',

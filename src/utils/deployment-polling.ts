@@ -8,6 +8,7 @@ import {
   isRetryableError
 } from '../api/umbraco-cloud-api.js'
 import { sleep } from './helpers.js'
+import { safeInfo } from './safe-log.js'
 
 /** States in which a deployment is still running. Anything else is terminal. */
 export { IN_PROGRESS_STATES }
@@ -50,10 +51,13 @@ export async function pollDeploymentStatus(
 
   const timeoutMinutes = Math.round(maxDurationMs / 60000)
   core.info(
-    `Polling deployment status (timeout: ${timeoutMinutes} minutes, interval: ${intervalMs}ms)`
+    `Polling deployment status (timeout: ${timeoutMinutes} minutes, interval: ramps up to ${intervalMs}ms)`
   )
 
+  let pollCount = 0
+
   while (Date.now() < deadline) {
+    pollCount++
     let data: DeploymentResponse | undefined
     try {
       data = await api.getDeploymentStatus(deploymentId, lastModifiedUtc)
@@ -80,7 +84,7 @@ export async function pollDeploymentStatus(
         const key = `${msg.timestampUtc}|${msg.message}`
         if (printedMessages.has(key)) continue
         printedMessages.add(key)
-        core.info(`[${msg.timestampUtc}] ${msg.message}`)
+        safeInfo(`[${msg.timestampUtc}] ${msg.message}`)
       }
 
       if (
@@ -103,7 +107,15 @@ export async function pollDeploymentStatus(
     // Never sleep past the deadline
     const remaining = deadline - Date.now()
     if (remaining <= 0) break
-    await sleep(Math.min(intervalMs, remaining))
+    // Short waits at first: most failures (bad artifact, blocked markers) show
+    // up within seconds, so ramp 5s, 10s, then the full interval.
+    const wait =
+      pollCount === 1
+        ? Math.min(intervalMs, 5000)
+        : pollCount === 2
+          ? Math.min(intervalMs, 10000)
+          : intervalMs
+    await sleep(Math.min(wait, remaining))
   }
 
   throw new Error(
