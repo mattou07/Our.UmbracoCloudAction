@@ -107,6 +107,47 @@ function toArray<T>(value: T[] | undefined): T[] {
   return value ?? []
 }
 
+/** Masks a URL credential in both its encoded and decoded forms. */
+function maskCredential(value: string): void {
+  core.setSecret(value)
+  try {
+    core.setSecret(decodeURIComponent(value))
+  } catch {
+    // not valid percent-encoding: the raw form is already masked
+  }
+}
+
+/**
+ * Validates the source URL and returns a copy that is safe to log (userinfo
+ * removed). Registers any embedded password as a secret.
+ */
+function inspectSourceUrl(name: string, source: string): string {
+  let url: URL
+  try {
+    url = new URL(source)
+  } catch {
+    throw new Error(`Invalid NuGet source URL for '${name}'`)
+  }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+    throw new Error(`Invalid NuGet source URL for '${name}'`)
+  }
+  if (url.protocol === 'http:') {
+    core.warning(
+      `NuGet Config: Source '${name}' uses http:, so any credentials will be sent in clear text. Use an https: URL.`
+    )
+  }
+  if (url.username || url.password) {
+    // With only a username, that value is the credential (https://<token>@host)
+    maskCredential(url.password || url.username)
+    core.warning(
+      `NuGet Config: The URL for source '${name}' contains embedded credentials. Pass them with nuget-source-username and nuget-source-password instead.`
+    )
+    url.username = ''
+    url.password = ''
+  }
+  return url.toString()
+}
+
 /**
  * Adds or updates a NuGet package source in NuGet.config XML content.
  * This is a pure function: it does not touch the file system.
@@ -119,6 +160,7 @@ export async function addOrUpdateNuGetConfigSource(
   config: NuGetSourceConfig,
   existingXmlContent?: string
 ): Promise<NuGetConfigModificationResult & { xmlContent: string }> {
+  const loggableSource = inspectSourceUrl(config.name, config.source)
   let nugetConfigXml: NuGetConfigXml
   let isNew = false
 
@@ -176,12 +218,12 @@ export async function addOrUpdateNuGetConfigSource(
   const existingSource = sources.find((s) => s.$.key === config.name)
   if (existingSource) {
     core.info(
-      `NuGet Config: Updating existing source '${config.name}' to '${config.source}'`
+      `NuGet Config: Updating existing source '${config.name}' to '${loggableSource}'`
     )
     existingSource.$.value = config.source
   } else {
     core.info(
-      `NuGet Config: Adding new source '${config.name}' with value '${config.source}'`
+      `NuGet Config: Adding new source '${config.name}' with value '${loggableSource}'`
     )
     sources.push({ $: { key: config.name, value: config.source } })
   }

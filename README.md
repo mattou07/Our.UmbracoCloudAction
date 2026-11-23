@@ -266,7 +266,8 @@ jobs:
   selecitively pick where you want to deploy to based on your critera such as
   branch name.
 - **Automatic PR creation**: Retrieve and apply changes from Umbraco Cloud
-  between repos with automated pull requests.
+  between repos with automated pull requests. If Cloud's patch does not apply,
+  the action raises the downgraded package versions directly.
 - **Private Nuget Feed Injection**: NuGet.Config is searched and your private
   feed is injected into the config for Umbraco's build agent to use.
 - **Built-in Git ignore replacement**: Action will automatically look for
@@ -302,7 +303,7 @@ continue if possible:
 | `github-token`           | Token used to push the fix branch and open the PR (needs `contents: write`, `pull-requests: write`)                                                                                          | No       | `${{ github.token }}`                       |
 | `upload-retries`         | Number of retry attempts for artifact upload                                                                                                                                                 | No       | `3`                                         |
 | `upload-retry-delay`     | Base delay in milliseconds between upload retries                                                                                                                                            | No       | `10000`                                     |
-| `upload-timeout`         | Timeout in milliseconds for artifact upload                                                                                                                                                  | No       | `60000`                                     |
+| `upload-timeout`         | Timeout in milliseconds for each artifact upload attempt                                                                                                                                     | No       | 60 s plus 1 s per MB of artifact            |
 | `nuget-source-name`      | Name for the NuGet package source                                                                                                                                                            | No       | -                                           |
 | `nuget-source-url`       | URL for the NuGet package source                                                                                                                                                             | No       | -                                           |
 | `nuget-source-username`  | Username for NuGet package source authentication                                                                                                                                             | No       | -                                           |

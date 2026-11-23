@@ -208,8 +208,49 @@ describe('pollDeploymentStatus', () => {
     await polling.pollDeploymentStatus({ getDeploymentStatus }, 'dep-1')
 
     expect(info).toHaveBeenCalledWith(
-      'Polling deployment status (timeout: 20 minutes, interval: 25000ms)'
+      'Polling deployment status (timeout: 20 minutes, interval: ramps up to 25000ms)'
     )
+  })
+
+  it('ramps the wait 5s, 10s, then the full interval', async () => {
+    getDeploymentStatus
+      .mockResolvedValueOnce(status('InProgress'))
+      .mockResolvedValueOnce(status('InProgress'))
+      .mockResolvedValueOnce(status('InProgress'))
+      .mockResolvedValueOnce(status('InProgress'))
+      .mockResolvedValueOnce(status('Completed'))
+
+    await polling.pollDeploymentStatus(
+      { getDeploymentStatus },
+      'dep-1',
+      60 * 60_000,
+      25_000
+    )
+
+    expect(sleepMock.mock.calls.map((c) => c[0])).toEqual([
+      5000, 10000, 25000, 25000
+    ])
+  })
+
+  it('never ramps above a smaller interval', async () => {
+    getDeploymentStatus
+      .mockResolvedValueOnce(status('InProgress'))
+      .mockResolvedValueOnce(status('InProgress'))
+      .mockResolvedValueOnce(status('Completed'))
+
+    await poll(60_000, 1000)
+
+    expect(sleepMock.mock.calls.map((c) => c[0])).toEqual([1000, 1000])
+  })
+
+  it('prints status messages with workflow commands neutralised', async () => {
+    getDeploymentStatus.mockResolvedValue(
+      status('Completed', '', ['line one\n::add-mask::secret'])
+    )
+
+    await poll()
+
+    expect(info).toHaveBeenCalledWith('[t0] line one\n:\u200b:add-mask::secret')
   })
 
   it('tolerates a status response without a message list', async () => {

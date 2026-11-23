@@ -343,9 +343,28 @@ describe('UmbracoCloudAPI', () => {
       await expect(
         api({ uploadRetries: 2 }).addDeploymentArtifact(zipPath)
       ).rejects.toThrow(
-        'Artifact upload timed out after 2 attempt(s) of 60000ms each. Increase the upload-timeout input'
+        'Artifact upload timed out after 2 attempt(s) of 61000ms each. Set the upload-timeout input (milliseconds) to override.'
       )
       expect(fetchMock).toHaveBeenCalledTimes(2)
+    })
+
+    it('scales the default upload timeout with artifact size', async () => {
+      const midPath = path.join(tempDir, 'mid.zip')
+      const fd = fs.openSync(midPath, 'w')
+      try {
+        fs.ftruncateSync(fd, 10 * 1024 * 1024 + 1)
+      } finally {
+        fs.closeSync(fd)
+      }
+      fetchMock.mockResolvedValue(json({ artifactId: 'art-1' }))
+      await api().addDeploymentArtifact(midPath)
+      expect(info).toHaveBeenCalledWith('Upload timeout: 71s')
+    })
+
+    it('uses an explicit upload timeout as-is and logs it', async () => {
+      fetchMock.mockResolvedValue(json({ artifactId: 'art-1' }))
+      await api({ uploadTimeoutMs: 120000 }).addDeploymentArtifact(zipPath)
+      expect(info).toHaveBeenCalledWith('Upload timeout: 120s')
     })
 
     it('rejects artifacts over the Cloud size limit before uploading', async () => {
@@ -399,6 +418,56 @@ describe('UmbracoCloudAPI', () => {
       await expect(api().addDeploymentArtifact('')).rejects.toThrow(
         'File path is required'
       )
+    })
+  })
+
+  describe('request timeout', () => {
+    function stallUntilAborted() {
+      fetchMock.mockImplementation(
+        (_url, init) =>
+          new Promise((_resolve, reject) => {
+            init!.signal!.addEventListener('abort', () =>
+              reject(init!.signal!.reason)
+            )
+          })
+      )
+    }
+
+    it('passes a timeout signal to non-upload requests', async () => {
+      fetchMock.mockResolvedValue(json({ deploymentState: 'Completed' }))
+      await api().getDeploymentStatus('d1')
+      expect(calledInit().signal).toBeInstanceOf(AbortSignal)
+    })
+
+    it('rejects a stalled request with a retryable TimeoutError', async () => {
+      stallUntilAborted()
+      const err = await api({ requestTimeoutMs: 5 })
+        .getDeploymentStatus('d1')
+        .catch((e) => e)
+      expect(err.name).toBe('TimeoutError')
+      expect(mod.isRetryableError(err)).toBe(true)
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not retry the start-deployment POST on timeout', async () => {
+      stallUntilAborted()
+      await expect(
+        api({ requestTimeoutMs: 5 }).startDeployment({
+          targetEnvironmentAlias: 'Live',
+          artifactId: 'art-1',
+          commitMessage: 'm',
+          noBuildAndRestore: false,
+          skipVersionCheck: false
+        } as never)
+      ).rejects.toMatchObject({ name: 'TimeoutError' })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('clamps the request timeout to at least 1ms', async () => {
+      stallUntilAborted()
+      await expect(
+        api({ requestTimeoutMs: 0 }).getDeploymentStatus('d1')
+      ).rejects.toMatchObject({ name: 'TimeoutError' })
     })
   })
 
@@ -894,6 +963,34 @@ describe('UmbracoCloudAPI', () => {
       expect(new Set(details).size).toBe(details.length)
     })
 
+    it('leaves pipeline stage names out of the failure details', async () => {
+      // Order Cloud sends for a downgrade: stages first, then the cause
+      const id = 'aaaaaaaa-0000-4000-8000-000000000009'
+      const cause =
+        'Cannot apply update because the following packages would be downgraded: Package: Umbraco.Cms, Version: 17.8.1 ==> Referencing file: src/Contoso.Web/Contoso.Web.csproj contains lower Version: 17.7.2 .'
+      const messages = [
+        'Check blocking markers',
+        'Create updating marker',
+        'Git Clone',
+        'Download update',
+        'Extract Update',
+        'Validate update',
+        'Preserve umbraco-cloud.json',
+        "Kept the Cloud environment's umbraco-cloud.json in place of the package's.",
+        'Checking versions',
+        'No changes to deploy - cleaning up',
+        'Delete updating marker',
+        cause,
+        `Deployment ${id} failed`
+      ]
+      fetchMock.mockResolvedValue(json(failedDeployment(id, messages)))
+
+      const details = await api().getDeploymentErrorDetails(id)
+
+      expect(details).toHaveLength(1)
+      expect(details[0]).toContain(cause)
+    })
+
     it('keeps only the error lines of a multi-line Kudu message', async () => {
       const messages = STATUS_MESSAGES.kuduBuildFailedAfterPush
       const id = idOf(messages)
@@ -1049,6 +1146,64 @@ describe('UmbracoCloudAPI', () => {
         jest.useRealTimers()
       }
       expect(fetchMock.mock.calls[1][1]?.signal?.aborted).toBe(true)
+    })
+
+    it('refuses redirects when fetching a signed log', async () => {
+      fetchMock
+        .mockResolvedValueOnce(
+          json(failedDeployment(buildId, STATUS_MESSAGES.buildError))
+        )
+        .mockResolvedValueOnce(text(SIGNED_LOGS.build, 200))
+      const client = api()
+      await client.getDeploymentStatus(buildId)
+      await client.getFailureLogExcerpts(buildId)
+      expect(calledInit(1).redirect).toBe('error')
+    })
+
+    it('reads at most 2 MB of a log and cancels the rest', async () => {
+      fetchMock.mockResolvedValueOnce(
+        json(failedDeployment('d1', STATUS_MESSAGES.buildError))
+      )
+      const client = api()
+      await client.getDeploymentStatus('d1')
+
+      const enc = new TextEncoder()
+      const cap = 2 * 1024 * 1024
+      let pulls = 0
+      let cancelled = false
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls++
+          if (pulls === 1) {
+            controller.enqueue(enc.encode('error CS0001: early\n'))
+          } else if (pulls === 2) {
+            controller.enqueue(new Uint8Array(cap).fill(120))
+          } else {
+            controller.enqueue(enc.encode('\nerror CS9999: beyond the cap\n'))
+          }
+        },
+        cancel() {
+          cancelled = true
+        }
+      })
+      fetchMock.mockResolvedValueOnce(new Response(body, { status: 200 }))
+
+      const excerpts = await client.getFailureLogExcerpts('d1')
+      expect(cancelled).toBe(true)
+      expect(pulls).toBeLessThanOrEqual(3)
+      expect(excerpts).toEqual([
+        { name: 'DotnetBuild.txt', lines: ['error CS0001: early'] }
+      ])
+    })
+
+    it('returns [] when the log response has no body', async () => {
+      fetchMock.mockResolvedValueOnce(
+        json(failedDeployment('d1', STATUS_MESSAGES.buildError))
+      )
+      const client = api()
+      await client.getDeploymentStatus('d1')
+      fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }))
+      await expect(client.getFailureLogExcerpts('d1')).resolves.toEqual([])
     })
 
     it('returns [] for a deployment it has not seen', async () => {
@@ -1247,6 +1402,11 @@ describe('UmbracoCloudAPI', () => {
       abort.name = 'AbortError'
       expect(mod.isRetryableError(new TypeError('fetch failed'))).toBe(true)
       expect(mod.isRetryableError(abort)).toBe(true)
+    })
+
+    it('treats a request timeout (TimeoutError) as retryable', () => {
+      const timeout = new DOMException('timed out', 'TimeoutError')
+      expect(mod.isRetryableError(timeout)).toBe(true)
     })
 
     it('treats other values as not retryable', () => {

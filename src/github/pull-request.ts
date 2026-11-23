@@ -7,34 +7,74 @@ import * as github from '@actions/github'
 import { Octokit } from '@octokit/rest'
 import { DefaultArtifactClient } from '@actions/artifact'
 import { PullRequestInfo } from '../types/index.js'
+import { applyVersionFixes, type VersionFix } from '../utils/version-fixes.js'
 
 /**
- * Recursively finds all files with a specific extension in a directory
+ * Validates a branch name before it reaches any git command. Rejects names git
+ * would treat as options or refuse (leading "-", "..", control characters,
+ * ref-syntax characters, trailing "/" or ".lock") and empty names.
  */
-function findFilesWithExtension(
-  directory: string,
-  extension: string
-): string[] {
-  const foundFiles: string[] = []
+export function validateBaseBranch(branch: string): void {
+  // eslint-disable-next-line no-control-regex
+  const invalid = /^$|^-|[\s~^:?*[\\\x00-\x1f\x7f]|\.\.|\/$|\.lock$/
+  if (!invalid.test(branch)) {
+    return
+  }
+  throw new Error(`Invalid base-branch "${branch}"`)
+}
 
-  try {
-    const items = fs.readdirSync(directory, { withFileTypes: true })
+/**
+ * Builds the git arguments that authenticate network commands without writing
+ * the token to the clone's config (the same approach as actions/checkout).
+ */
+export function gitAuthArgs(token: string): string[] {
+  const basic = Buffer.from(`x-access-token:${token}`).toString('base64')
+  core.setSecret(basic)
+  return ['-c', `http.extraheader=AUTHORIZATION: basic ${basic}`]
+}
 
-    for (const item of items) {
-      const fullPath = path.join(directory, item.name)
+/** Paths touched by a patch, from its `diff --git a/<p> b/<p>` headers. */
+function patchPaths(patch: string): string[] {
+  const paths = new Set<string>()
+  for (const match of patch.matchAll(/^diff --git a\/.+? b\/(.+)$/gm)) {
+    paths.add(match[1].trim())
+  }
+  return [...paths]
+}
 
-      if (item.isDirectory()) {
-        // Recursively search subdirectories
-        foundFiles.push(...findFilesWithExtension(fullPath, extension))
-      } else if (item.isFile() && item.name.endsWith(extension)) {
-        foundFiles.push(fullPath)
+/** Lists untracked, non-ignored .rej files (relative paths) in a repository. */
+async function listRejectFiles(workspaceDir: string): Promise<string[]> {
+  let output = ''
+  await exec.exec(
+    'git',
+    ['ls-files', '-z', '--others', '--exclude-standard', '--', '*.rej'],
+    {
+      cwd: workspaceDir,
+      silent: true,
+      listeners: {
+        stdout: (data: Buffer) => {
+          output += data.toString()
+        }
       }
     }
-  } catch (error) {
-    core.warning(`Could not read directory ${directory}: ${error}`)
-  }
+  )
+  return output.split('\0').filter((file) => file.length > 0)
+}
 
-  return foundFiles
+/** True when the branch already exists on the remote (exit code 0). */
+async function remoteBranchExists(
+  branch: string,
+  authArgs: string[]
+): Promise<boolean> {
+  const code = await exec.exec(
+    'git',
+    [...authArgs, 'ls-remote', '--exit-code', '--heads', 'origin', branch],
+    { ignoreReturnCode: true, silent: true }
+  )
+  if (code === 0) return true
+  // --exit-code: 2 means "no matching ref"; anything else is a real failure
+  if (code === 2) return false
+  throw new Error(`git ls-remote failed with exit code ${code}`)
 }
 
 /**
@@ -79,8 +119,10 @@ async function applyPatchWithReject(
 
     core.info('Looking for .rej files...')
 
-    // Find all .rej files recursively
-    const rejFiles = findFilesWithExtension(workspaceDir, '.rej')
+    const rejRelativePaths = await listRejectFiles(workspaceDir)
+    const rejFiles = rejRelativePaths.map((file) =>
+      path.join(workspaceDir, file)
+    )
 
     if (rejFiles.length === 0) {
       core.info('No .rej files found, patch applied cleanly with --reject flag')
@@ -165,8 +207,23 @@ function validateDeploymentId(deploymentId: string): void {
   )
 }
 
+/** True when the working tree has uncommitted changes. */
+async function hasWorkingTreeChanges(): Promise<boolean> {
+  let output = ''
+  await exec.exec('git', ['status', '--porcelain'], {
+    silent: true,
+    listeners: {
+      stdout: (data: Buffer) => {
+        output += data.toString()
+      }
+    }
+  })
+  return output.trim().length > 0
+}
+
 /**
- * Create a pull request with the provided git patch
+ * Create a pull request with the provided git patch and/or package version
+ * fixes. Returns undefined when neither changed anything in the repository.
  */
 export async function createPullRequestWithPatch(
   gitPatch: string,
@@ -174,22 +231,34 @@ export async function createPullRequestWithPatch(
   title: string,
   body: string,
   latestCompletedDeploymentId: string,
-  token: string
-): Promise<PullRequestInfo> {
+  token: string,
+  versionFixes: VersionFix[] = []
+): Promise<PullRequestInfo | undefined> {
   try {
     // Validate the deployment ID format
     validateDeploymentId(latestCompletedDeploymentId)
-
-    // Create a new branch name using the format: umbcloud/{deploymentId}
-    let newBranchName = `umbcloud/${latestCompletedDeploymentId}`
-    let guidConflictOccurred = false
-    core.info(`Creating new branch: ${newBranchName}`)
 
     if (!token) {
       throw new Error(
         'GitHub token not provided. Set the github-token input (needs contents: write and pull-requests: write).'
       )
     }
+    validateBaseBranch(baseBranch)
+
+    const workflowPaths = patchPaths(gitPatch).filter((p) =>
+      p.startsWith('.github/')
+    )
+    if (workflowPaths.length > 0) {
+      core.warning(
+        `The patch changes CI configuration (${workflowPaths.join(', ')}). Review this PR carefully; the default GITHUB_TOKEN cannot push workflow file changes, so the push may be rejected.`
+      )
+    }
+
+    const authArgs = gitAuthArgs(token)
+
+    // Branch name format: umbcloud/{deploymentId}
+    let newBranchName = `umbcloud/${latestCompletedDeploymentId}`
+    let guidConflictOccurred = false
 
     const octokit = new Octokit({
       auth: token
@@ -197,47 +266,13 @@ export async function createPullRequestWithPatch(
 
     const { owner, repo } = github.context.repo
 
-    // Get the latest commit SHA from the current workflow branch
-    const { data: baseBranchData } = await octokit.repos.getBranch({
-      owner,
-      repo,
-      branch: baseBranch
-    })
-    const baseSha = baseBranchData.commit.sha
-    core.info(`Base branch SHA: ${baseSha}`)
-
-    // Create the new branch using Octokit
-    try {
-      await octokit.git.createRef({
-        owner,
-        repo,
-        ref: `refs/heads/${newBranchName}`,
-        sha: baseSha
-      })
-      core.info(`Branch created successfully: ${newBranchName}`)
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes('Reference already exists')
-      ) {
-        // Branch already exists, try with a timestamp suffix
-        const timestamp = Date.now()
-        newBranchName = `umbcloud/${latestCompletedDeploymentId}-${timestamp}`
-        guidConflictOccurred = true
-        core.info(
-          `Branch already exists, creating with timestamp: ${newBranchName}`
-        )
-
-        await octokit.git.createRef({
-          owner,
-          repo,
-          ref: `refs/heads/${newBranchName}`,
-          sha: baseSha
-        })
-        core.info(`Branch created successfully: ${newBranchName}`)
-      } else {
-        throw error
-      }
+    if (await remoteBranchExists(newBranchName, authArgs)) {
+      // Branch already exists on the remote, use a timestamp suffix
+      newBranchName = `umbcloud/${latestCompletedDeploymentId}-${Date.now()}`
+      guidConflictOccurred = true
+      core.info(
+        `Branch already exists, creating with timestamp: ${newBranchName}`
+      )
     }
 
     // Create a temporary patch file and apply it using git
@@ -261,25 +296,36 @@ export async function createPullRequestWithPatch(
       // Configure git user identity using Peter Evans approach with -c flags
       core.info('Setting git identity using -c flags approach...')
 
-      // Create and checkout the branch locally first
-      core.info(`Fetching and checking out remote branch: ${newBranchName}`)
-      await exec.exec('git', ['fetch', 'origin'])
-      await exec.exec('git', ['checkout', newBranchName])
+      core.info(`Creating local branch: ${newBranchName}`)
+      await exec.exec('git', ['checkout', '-b', newBranchName])
 
-      core.info('Writing patch file...')
-      fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
+      if (gitPatch.trim()) {
+        core.info('Writing patch file...')
+        fs.writeFileSync(patchFilePath, gitPatch, 'utf8')
 
-      // Apply patch with --reject retry logic and .rej file handling
-      await applyPatchWithReject(
-        patchFilePath,
-        process.cwd(),
-        latestCompletedDeploymentId
-      )
+        // Apply patch with --reject retry logic and .rej file handling
+        await applyPatchWithReject(
+          patchFilePath,
+          process.cwd(),
+          latestCompletedDeploymentId
+        )
 
-      // Clean up patch file before adding changes to git
-      core.info('Removing patch file...')
-      if (fs.existsSync(patchFilePath)) {
-        fs.unlinkSync(patchFilePath)
+        // Clean up patch file before adding changes to git
+        core.info('Removing patch file...')
+        if (fs.existsSync(patchFilePath)) {
+          fs.unlinkSync(patchFilePath)
+        }
+      }
+
+      // The patch often does not apply (its context comes from the last
+      // deployed content), so also set the versions Cloud reported directly.
+      const appliedFixes = applyVersionFixes(process.cwd(), versionFixes)
+
+      if (!(await hasWorkingTreeChanges())) {
+        core.warning(
+          `No fix PR was created: the patch from Umbraco Cloud did not apply to ${baseBranch} and no package versions needed updating. Your repository differs from what was last deployed to Umbraco Cloud; update the package versions listed above manually.`
+        )
+        return undefined
       }
 
       core.info('Adding changes to git...')
@@ -293,11 +339,13 @@ export async function createPullRequestWithPatch(
         `user.email=${authorEmail}`,
         'commit',
         '-m',
-        `Apply Umbraco Cloud changes from deployment ${latestCompletedDeploymentId}`
+        appliedFixes.length > 0
+          ? `Update package versions to match Umbraco Cloud (deployment ${latestCompletedDeploymentId})`
+          : `Apply Umbraco Cloud changes from deployment ${latestCompletedDeploymentId}`
       ])
 
       core.info('Pushing new branch...')
-      await exec.exec('git', ['push', 'origin', newBranchName])
+      await exec.exec('git', [...authArgs, 'push', 'origin', newBranchName])
 
       // Create pull request
       core.info('Creating pull request...')

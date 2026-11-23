@@ -1,4 +1,5 @@
 import { jest } from '@jest/globals'
+import * as os from 'os'
 import type {
   ActionInputs,
   ChangesResponse,
@@ -25,9 +26,23 @@ jest.unstable_mockModule('../../src/utils/deployment-polling.js', () => ({
 }))
 
 const mockCreatePullRequestWithPatch =
-  jest.fn<(...args: unknown[]) => Promise<PullRequestInfo>>()
+  jest.fn<(...args: unknown[]) => Promise<PullRequestInfo | undefined>>()
+const mockValidateBaseBranch = jest.fn((branch: string) => {
+  if (branch.startsWith('-')) {
+    throw new Error(`Invalid base-branch "${branch}"`)
+  }
+})
+const AUTH_ARGS = [
+  '-c',
+  `http.extraheader=AUTHORIZATION: basic ${Buffer.from('x-access-token:gh-token').toString('base64')}`
+]
 jest.unstable_mockModule('../../src/github/pull-request.js', () => ({
-  createPullRequestWithPatch: mockCreatePullRequestWithPatch
+  createPullRequestWithPatch: mockCreatePullRequestWithPatch,
+  validateBaseBranch: mockValidateBaseBranch,
+  gitAuthArgs: (token: string) => [
+    '-c',
+    `http.extraheader=AUTHORIZATION: basic ${Buffer.from(`x-access-token:${token}`).toString('base64')}`
+  ]
 }))
 
 const core = {
@@ -174,7 +189,7 @@ describe('handleCheckStatus', () => {
     context.payload = {}
     delete process.env.GITHUB_TOKEN
     delete process.env.GH_TOKEN
-    process.env.GITHUB_WORKSPACE = '/work'
+    process.env.RUNNER_TEMP = '/runner-temp'
     process.env.GITHUB_RUN_ID = '42'
     chdirSpy = jest.spyOn(process, 'chdir').mockImplementation(() => {})
     cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue('/original')
@@ -227,9 +242,61 @@ describe('handleCheckStatus', () => {
         changes: JSON.stringify({ changes: PATCH })
       })
       expect(api.getChangesById).toHaveBeenCalledWith('dep-1', 'live')
-      expect(core.info).toHaveBeenCalledWith(PATCH)
+      expect(core.info).not.toHaveBeenCalledWith(PATCH)
+      expect(core.info).toHaveBeenCalledWith(
+        'Deployment completed. Umbraco Cloud reports changes in 1 file(s) (2 lines):'
+      )
+      expect(core.info).toHaveBeenCalledWith('- x')
+      expect(core.info).toHaveBeenCalledWith(
+        'The full patch is available in the `changes` output.'
+      )
       expect(mockCreatePullRequestWithPatch).not.toHaveBeenCalled()
       expect(core.setFailed).not.toHaveBeenCalled()
+    })
+
+    test('summarises the diff without printing source lines', async () => {
+      mockPollDeploymentStatus.mockResolvedValue(deployment('Completed'))
+      const patch = [
+        'diff --git a/src/A.cs b/src/A.cs',
+        '+secret = "value"',
+        'diff --git a/::set-output b/::set-output',
+        '+more',
+        'diff --git a/src/A.cs b/src/A.cs',
+        ''
+      ].join('\n')
+      api.getChangesById.mockResolvedValue({ changes: patch })
+
+      const result = await handleCheckStatus(api, inputs())
+
+      const logged = core.info.mock.calls.map((c) => String(c[0]))
+      expect(logged).toContain(
+        'Deployment completed. Umbraco Cloud reports changes in 2 file(s) (5 lines):'
+      )
+      expect(logged).toContain('- src/A.cs')
+      expect(logged).toContain('- ::set-output')
+      expect(logged.some((l) => l.includes('secret'))).toBe(false)
+      expect(logged.some((l) => l.startsWith('::'))).toBe(false)
+      expect(result.changes).toBe(JSON.stringify({ changes: patch }))
+    })
+
+    test('caps the changed file list at 50 entries', async () => {
+      mockPollDeploymentStatus.mockResolvedValue(deployment('Completed'))
+      const patch = Array.from(
+        { length: 53 },
+        (_, i) => `diff --git a/f${i} b/f${i}\n+x`
+      ).join('\n')
+      api.getChangesById.mockResolvedValue({ changes: patch })
+
+      await handleCheckStatus(api, inputs())
+
+      const logged = core.info.mock.calls.map((c) => String(c[0]))
+      expect(logged.filter((l) => /^- f\d+$/.test(l))).toHaveLength(50)
+      expect(logged).toContain('- f49')
+      expect(logged).not.toContain('- f50')
+      expect(logged).toContain('- …and 3 more')
+      expect(logged).toContain(
+        'Deployment completed. Umbraco Cloud reports changes in 53 file(s) (106 lines):'
+      )
     })
 
     test('logs when there is no diff', async () => {
@@ -321,7 +388,8 @@ describe('handleCheckStatus', () => {
         'Fix: Apply changes from failed deployment dep-1',
         expect.stringContaining('dep-0'),
         'dep-0',
-        'gh-token'
+        'gh-token',
+        []
       )
       expect(outputs()).toMatchObject({
         deploymentState: 'Failed',
@@ -333,7 +401,7 @@ describe('handleCheckStatus', () => {
       expect(core.setFailed).not.toHaveBeenCalled()
     })
 
-    test('clones the base branch using the server host and token', async () => {
+    test('clones shallowly with a per-command auth header, never the token in the URL', async () => {
       mockPollDeploymentStatus.mockResolvedValue(deployment('Failed'))
       versionFailure()
       context.serverUrl = 'https://ghe.example.com'
@@ -341,12 +409,17 @@ describe('handleCheckStatus', () => {
       await expect(handleCheckStatus(api, inputs())).rejects.toThrow()
 
       expect(mockExec).toHaveBeenCalledWith('git', [
+        ...AUTH_ARGS,
         'clone',
+        '--depth',
+        '1',
+        '--single-branch',
         '--branch',
         'main',
-        'https://x-access-token:gh-token@ghe.example.com/test-owner/test-repo.git',
-        expect.stringContaining('pr-workspace-42')
+        'https://ghe.example.com/test-owner/test-repo.git',
+        expect.stringMatching(/runner-temp.pr-workspace-42$/)
       ])
+      expect(JSON.stringify(mockExec.mock.calls)).not.toContain('gh-token')
       // Only the clone: no reset/clean of the fresh checkout
       expect(mockExec).toHaveBeenCalledTimes(1)
       expect(chdirSpy).toHaveBeenNthCalledWith(
@@ -376,7 +449,8 @@ describe('handleCheckStatus', () => {
         'Fix: Update package versions for deployment dep-1',
         expect.stringContaining('Detected package downgrade'),
         'dep-1',
-        'gh-token'
+        'gh-token',
+        []
       )
       expect(outputs()['pr-number']).toBe('7')
     })
@@ -397,7 +471,8 @@ describe('handleCheckStatus', () => {
         expect.any(String),
         expect.any(String),
         'dep-0',
-        'gh-token'
+        'gh-token',
+        []
       )
     })
 
@@ -472,7 +547,8 @@ describe('handleCheckStatus', () => {
         expect.any(String),
         expect.any(String),
         'dep-0',
-        'env-token'
+        'env-token',
+        []
       )
     })
 
@@ -518,22 +594,45 @@ describe('handleCheckStatus', () => {
       expect(outputs()['latest-completed-deployment-id']).toBeUndefined()
     })
 
-    test('defaults the workspace to the cwd and the host to github.com', async () => {
+    test('defaults the workspace to the OS temp dir and the host to github.com', async () => {
       mockPollDeploymentStatus.mockResolvedValue(deployment('Failed'))
       versionFailure()
       delete process.env.GITHUB_RUN_ID
-      delete process.env.GITHUB_WORKSPACE
+      delete process.env.RUNNER_TEMP
       context.serverUrl = ''
 
       await expect(handleCheckStatus(api, inputs())).rejects.toThrow()
 
       expect(mockExec).toHaveBeenCalledWith('git', [
+        ...AUTH_ARGS,
         'clone',
+        '--depth',
+        '1',
+        '--single-branch',
         '--branch',
         'main',
-        'https://x-access-token:gh-token@github.com/test-owner/test-repo.git',
-        expect.stringMatching(/original.pr-workspace-\d+$/)
+        'https://github.com/test-owner/test-repo.git',
+        expect.stringMatching(/pr-workspace-\d+$/)
       ])
+      const workspace = fsMock.mkdirSync.mock.calls[0][0] as string
+      expect(workspace.startsWith(os.tmpdir())).toBe(true)
+    })
+
+    test('rejects an invalid base-branch before any git call but still throws', async () => {
+      mockPollDeploymentStatus.mockResolvedValue(deployment('Failed'))
+      versionFailure()
+
+      await expect(
+        handleCheckStatus(api, inputs({ baseBranch: '--upload-pack=x' }))
+      ).rejects.toThrow(/^Deployment dep-1 failed/)
+
+      expect(mockValidateBaseBranch).toHaveBeenCalledWith('--upload-pack=x')
+      expect(mockExec).not.toHaveBeenCalled()
+      expect(fsMock.mkdirSync).not.toHaveBeenCalled()
+      expect(mockCreatePullRequestWithPatch).not.toHaveBeenCalled()
+      expect(core.warning).toHaveBeenCalledWith(
+        expect.stringContaining('Invalid base-branch "--upload-pack=x"')
+      )
     })
 
     test('restores cwd and cleans up when clone fails', async () => {
@@ -653,7 +752,7 @@ describe('handleCheckStatus', () => {
       )
     })
 
-    test('C1: downgrade with empty patches lists the packages to update', async () => {
+    test('C1: downgrade with empty patches and no PR lists the packages to update', async () => {
       const messages = STATUS_MESSAGES.downgrade
       mockPollDeploymentStatus.mockResolvedValue(
         failedDeployment('dep-1', messages) as unknown as DeploymentResponse
@@ -664,10 +763,15 @@ describe('handleCheckStatus', () => {
         return { changes: '' }
       })
 
+      // The clone-side step found nothing to change (undefined = no PR)
+      mockCreatePullRequestWithPatch.mockResolvedValue(undefined)
+
       const error = await handleCheckStatus(api, inputs()).catch((e) => e)
 
       expect(api.getChangesById).toHaveBeenCalledWith('dep-1', 'live')
-      expect(mockCreatePullRequestWithPatch).not.toHaveBeenCalled()
+      expect(mockCreatePullRequestWithPatch).toHaveBeenCalledTimes(1)
+      expect(outputs()['pr-url']).toBeUndefined()
+      expect(outputs()['pr-number']).toBeUndefined()
       const csproj = 'src/Contoso.Web/Contoso.Web.csproj'
       expect(core.error).toHaveBeenCalledWith(
         expect.stringContaining(
@@ -690,6 +794,252 @@ describe('handleCheckStatus', () => {
       expect(core.warning).not.toHaveBeenCalledWith(
         expect.stringContaining('Could not retrieve git patch')
       )
+    })
+
+    describe('version fixes from the downgrade message', () => {
+      const csproj = 'src/Contoso.Web/Contoso.Web.csproj'
+      const expectedFixes = [
+        { name: 'Umbraco.Cms', version: '17.7.2', file: csproj },
+        {
+          name: 'Umbraco.Cloud.StorageProviders.AzureBlob',
+          version: '17.1.0',
+          file: csproj
+        },
+        { name: 'Umbraco.Cloud.Cms', version: '17.2.3', file: csproj }
+      ]
+      const section = [
+        '**Package versions raised to match Umbraco Cloud:**',
+        `- Umbraco.Cms: 17.4.2 → 17.7.2 (${csproj})`,
+        `- Umbraco.Cloud.StorageProviders.AzureBlob: 17.0.0 → 17.1.0 (${csproj})`,
+        `- Umbraco.Cloud.Cms: 17.1.3 → 17.2.3 (${csproj})`
+      ].join('\n')
+
+      const failWithDowngrade = (details = [STATUS_MESSAGES.downgrade[2]]) => {
+        mockPollDeploymentStatus.mockResolvedValue(
+          failedDeployment(
+            'dep-1',
+            STATUS_MESSAGES.downgrade
+          ) as unknown as DeploymentResponse
+        )
+        api.getDeploymentErrorDetails.mockResolvedValue(details)
+      }
+      const failedDepNull = () => {
+        api.getChangesById.mockImplementation(async (id: string) => {
+          if (id === 'dep-1') throw cloudNull()
+          return { changes: PATCH }
+        })
+      }
+      const prCall = () => mockCreatePullRequestWithPatch.mock.calls[0]
+
+      test('opens a fix-only PR when no completed deployment exists', async () => {
+        failWithDowngrade([])
+        failedDepNull()
+        api.getLatestCompletedDeployment.mockResolvedValue(null)
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow(
+          'Deployment dep-1 failed. A pull request with the Umbraco Cloud changes was opened: https://github.com/test-owner/test-repo/pull/7'
+        )
+
+        expect(prCall().slice(0, 2)).toEqual(['', 'main'])
+        expect(prCall()[2]).toBe(
+          'Fix: Update package versions for deployment dep-1'
+        )
+        expect(prCall()[3]).toContain(section)
+        expect(prCall()[3]).not.toContain('**Errors:**')
+        expect(prCall()[3]).not.toContain('Latest Completed Deployment')
+        expect(prCall().slice(4)).toEqual(['dep-1', 'gh-token', expectedFixes])
+        expect(outputs()).toMatchObject({
+          'pr-url': 'https://github.com/test-owner/test-repo/pull/7',
+          'pr-number': '7'
+        })
+        expect(outputs()['latest-completed-deployment-id']).toBeUndefined()
+      })
+
+      test('opens a fix-only PR when fetching the Cloud patch throws', async () => {
+        failWithDowngrade()
+        api.getChangesById.mockImplementation(async (id: string) => {
+          if (id === 'dep-1') throw cloudNull()
+          throw new Error('api down')
+        })
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow(
+          /pull\/7/
+        )
+
+        expect(core.warning).toHaveBeenCalledWith(
+          expect.stringContaining('Failed to get latest completed deployment')
+        )
+        expect(prCall()[0]).toBe('')
+        expect(prCall()[2]).toBe(
+          'Fix: Update package versions for deployment dep-1'
+        )
+        expect(prCall()[3]).toContain('**Errors:**')
+        expect(prCall()[3]).toContain(section)
+        expect(prCall().slice(4)).toEqual(['dep-1', 'gh-token', expectedFixes])
+      })
+
+      test('opens a fix-only PR when looking up the latest completed deployment throws', async () => {
+        failWithDowngrade()
+        failedDepNull()
+        api.getLatestCompletedDeployment.mockRejectedValue(new Error('boom'))
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow(
+          /pull\/7/
+        )
+
+        expect(prCall()[0]).toBe('')
+        expect(prCall()[4]).toBe('dep-1')
+      })
+
+      test('opens a fix-only PR when the latest completed deployment has an empty patch', async () => {
+        failWithDowngrade()
+        api.getChangesById.mockImplementation(async (id: string) => {
+          if (id === 'dep-1') throw cloudNull()
+          return { changes: '  ' }
+        })
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow(
+          /pull\/7/
+        )
+
+        expect(prCall()[0]).toBe('')
+        expect(prCall()[4]).toBe('dep-1')
+        expect(outputs()['latest-completed-deployment-id']).toBe('dep-0')
+      })
+
+      test('threads the fixes next to the latest completed deployment patch', async () => {
+        failWithDowngrade()
+        failedDepNull()
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow(
+          /pull\/7/
+        )
+
+        expect(prCall()[0]).toBe(PATCH)
+        expect(prCall()[2]).toBe(
+          'Fix: Apply changes from failed deployment dep-1'
+        )
+        expect(prCall()[3]).toContain(
+          '**Latest Completed Deployment ID:** dep-0'
+        )
+        expect(prCall()[3]).toContain(section)
+        expect(prCall().slice(4)).toEqual(['dep-0', 'gh-token', expectedFixes])
+        expect(outputs()['latest-completed-deployment-id']).toBe('dep-0')
+      })
+
+      test('threads the fixes next to the failed deployment patch', async () => {
+        failWithDowngrade()
+        api.getChangesById.mockResolvedValue({ changes: PATCH })
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow(
+          /pull\/7/
+        )
+
+        expect(api.getLatestCompletedDeployment).not.toHaveBeenCalled()
+        expect(prCall()[0]).toBe(PATCH)
+        expect(prCall()[2]).toBe(
+          'Fix: Update package versions for deployment dep-1'
+        )
+        expect(prCall()[3]).toContain(section)
+        expect(prCall().slice(4)).toEqual(['dep-1', 'gh-token', expectedFixes])
+      })
+
+      test('no PR from the clone step: no PR outputs and the guidance is still shown', async () => {
+        failWithDowngrade()
+        failedDepNull()
+        mockCreatePullRequestWithPatch.mockResolvedValue(undefined)
+
+        const error = await handleCheckStatus(api, inputs()).catch((e) => e)
+
+        expect((error as Error).message).not.toContain('pull request')
+        expect((error as Error).message).toContain(
+          'Umbraco.Cms 17.4.2 → 17.7.2'
+        )
+        expect(outputs()['pr-url']).toBeUndefined()
+        expect(outputs()['pr-number']).toBeUndefined()
+        expect(core.error).toHaveBeenCalledWith(
+          `- Umbraco.Cms: 17.4.2 → 17.7.2 (${csproj})`
+        )
+      })
+
+      test('a failing clone step still shows the guidance and never throws out', async () => {
+        failWithDowngrade()
+        failedDepNull()
+        mockCreatePullRequestWithPatch.mockRejectedValue(
+          new Error('push denied')
+        )
+
+        const error = await handleCheckStatus(api, inputs()).catch((e) => e)
+
+        expect((error as Error).message).toContain('Umbraco.Cms 17.4.2')
+        expect(outputs()['pr-url']).toBeUndefined()
+      })
+
+      test('without a token no PR is attempted even when fixes exist', async () => {
+        failWithDowngrade()
+        failedDepNull()
+
+        await expect(
+          handleCheckStatus(api, inputs({ githubToken: '' }))
+        ).rejects.toThrow(/Umbraco.Cms 17.4.2/)
+
+        expect(mockCreatePullRequestWithPatch).not.toHaveBeenCalled()
+        expect(core.warning).toHaveBeenCalledWith(
+          expect.stringContaining('No GitHub token available')
+        )
+      })
+
+      test('wording changed: unparseable downgrade text passes no fixes and stays patch-only', async () => {
+        const reworded =
+          'Update rejected: Umbraco.Cms would be downgraded from 17.7.2 to 17.4.2 by src/Web/Web.csproj'
+        mockPollDeploymentStatus.mockResolvedValue(
+          failedDeployment('dep-1', [reworded]) as unknown as DeploymentResponse
+        )
+        api.getDeploymentErrorDetails.mockResolvedValue([reworded])
+        failedDepNull()
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow(
+          /pull\/7/
+        )
+
+        expect(prCall()[0]).toBe(PATCH)
+        expect(prCall().slice(4)).toEqual(['dep-0', 'gh-token', []])
+        expect(prCall()[3]).not.toContain('Package versions raised')
+      })
+
+      test('cloudRepositoryUpdated still wins over the parsed fixes', async () => {
+        mockPollDeploymentStatus.mockResolvedValue(
+          failedDeployment(
+            'dep-1',
+            STATUS_MESSAGES.downgrade,
+            true
+          ) as unknown as DeploymentResponse
+        )
+        api.getDeploymentErrorDetails.mockResolvedValue([
+          STATUS_MESSAGES.downgrade[2]
+        ])
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow()
+
+        expect(mockCreatePullRequestWithPatch).not.toHaveBeenCalled()
+        expect(api.getChangesById).not.toHaveBeenCalled()
+      })
+
+      test('a NuGet failure alongside the downgrade text still blocks the PR', async () => {
+        const messages = [
+          ...STATUS_MESSAGES.downgrade,
+          ...STATUS_MESSAGES.restoreError
+        ]
+        mockPollDeploymentStatus.mockResolvedValue(
+          failedDeployment('dep-1', messages) as unknown as DeploymentResponse
+        )
+        api.getDeploymentErrorDetails.mockResolvedValue(messages)
+
+        await expect(handleCheckStatus(api, inputs())).rejects.toThrow()
+
+        expect(mockCreatePullRequestWithPatch).not.toHaveBeenCalled()
+        expect(api.getChangesById).not.toHaveBeenCalled()
+      })
     })
 
     test('wording changed: downgrade text that cannot be parsed falls back to raw messages', async () => {
@@ -950,7 +1300,8 @@ describe('handleCheckStatus', () => {
         expect.any(String),
         expect.any(String),
         'dep-0',
-        'gh-token'
+        'gh-token',
+        []
       )
     })
   })

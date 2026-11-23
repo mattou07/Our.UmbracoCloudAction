@@ -34,6 +34,9 @@ export const MAX_ARTIFACT_SIZE_BYTES = 268435456
 
 const MAX_ERROR_SUMMARY_LENGTH = 500
 const LOG_FETCH_TIMEOUT_MS = 15000
+const MAX_LOG_BYTES = 2 * 1024 * 1024
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000
+const BASE_UPLOAD_TIMEOUT_MS = 60000
 
 /**
  * Error thrown for non-2xx responses from the Umbraco Cloud API.
@@ -148,7 +151,10 @@ export interface UmbracoCloudApiOptions {
   baseUrl?: string
   uploadRetries?: number
   uploadRetryDelayMs?: number
+  /** Per-attempt upload timeout. Unset: 60s plus 1s per MB of artifact. */
   uploadTimeoutMs?: number
+  /** Timeout for every non-upload request (default 30000) */
+  requestTimeoutMs?: number
   /** Base delay for 429 back-off when the API gives no Retry-After hint */
   rateLimitBaseDelayMs?: number
 }
@@ -173,7 +179,10 @@ const PROGRESS_MESSAGE_PATTERNS = [
   /^picking up kudu deployment stream$/i,
   /^kudu deployment log id:/i,
   /^kept the cloud environment's umbraco-cloud\.json/i,
-  /^(deleting repository files|copying files to repository|git stage)$/i
+  /^(deleting repository files|copying files to repository|git stage)$/i,
+  /^(check blocking markers|create updating marker|git clone)$/i,
+  /^(download update|extract update|validate update)$/i,
+  /^(preserve umbraco-cloud\.json|checking versions)$/i
 ]
 
 /** Number of messages before the terminal one that are always surfaced. */
@@ -186,10 +195,12 @@ export function isRetryableError(error: unknown): boolean {
   if (error instanceof UmbracoCloudApiError) {
     return error.status === 429 || error.status >= 500
   }
-  // fetch() rejects with TypeError on network failures; AbortError on timeout
+  // fetch() rejects with TypeError on network failures, AbortError when our
+  // controller aborts and TimeoutError when AbortSignal.timeout fires. Go by
+  // `name` only: a DOMException is not always `instanceof Error` across realms.
+  const name = (error as { name?: unknown } | null | undefined)?.name
   return (
-    error instanceof Error &&
-    (error.name === 'AbortError' || error.name === 'TypeError')
+    name === 'AbortError' || name === 'TimeoutError' || name === 'TypeError'
   )
 }
 
@@ -211,6 +222,31 @@ function parseRetryAfter(response: Response, body: string): number | undefined {
   }
   const match = body.match(/Try again in (\d+) seconds/i)
   return match ? parseInt(match[1], 10) : undefined
+}
+
+/** Reads at most `maxBytes` of a response body, cancelling the rest. */
+async function readTextCapped(
+  response: Response,
+  maxBytes: number
+): Promise<string> {
+  if (!response.body) return ''
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let text = ''
+  let received = 0
+  for (;;) {
+    const { done, value } = await reader.read()
+    if (done) break
+    const remaining = maxBytes - received
+    if (value.byteLength >= remaining) {
+      text += decoder.decode(value.subarray(0, remaining))
+      await reader.cancel()
+      return text
+    }
+    received += value.byteLength
+    text += decoder.decode(value, { stream: true })
+  }
+  return text + decoder.decode()
 }
 
 function isProgressMessage(message: string): boolean {
@@ -272,7 +308,8 @@ export class UmbracoCloudAPI {
   private readonly apiKey: string
   private readonly uploadRetries: number
   private readonly uploadRetryDelayMs: number
-  private readonly uploadTimeoutMs: number
+  private readonly uploadTimeoutMs?: number
+  private readonly requestTimeoutMs: number
   private readonly rateLimitBaseDelayMs: number
   /**
    * Signed log links seen in status messages, keyed by deployment id. Kept
@@ -290,7 +327,14 @@ export class UmbracoCloudAPI {
     this.baseUrl = (options.baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, '')
     this.uploadRetries = Math.max(1, options.uploadRetries ?? 3)
     this.uploadRetryDelayMs = Math.max(0, options.uploadRetryDelayMs ?? 10000)
-    this.uploadTimeoutMs = Math.max(1, options.uploadTimeoutMs ?? 60000)
+    this.uploadTimeoutMs =
+      options.uploadTimeoutMs === undefined
+        ? undefined
+        : Math.max(1, options.uploadTimeoutMs)
+    this.requestTimeoutMs = Math.max(
+      1,
+      options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS
+    )
     this.rateLimitBaseDelayMs = options.rateLimitBaseDelayMs ?? 1000
   }
 
@@ -315,10 +359,15 @@ export class UmbracoCloudAPI {
     errorPrefix: string,
     metadata?: Record<string, unknown>
   ): Promise<Response> {
-    const response = await fetchWithApiLogging(url, init, {
-      operation,
-      metadata
-    })
+    // Callers with their own signal (upload) manage their own timeout
+    const response = await fetchWithApiLogging(
+      url,
+      {
+        ...init,
+        signal: init.signal ?? AbortSignal.timeout(this.requestTimeoutMs)
+      },
+      { operation, metadata }
+    )
 
     if (!response.ok) {
       const body = await response.text()
@@ -533,6 +582,12 @@ export class UmbracoCloudAPI {
     const blob = await fs.openAsBlob(filePath, { type: 'application/zip' })
     const fileName = path.basename(filePath) || 'artifact.zip'
 
+    const timeoutIsDefault = this.uploadTimeoutMs === undefined
+    const uploadTimeoutMs =
+      this.uploadTimeoutMs ??
+      BASE_UPLOAD_TIMEOUT_MS + 1000 * Math.ceil(size / (1024 * 1024))
+    core.info(`Upload timeout: ${Math.round(uploadTimeoutMs / 1000)}s`)
+
     // Every attempt either returns or, on the last one, throws
     for (let attempt = 1; ; attempt++) {
       core.info(`Upload attempt ${attempt}/${this.uploadRetries}...`)
@@ -543,10 +598,7 @@ export class UmbracoCloudAPI {
       if (version) formData.append('version', version)
 
       const controller = new AbortController()
-      const timeoutId = setTimeout(
-        () => controller.abort(),
-        this.uploadTimeoutMs
-      )
+      const timeoutId = setTimeout(() => controller.abort(), uploadTimeoutMs)
 
       try {
         const response = await this.send(
@@ -569,7 +621,7 @@ export class UmbracoCloudAPI {
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           core.warning(
-            `Upload attempt ${attempt} timed out after ${this.uploadTimeoutMs}ms`
+            `Upload attempt ${attempt} timed out after ${uploadTimeoutMs}ms`
           )
         } else {
           core.warning(`Upload attempt ${attempt} failed: ${error}`)
@@ -578,8 +630,10 @@ export class UmbracoCloudAPI {
         if (attempt >= this.uploadRetries || !isRetryableError(error)) {
           if (error instanceof Error && error.name === 'AbortError') {
             const timeoutError = new Error(
-              `Artifact upload timed out after ${attempt} attempt(s) of ${this.uploadTimeoutMs}ms each. ` +
-                'Increase the upload-timeout input (milliseconds) or reduce the artifact size.',
+              `Artifact upload timed out after ${attempt} attempt(s) of ${uploadTimeoutMs}ms each. ` +
+                (timeoutIsDefault
+                  ? 'Set the upload-timeout input (milliseconds) to override.'
+                  : 'Increase the upload-timeout input (milliseconds) or reduce the artifact size.'),
               { cause: error }
             )
             timeoutError.name = 'UploadTimeoutError'
@@ -783,12 +837,15 @@ export class UmbracoCloudAPI {
       )
       try {
         // Third-party host: plain fetch, never the Cloud API key header.
-        const response = await fetch(signedUrl, { signal: controller.signal })
+        const response = await fetch(signedUrl, {
+          signal: controller.signal,
+          redirect: 'error'
+        })
         if (!response.ok) {
           core.debug(`Could not fetch log ${safeUrl}: HTTP ${response.status}`)
           continue
         }
-        const text = await response.text()
+        const text = await readTextCapped(response, MAX_LOG_BYTES)
         const lines = [
           ...new Set(
             text

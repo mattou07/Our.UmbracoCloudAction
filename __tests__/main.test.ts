@@ -179,7 +179,7 @@ describe('main.ts', () => {
         skipVersionCheck: false,
         uploadRetries: 3,
         uploadRetryDelay: 10000,
-        uploadTimeout: 60000,
+        uploadTimeout: undefined,
         excludedPaths: '.git/,.github/',
         enableApiLogging: false,
         apiLogArtifactName: 'umbraco-cloud-api-log',
@@ -447,7 +447,7 @@ describe('main.ts', () => {
         baseUrl: 'https://api.cloud.umbraco.com',
         uploadRetries: 3,
         uploadRetryDelayMs: 10000,
-        uploadTimeoutMs: 60000
+        uploadTimeoutMs: undefined
       })
       expect(initializeApiLogging).toHaveBeenCalledWith(
         false,

@@ -56,11 +56,10 @@ export function getActionInputs(): ActionInputs {
       10000,
       0
     ),
-    uploadTimeout: parseIntegerInput(
-      'upload-timeout',
-      core.getInput('upload-timeout'),
-      60000
-    ),
+    // Unset: the API client scales the timeout with the artifact size
+    uploadTimeout: core.getInput('upload-timeout').trim()
+      ? parseIntegerInput('upload-timeout', core.getInput('upload-timeout'), 1)
+      : undefined,
     nugetSourceName: core.getInput('nuget-source-name'),
     nugetSourceUrl: core.getInput('nuget-source-url'),
     nugetSourceUsername: core.getInput('nuget-source-username'),
